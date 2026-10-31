@@ -1,13 +1,14 @@
 # syntax=docker/dockerfile:1
-# Build context: ریشه‌ی همین ریپو
+# Build context: ریشه‌ی همین ریپو (famo-api)
 
 FROM composer:2 AS vendor
 WORKDIR /app
-COPY composer.json composer.lock ./
+COPY composer.json composer.lock* ./
 RUN composer install --no-dev --no-interaction --no-scripts --prefer-dist --optimize-autoloader
 
 FROM php:8.4-apache AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
     libpng-dev libjpeg-dev libwebp-dev libfreetype6-dev libzip-dev libicu-dev \
     && docker-php-ext-configure gd --with-jpeg --with-webp --with-freetype \
     && docker-php-ext-install -j"$(nproc)" gd pdo_mysql mysqli zip intl opcache bcmath \
@@ -30,5 +31,8 @@ COPY . /var/www/html/
 COPY --from=vendor /app/vendor/ /var/www/html/vendor/
 RUN mkdir -p /var/www/html/uploads /var/www/html/storage/cache /var/www/html/storage/logs \
     && chown -R www-data:www-data /var/www/html
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -fsS http://127.0.0.1/health || exit 1
 
 EXPOSE 80

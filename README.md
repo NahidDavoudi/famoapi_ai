@@ -9,7 +9,7 @@
 [![MySQL](https://img.shields.io/badge/MySQL-8.0%2B-4479A1?style=flat-square&logo=mysql&logoColor=white)](https://www.mysql.com/)
 [![Redis](https://img.shields.io/badge/Redis-Cache%20%26%20RateLimiter-DC382D?style=flat-square&logo=redis&logoColor=white)](https://redis.io/)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1.0-6BA539?style=flat-square&logo=openapiinitiative&logoColor=white)](./openapi.yaml)
-[![Docker](https://img.shields.io/badge/Docker-PHP%208.4%20Apache-2496ED?style=flat-square&logo=docker&logoColor=white)](./Dockerfile)
+[![Docker](https://img.shields.io/badge/Docker-api.Dockerfile%20%7C%20PHP%208.4-2496ED?style=flat-square&logo=docker&logoColor=white)](./api.Dockerfile)
 
 [Features](#-key-features) •
 [Architecture](#-architecture--project-structure) •
@@ -93,14 +93,18 @@ famo-api/
 │   └── redis.php              # Redis connection, prefix, & rate-limit settings
 ├── database/
 │   └── migrations/            # Versioned SQL schema migrations (000..015+)
-├── docker/                    # Production PHP-FPM/Apache & RemoteIP tuning configs
+├── docker/                    # Production PHP/Apache & RemoteIP tuning configs
+│   ├── apache-tune.conf       # Apache MPM prefork, KeepAlive & security headers tuning
+│   ├── custom.ini             # PHP production ini (Asia/Tehran, OPcache, memory & upload limits)
+│   └── remoteip.conf          # Trusted reverse-proxy X-Forwarded-For configuration
 ├── public/
 │   ├── index.php              # HTTP front controller
 │   └── openapi.yaml           # OpenAPI 3.1.0 specification for public endpoints
 ├── routes/
 │   └── api.php                # Complete route definitions (/health, /api/v1/*)
 ├── tests/                     # PHPUnit test suite (Core & Modules)
-├── Dockerfile                 # Multi-stage Composer 2 + PHP 8.4 Apache production image
+├── api.Dockerfile             # Multi-stage Composer 2 + PHP 8.4 Apache production image
+├── Dockerfile                 # Default Docker build entrypoint (synced with api.Dockerfile)
 ├── openapi.yaml               # Full OpenAPI 3.1.0 specification
 └── composer.json              # PHP dependencies & PSR-4 autoloading
 ```
@@ -168,20 +172,51 @@ Or using the included Node.js verification & OpenAPI preview server on port `300
 npm run dev
 ```
 
-### 3. Running with Docker
+### 3. Running with Docker (`api.Dockerfile`)
 
-The repository ships with a multi-stage `Dockerfile` based on `php:8.4-apache` with `ext-redis`, `gd` (WebP/JPEG/FreeType), `opcache`, and Apache `remoteip` preconfigured:
+The repository ships with [`api.Dockerfile`](./api.Dockerfile) (and [`Dockerfile`](./Dockerfile) for CI/CD pipelines), a multi-stage production image built on `composer:2` and `php:8.4-apache`:
+
+- **Stage 1 (`vendor`)**: Runs `composer install --no-dev --optimize-autoloader` in an isolated `composer:2` layer.
+- **Stage 2 (`runtime`)**:
+  - Compiles & enables PHP extensions: `gd` (with WebP, JPEG, and FreeType), `pdo_mysql`, `mysqli`, `zip`, `intl`, `opcache`, `bcmath`, and `redis` (`pecl`).
+  - Applies production PHP settings from [`docker/custom.ini`](./docker/custom.ini) (`date.timezone = Asia/Tehran`, `memory_limit = 192M`, `upload_max_filesize = 20M`, and `opcache` tuning).
+  - Enables Apache `rewrite`, `headers`, and `remoteip` modules with [`docker/remoteip.conf`](./docker/remoteip.conf) and [`docker/apache-tune.conf`](./docker/apache-tune.conf).
+  - Sets `DocumentRoot` to `/var/www/html/public` and configures a built-in container `HEALTHCHECK` against `http://127.0.0.1/health`.
 
 ```bash
-# Build production image
-docker build -t famo-api:latest .
+# Build production image using api.Dockerfile
+docker build -f api.Dockerfile -t famo-api:latest .
 
-# Run container with environment variables
+# Run container with environment variables and persistent volumes
 docker run -d \
   --name famo-api \
   -p 8080:80 \
   --env-file .env \
+  -v "$(pwd)/uploads:/var/www/html/uploads" \
+  -v "$(pwd)/storage/logs:/var/www/html/storage/logs" \
   famo-api:latest
+```
+
+#### Example `docker-compose.yml` Integration
+
+```yaml
+services:
+  api:
+    build:
+      context: .
+      dockerfile: api.Dockerfile
+    container_name: famo-api
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    env_file:
+      - .env
+    volumes:
+      - ./uploads:/var/www/html/uploads
+      - ./storage/logs:/var/www/html/storage/logs
+    depends_on:
+      - mysql
+      - redis
 ```
 
 ---
