@@ -1,109 +1,388 @@
-# famo-api
+<div align="center">
 
-## Getting started
+# FAMO Unified API (`famo-api`)
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+**High-performance modular REST API powering the FAMO Academy ecosystem — Admin Panel, Public Site, Student Dashboard, Nobat Booking, Planner, and Telegram Bot Gateway.**
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+[![PHP](https://img.shields.io/badge/PHP-%3E%3D8.2%20%7C%208.4-777BB4?style=flat-square&logo=php&logoColor=white)](https://www.php.net/)
+[![Slim Framework](https://img.shields.io/badge/Slim-4.x-719E40?style=flat-square)](https://www.slimframework.com/)
+[![MySQL](https://img.shields.io/badge/MySQL-8.0%2B-4479A1?style=flat-square&logo=mysql&logoColor=white)](https://www.mysql.com/)
+[![Redis](https://img.shields.io/badge/Redis-Cache%20%26%20RateLimiter-DC382D?style=flat-square&logo=redis&logoColor=white)](https://redis.io/)
+[![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1.0-6BA539?style=flat-square&logo=openapiinitiative&logoColor=white)](./openapi.yaml)
+[![Docker](https://img.shields.io/badge/Docker-PHP%208.4%20Apache-2496ED?style=flat-square&logo=docker&logoColor=white)](./Dockerfile)
 
-## Add your files
+[Features](#-key-features) •
+[Architecture](#-architecture--project-structure) •
+[Quick Start](#-getting-started) •
+[Configuration](#-environment-variables) •
+[Caching & Rate Limiting](#-redis-caching--rate-limiting) •
+[Health Monitoring](#-infrastructure-health-monitoring) •
+[API Documentation](#-api-documentation-openapi-31) •
+[Testing](#-testing)
 
-- [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-- [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
-```
-cd existing_repo
-git remote add origin https://gitlab.com/nadcorp-group/famo-api.git
-git branch -M main
-git push -uf origin main
-```
-
-## Integrate with your tools
-
-- [Set up project integrations](https://gitlab.com/nadcorp-group/famo-api/-/settings/integrations)
-
-## Collaborate with your team
-
-- [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-- [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-- [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-- [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-- [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-- [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-- [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-- [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-- [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-- [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+</div>
 
 ---
 
-# Editing this README
+## Overview
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-
-Choose a self-explaining name for your project.
-
-## Description
-
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-
-Show your appreciation to those who have contributed to the project.
-
-## License
-
-For open source projects, say how it is licensed.
-
-## Project status
-
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+**FAMO Unified API** is a lightweight, zero-bloat PHP 8.2+ / 8.4 RESTful backend built on **Slim 4** and **PSR-7 / PSR-15** standards. It serves as the single source of truth for all FAMO Academy client applications, enforcing strict role-based access control (`admin`, `supporter`, `teacher`, `student`), supporter student-scoping, two-factor authentication (2FA), Redis-backed public caching and rate limiting, and bidirectional Telegram Bot integration.
 
 ---
 
-TODO:
+## ✨ Key Features
 
-- WE NEED TO NORMALIZE THE ID'S SO ALL HAVE THE SAME TYPE, BIGINT
+- **Modular Domain Architecture**: Clean separation into `Controller → Service → Model` modules under `app/Modules/*`.
+- **Multi-Role Authentication & Security**:
+  - JWT authentication (`HS256`) supporting both `Authorization: Bearer <token>` headers and cross-subdomain `HttpOnly` cookies.
+  - Mandatory 2FA (Email / SMS OTP via Melipayamak) for `admin` and `supporter` accounts.
+  - Telegram Login Widget cryptographic verification (`HMAC-SHA256`) and account linking handoff.
+  - Fine-grained authorization and student-scope isolation (`StudentScope`) for supporters.
+- **Redis Caching & Atomic View Counters**:
+  - Dual-layer caching (`PublicCacheMiddleware` for HTTP responses + `Cache` for service queries) backed by `RedisClient` (`ext-redis` with pure-PHP RESP2 socket and file-cache fallback).
+  - Group-based cache invalidation (`Cache::flushGroup('public')`) triggered automatically on admin mutations.
+  - Atomic Redis blog view counters (`INCR`) combined with cached post payloads.
+- **Redis-Backed Rate Limiting**:
+  - Distributed sliding-window/fixed-window rate limiting (`RateLimiter` & `RateLimitMiddleware`) protecting public endpoints, login/2FA flows, SMS OTP dispatches, and Telegram handoff routes.
+  - Emits standard `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `Retry-After` HTTP headers.
+- **Strict Input & Environment Validation**:
+  - Request-level environment validation (`EnvValidator`) and JSON payload verification (`RequestValidationMiddleware`).
+  - Chainable field validator (`App\Core\Validator`) returning localized, structured `422 VALIDATION_ERROR` responses.
+- **Infrastructure Health Probe**:
+  - Lightweight `GET /health` and `GET /api/v1/health` endpoints reporting real-time MySQL (`SELECT 1`) and Redis (`PING`) connectivity and latency in milliseconds.
+- **Complete OpenAPI 3.1.0 Specifications**:
+  - Full API specification in [`openapi.yaml`](./openapi.yaml) and public endpoints specification in [`public/openapi.yaml`](./public/openapi.yaml).
+
+---
+
+## 🏗 Architecture & Project Structure
+
+```text
+famo-api/
+├── app/
+│   ├── Core/                  # Framework core & PSR-15 middlewares
+│   │   ├── Auth.php           # JWT generation & verification
+│   │   ├── Cache.php          # Redis + file fallback cache manager with group invalidation
+│   │   ├── CorsMiddleware.php # Dynamic CORS origin & credentials middleware
+│   │   ├── Database.php       # PDO singleton & health check (ping / checkHealth)
+│   │   ├── EnvValidator.php   # Mandatory & format environment variable validator
+│   │   ├──Migrator.php        # SQL migration runner
+│   │   ├── PublicCacheMiddleware.php # HTTP response cache for /api/v1/public/*
+│   │   ├── RateLimiter.php    # Redis + file fallback rate limiter
+│   │   ├── RateLimitMiddleware.php   # Per-IP rate limiting middleware
+│   │   ├── RedisClient.php    # Native ext-redis, RESP2 socket, & in-memory test driver
+│   │   ├── RequestValidationMiddleware.php # JSON body & env guard middleware
+│   │   └── Validator.php      # Server-side input validation rules
+│   ├── Helpers/
+│   │   └── JalaliHelper.php   # Gregorian ↔ Jalali calendar conversion utilities
+│   └── Modules/               # Domain modules (Controller, Service, Model)
+│       ├── Admins/            ├── Courses/           ├── Public/
+│       ├── Appointments/      ├── Dashboard/         ├── Reports/
+│       ├── Assignments/       ├── Exams/             ├── Stats/
+│       ├── Attendance/        ├── Files/             ├── Students/
+│       ├── Auth/              ├── Instructors/       ├── Subscription/
+│       ├── Blog/              ├── Linking/           ├── Supporters/
+│       ├── Bot/               ├── Outbox/            ├── Threads/
+│       ├── Broadcasts/        ├── ParentContacts/    ├── Topics/
+│       └── Tutoring/          └── WeeklyPlans/
+├── bootstrap/
+│   └── app.php                # Slim 4 bootstrap, middleware pipeline, error handler
+├── config/
+│   ├── app.php                # Application settings
+│   ├── database.php           # PDO MySQL configuration
+│   └── redis.php              # Redis connection, prefix, & rate-limit settings
+├── database/
+│   └── migrations/            # Versioned SQL schema migrations (000..015+)
+├── docker/                    # Production PHP-FPM/Apache & RemoteIP tuning configs
+├── public/
+│   ├── index.php              # HTTP front controller
+│   └── openapi.yaml           # OpenAPI 3.1.0 specification for public endpoints
+├── routes/
+│   └── api.php                # Complete route definitions (/health, /api/v1/*)
+├── tests/                     # PHPUnit test suite (Core & Modules)
+├── Dockerfile                 # Multi-stage Composer 2 + PHP 8.4 Apache production image
+├── openapi.yaml               # Full OpenAPI 3.1.0 specification
+└── composer.json              # PHP dependencies & PSR-4 autoloading
+```
+
+### Middleware Execution Pipeline
+
+In Slim 4, middleware executes in **LIFO** (Last-In, First-Out) order. Requests flow through the stack as follows:
+
+```text
+Incoming HTTP Request
+  │
+  ├─► 1.CorsMiddleware              (Handles preflight OPTIONS & sets CORS headers)
+  ├─► 2. ErrorMiddleware             (Catches exceptions & formats standard JSON envelope)
+  ├─► 3. RoutingMiddleware           (Resolves route & path parameters)
+  ├─► 4. BodyParsingMiddleware       (Parses application/json & form bodies)
+  ├─► 5. RequestValidationMiddleware (Validates env vars & rejects malformed JSON bodies)
+  ├─► 6. Route-Group Middlewares     (PublicCacheMiddleware / RateLimitMiddleware / AuthMiddleware)
+  │
+  ▼
+Controller Action ──► Standard JSON Response Envelope
+```
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- **PHP** `>= 8.2` (PHP `8.4` recommended for production)
+  - Extensions: `pdo_mysql`, `mbstring`, `gd`, `intl`, `zip`, `bcmath`, `redis` (optional — falls back to pure-PHP RESP2 socket if `ext-redis` is not installed)
+- **Composer** `2.x`
+- **MySQL** `8.0+` or **MariaDB** `10.6+`
+- **Redis** `6.2+` / `7.x` (recommended for public endpoint caching and distributed rate limiting)
+
+### 1. Local Installation
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/nadcorp-group/famo-api.git
+cd famo-api
+
+# 2. Install Composer dependencies
+composer install
+
+# 3. Copy the environment template and configure credentials
+cp .env.example .env
+
+# 4. Create writable runtime directories
+mkdir -p storage/cache storage/logs uploads
+```
+
+> **Automatic Database Migrations**: On non-test environments, `App\Core\Migrator` automatically executes any pending SQL files in `database/migrations/` on boot (`bootstrap/app.php`).
+
+### 2. Running Locally
+
+With PHP's built-in server:
+
+```bash
+php -S 0.0.0.0:8000 -t public
+```
+
+Or using the included Node.js verification & OpenAPI preview server on port `3000`:
+
+```bash
+npm run dev
+```
+
+### 3. Running with Docker
+
+The repository ships with a multi-stage `Dockerfile` based on `php:8.4-apache` with `ext-redis`, `gd` (WebP/JPEG/FreeType), `opcache`, and Apache `remoteip` preconfigured:
+
+```bash
+# Build production image
+docker build -t famo-api:latest .
+
+# Run container with environment variables
+docker run -d \
+  --name famo-api \
+  -p 8080:80 \
+  --env-file .env \
+  famo-api:latest
+```
+
+---
+
+## ⚙️ Environment Variables
+
+Copy `.env.example` to `.env` and configure the variables for your environment. `App\Core\EnvValidator` validates mandatory variables and data types automatically.
+
+| Category | Variable | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| **App** | `APP_ENV` | No | `production` | Environment (`local`, `development`, `staging`, `production`, `testing`) |
+| | `APP_DEBUG` | No | `false` | Enables detailed error traces when `true` |
+| | `API_URL` | No | — | Base URL of the API (e.g., `https://api.famoacademy.ir`) |
+| | `ASSET_URL` | No | — | Public CDN/base URL for uploaded assets |
+| | `CORS_ORIGINS` | No | — | Comma-separated list of allowed CORS origins |
+| **Database** | `DB_HOST` | **Yes** | — | MySQL hostname or IP address |
+| | `DB_PORT` | No | `3306` | MySQL port (`1`–`65535`) |
+| | `DB_NAME` | **Yes** | — | MySQL database name |
+| | `DB_USER` | **Yes** | — | MySQL username |
+| | `DB_PASS` | **Yes** | `""` | MySQL password (key must be defined) |
+| **JWT & Auth** | `JWT_SECRET` | **Yes** | — | Secret key used to sign HS256 JWT tokens |
+| | `JWT_TTL` | No | `86400` | Token expiration time in seconds |
+| | `JWT_COOKIE_NAME` | No | `famo_token` | Shared auth cookie name |
+| | `JWT_COOKIE_DOMAIN` | No | — | Cookie domain (e.g., `.famoacademy.ir`) |
+| | `JWT_COOKIE_SECURE` | No | `true` | Restrict cookie to HTTPS |
+| | `JWT_COOKIE_SAMESITE` | No | `Lax` | Cookie SameSite policy (`Lax`, `Strict`, `None`) |
+| **Redis & Cache** | `REDIS_ENABLED` | No | `true` (if host/url set) | Enable Redis for caching and rate limiting |
+| | `REDIS_URL` | No | — | Full Redis URI (`redis://[:password@]host:port[/db]`) |
+| | `REDIS_HOST` | No | `127.0.0.1` | Redis server hostname |
+| | `REDIS_PORT` | No | `6379` | Redis server port |
+| | `REDIS_PASSWORD` | No | `null` | Redis authentication password |
+| | `REDIS_DB` | No | `0` | Redis logical database index |
+| | `REDIS_PREFIX` | No | `famo:` | Keyspace prefix for all Redis keys |
+| | `CACHE_ENABLED` | No | `true` | Master toggle for application caching |
+| **Rate Limiting** | `PUBLIC_RATE_LIMIT_MAX_ATTEMPTS` | No | `60` | Max requests per IP per window on `/api/v1/public/*` |
+| | `PUBLIC_RATE_LIMIT_WINDOW_SECONDS`| No | `60` | Window duration in seconds for public rate limiting |
+| | `PUBLIC_RATE_LIMIT_LOCKOUT_SECONDS`| No | `60` | Lockout duration in seconds once limit is exceeded |
+| **Telegram & Bot**| `BOT_SERVICE_KEY` | Bot Routes | — | Shared secret for `/api/v1/bot/*` (`X-Bot-Service-Key`) |
+| | `TELEGRAM_LOGIN_SECRET_KEY` | TG Auth | — | 64-character hex SHA256 digest of the Telegram Bot token |
+| | `TELEGRAM_BOT_URL` | No | — | Telegram Bot deep-link base URL |
+
+---
+
+## ⚡ Redis Caching & Rate Limiting
+
+### Public Endpoints Caching
+
+All public site endpoints under `/api/v1/public/*` use a two-tier Redis caching strategy:
+
+1. **HTTP Response Cache (`PublicCacheMiddleware`)**:
+   - Caches `200 OK` JSON payloads in Redis for **300 seconds** under group `public`.
+   - Emits `Cache-Control: public, max-age=300`, `Vary: Origin`, and `X-Cache: HIT | MISS`.
+2. **Service-Layer Cache (`App\Core\Cache`)**:
+   - Caches underlying database query results in `PublicService` and `BlogService` for **600 seconds**.
+   - `GET /api/v1/public/blog/posts/{slug}` caches the article body (`blog_post:{slug}`) while atomically incrementing live article views in Redis (`blog_post_views:{id}`).
+3. **Automatic Cache Invalidation**:
+   - Creating, updating, or deleting courses, instructors, supporters, or blog posts automatically invokes `Cache::flushGroup('public')`.
+
+### Redis Rate Limiting
+
+`RateLimitMiddleware` and `RateLimiter` store counters and lockout keys in Redis (`famo:rl:attempts:*` and `famo:rl:lock:*`):
+
+- Every public response includes:
+  - `X-RateLimit-Limit: 60`
+  - `X-RateLimit-Remaining: 59`
+- When a client exceeds the threshold, the API responds with `429 Too Many Requests` (`RATE_LIMITED`) and a `Retry-After` header.
+
+---
+
+## 🩺 Infrastructure Health Monitoring
+
+A lightweight, unauthenticated health check endpoint is available at both `/health` and `/api/v1/health` for Kubernetes liveness/readiness probes, Docker healthchecks, and uptime monitors.
+
+### Request
+
+```http
+GET /health HTTP/1.1
+Host: api.famoacademy.ir
+```
+
+### Response (`200 OK` when healthy / `503 Service Unavailable` when DB is down)
+
+```json
+{
+  "success": true,
+  "data": {
+    "status": "healthy",
+    "database": {
+      "status": "connected",
+      "connected": true,
+      "latency_ms": 0.42
+    },
+    "redis": {
+      "status": "connected",
+      "connected": true,
+      "latency_ms": 0.18
+    },
+    "version": "1.0.0",
+    "time": "2026-10-31 12:00:00"
+  },
+  "pagination": null,
+  "error": null
+}
+```
+
+| Overall `status` | HTTP Code | Condition |
+| :--- | :---: | :--- |
+| `healthy` | `200 OK` | Database is `connected` and Redis is either `connected` or intentionally `disabled`. |
+| `degraded` | `200 OK` | Database is `connected`, but Redis is enabled and currently `disconnected` (file fallback active). |
+| `unhealthy` | `503 Service Unavailable` | Database connection failed (`SELECT 1` probe failed). |
+
+---
+
+## 📖 API Documentation (OpenAPI 3.1)
+
+The repository maintains two OpenAPI 3.1.0 specifications:
+
+- **[`openapi.yaml`](./openapi.yaml)**: Complete specification covering all Admin, Supporter, Student, Teacher, Bot, Auth, and Public endpoints.
+- **[`public/openapi.yaml`](./public/openapi.yaml)**: Dedicated specification for unauthenticated public endpoints, including detailed query/path/body validation rules and Redis cache/rate-limit headers.
+
+### Summary of Public Endpoints
+
+| Method | Endpoint | Description | Cache / Rate Limit |
+| :---: | :--- | :--- | :--- |
+| `GET` | `/health` | Infrastructure health check (Database & Redis status) | `no-store` |
+| `GET` | `/api/v1/health` | Versioned health check (Database & Redis status) | `no-store` |
+| `GET` | `/api/v1/public/courses` | List published courses with features (`display_order ASC`) | Redis Cache (300s) + Rate Limit |
+| `GET` | `/api/v1/public/instructors` | List published instructors | Redis Cache (300s) + Rate Limit |
+| `GET` | `/api/v1/public/supporters` | List active supporters | Redis Cache (300s) + Rate Limit |
+| `GET` | `/api/v1/public/blog/posts` | Paginated published blog posts (`page`, `per_page`/`limit`) | Redis Cache (300s) + Rate Limit |
+| `GET` | `/api/v1/public/blog/posts/{slug}` | Single blog post by slug + atomic Redis view increment | Service Redis Cache + Rate Limit |
+| `GET` | `/api/v1/public/blog/categories` | Blog categories with published post counts | Redis Cache (300s) + Rate Limit |
+| `GET` | `/api/v1/public/blog/categories/{category}/posts` | Paginated posts filtered by category | Redis Cache (300s) + Rate Limit |
+| `POST` | `/api/v1/auth/login` | User login (returns JWT or `202` 2FA challenge) | Auth Rate Limit |
+| `POST` | `/api/v1/auth/register` | Student self-registration | Auth Rate Limit |
+| `POST` | `/api/v1/auth/verify-2fa` | Verify 6-digit OTP (`code`, `user_id`) | 2FA Rate Limit |
+| `POST` | `/api/v1/auth/logout` | Clear authentication cookie | Public |
+| `POST` | `/api/v1/auth/telegram/*` | Telegram Login Widget verification, registration, & linking | Telegram Rate Limit |
+
+### Standard JSON Response Envelope
+
+Every endpoint returns a consistent JSON structure:
+
+```json
+{
+  "success": true,
+  "data": { ... },
+  "pagination": {
+    "page": 1,
+    "per_page": 20,
+    "total": 42,
+    "total_pages": 3
+  },
+  "error": null
+}
+```
+
+On validation or domain errors:
+
+```json
+{
+  "success": false,
+  "data": null,
+  "pagination": null,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "شماره صفحه (page) باید یک عدد صحیح مثبت باشد",
+    "details": {
+      "page": "شماره صفحه (page) باید یک عدد صحیح مثبت باشد"
+    }
+  }
+}
+```
+
+---
+
+## 🧪 Testing
+
+The test suite uses **PHPUnit** with an in-memory SQLite PDO harness (`tests/TestCase.php`) and `RedisClient::useInMemoryDriver(true)` so tests run fast and deterministically without external services.
+
+```bash
+# Run the PHPUnit test suite
+./vendor/bin/phpunit
+
+# Run specific core tests (Health, Input Validation, Redis Cache & RateLimiter)
+./vendor/bin/phpunit tests/Core/HealthTest.php
+./vendor/bin/phpunit tests/Core/InputValidationTest.php
+./vendor/bin/phpunit tests/Core/RedisCacheRateLimiterTest.php
+
+# Run the Node.js verification & OpenAPI contract tests
+npm test
+```
+
+---
+
+## 🗺 Roadmap & Technical Notes
+
+- [ ] Normalize primary and foreign key `id` columns across all legacy tables so all identifiers consistently use `BIGINT UNSIGNED`.
+
+---
+
+## 📄 License
+
+Proprietary — © [FAMO Academy](https://famoacademy.ir). All rights reserved.
