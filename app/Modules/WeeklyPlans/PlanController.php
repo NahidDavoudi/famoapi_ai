@@ -1,0 +1,198 @@
+<?php
+
+namespace App\Modules\WeeklyPlans;
+
+use Psr\Http\Message\ResponseInterface as Response;
+use Psr\Http\Message\ServerRequestInterface as Request;
+
+class PlanController
+{
+    public function __construct(private PlanService $service) {}
+
+    private function ok(Response $response, mixed $data = null, int $status = 200): Response
+    {
+        $response->getBody()->write(json_encode([
+            'success' => true, 'data' => $data, 'pagination' => null, 'error' => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withStatus($status)->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+
+    private function fail(Response $response, \App\Core\ApiException $e): Response
+    {
+        $status = $e->getHttpStatus();
+        $message = $e->getMessage();
+        $response->getBody()->write(json_encode([
+            'success' => false, 'data' => null, 'pagination' => null,
+            'error' => ['code' => $e->getErrorCode(), 'message' => $message],
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withStatus($status)->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+
+    /** GET /plans?student_id=X — list a student's plans */
+    public function get(Request $request, Response $response): Response
+    {
+        $studentId = (int) ($request->getQueryParams()['student_id'] ?? 0);
+        try {
+            return $this->ok($response, $this->service->listForStudent($studentId));
+        } catch (\App\Core\ApiException $e) {
+            return $this->fail($response, $e);
+        }
+    }
+
+    /** GET /plans/{id} — full plan with events and times */
+    public function getOne(Request $request, Response $response, array $args): Response
+    {
+        try {
+            return $this->ok($response, $this->service->getPlan((int) $args['id']));
+        } catch (\App\Core\ApiException $e) {
+            return $this->fail($response, $e);
+        }
+    }
+
+    /** POST /plans — create a full plan */
+    public function save(Request $request, Response $response): Response
+    {
+        $body = $request->getParsedBody() ?? [];
+
+        $validator = new \App\Core\Validator();
+        $validator
+            ->required('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null)
+            ->positiveInt('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null)
+            ->required('week_start_date', 'تاریخ شروع هفته', $body['week_start_date'] ?? null)
+            ->string('week_start_date', 'تاریخ شروع هفته', $body['week_start_date'] ?? null);
+
+        if (isset($body['days']) && !is_array($body['days'])) {
+            $validator->addError('days', 'روزهای برنامه باید آرایه باشند');
+        }
+
+        if (!$validator->passes()) {
+            return $this->fail($response, new \App\Core\ApiException($validator->firstError(), 422, 'VALIDATION_ERROR'));
+        }
+
+        try {
+            return $this->ok($response, $this->service->saveFull($body), 201);
+        } catch (\App\Core\ApiException $e) {
+            return $this->fail($response, $e);
+        }
+    }
+
+    /** PUT /plans/{id} — update an existing plan */
+    public function update(Request $request, Response $response, array $args): Response
+    {
+        $body = $request->getParsedBody() ?? [];
+        $body['plan_id'] = (int) $args['id'];
+
+        $validator = new \App\Core\Validator();
+        $validator
+            ->required('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null)
+            ->positiveInt('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null)
+            ->required('week_start_date', 'تاریخ شروع هفته', $body['week_start_date'] ?? null)
+            ->string('week_start_date', 'تاریخ شروع هفته', $body['week_start_date'] ?? null);
+
+        if (isset($body['days']) && !is_array($body['days'])) {
+            $validator->addError('days', 'روزهای برنامه باید آرایه باشند');
+        }
+
+        if (!$validator->passes()) {
+            return $this->fail($response, new \App\Core\ApiException($validator->firstError(), 422, 'VALIDATION_ERROR'));
+        }
+
+        try {
+            return $this->ok($response, $this->service->saveFull($body));
+        } catch (\App\Core\ApiException $e) {
+            return $this->fail($response, $e);
+        }
+    }
+
+    /** DELETE /plans/{id} — delete a single plan */
+    public function deleteOne(Request $request, Response $response, array $args): Response
+    {
+        try {
+            $this->service->deletePlan((int) $args['id']);
+            return $this->ok($response);
+        } catch (\App\Core\ApiException $e) {
+            return $this->fail($response, $e);
+        }
+    }
+
+    /** DELETE /plans?student_id=X — clear every plan of a student */
+    public function clear(Request $request, Response $response): Response
+    {
+        $params = $request->getQueryParams();
+        $body = $request->getParsedBody() ?? [];
+        $studentId = (int) ($params['student_id'] ?? $body['student_id'] ?? 0);
+
+        try {
+            $deleted = $this->service->clearForStudent($studentId);
+            return $this->ok($response, ['deleted' => $deleted, 'student_id' => $studentId]);
+        } catch (\App\Core\ApiException $e) {
+            return $this->fail($response, $e);
+        }
+    }
+
+    public function getTemplates(Request $request, Response $response): Response
+    {
+        return $this->ok($response, $this->service->getTemplates());
+    }
+
+    public function getTemplate(Request $request, Response $response, array $args): Response
+    {
+        $template = $this->service->getTemplate((int) $args['id']);
+        if (!$template) {
+            return $this->fail($response, new \App\Core\ApiException('قالب یافت نشد', 404, 'NOT_FOUND'));
+        }
+        return $this->ok($response, $template);
+    }
+
+    public function saveTemplate(Request $request, Response $response): Response
+    {
+        $body = $request->getParsedBody() ?? [];
+
+        $validator = new \App\Core\Validator();
+        $validator
+            ->required('name', 'نام قالب', $body['name'] ?? null)
+            ->string('name', 'نام قالب', $body['name'] ?? null)
+            ->maxLength('name', 'نام قالب', $body['name'] ?? null, 150);
+
+        if (!isset($body['days']) || !is_array($body['days']) || empty($body['days'])) {
+            $validator->addError('days', 'روزهای قالب الزامی است');
+        }
+
+        if (!$validator->passes()) {
+            return $this->fail($response, new \App\Core\ApiException($validator->firstError(), 422, 'VALIDATION_ERROR'));
+        }
+
+        try {
+            return $this->ok($response, $this->service->saveTemplate($body), 201);
+        } catch (\App\Core\ApiException $e) {
+            return $this->fail($response, $e);
+        }
+    }
+
+    public function deleteTemplate(Request $request, Response $response, array $args): Response
+    {
+        $this->service->deleteTemplate((int) $args['id']);
+        return $this->ok($response);
+    }
+
+    public function applyTemplate(Request $request, Response $response, array $args): Response
+    {
+        $body = $request->getParsedBody() ?? [];
+
+        $validator = new \App\Core\Validator();
+        $validator
+            ->required('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null)
+            ->positiveInt('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null);
+
+        if (!$validator->passes()) {
+            return $this->fail($response, new \App\Core\ApiException($validator->firstError(), 422, 'VALIDATION_ERROR'));
+        }
+
+        $studentId = (int) $body['student_id'];
+        try {
+            return $this->ok($response, $this->service->applyTemplate((int) $args['id'], $studentId));
+        } catch (\App\Core\ApiException $e) {
+            return $this->fail($response, $e);
+        }
+    }
+}

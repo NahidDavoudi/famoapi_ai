@@ -1,0 +1,271 @@
+<?php
+
+namespace App\Modules\Bot;
+
+use App\Core\ApiException;
+use App\Core\ResponseHelper;
+use App\Modules\Auth\User;
+use App\Modules\Students\Student;
+use App\Modules\Students\StudentService;
+use Psr\Http\Message\ResponseInterface as Response;
+use Psr\Http\Message\ServerRequestInterface as Request;
+use App\Core\Logger;
+
+class BotController
+{
+    private const MAJORS = ['راهنمایی', 'تجربی', 'ریاضی', 'انسانی'];
+
+    public function ping(Request $request, Response $response): Response
+    {
+        return ResponseHelper::json($response, [
+            'status'           => 'ok',
+            'utc_time'         => IranDay::nowUtc(),
+            'iran_date'        => IranDay::today(),
+            'iran_date_jalali' => IranDay::jalali(),
+        ]);
+    }
+
+    public function me(Request $request, Response $response): Response
+    {
+        /** @var array $actor */
+        $actor = $request->getAttribute('bot_actor');
+
+        $context = [
+            'chat_id'    => (int) $actor['link']['chat_id'],
+            'account_id' => (int) $actor['account_id'],
+            'role'       => (string) $actor['role'],
+        ];
+
+        if ((int) $actor['link']['is_blocked'] === 1) {
+            Logger::warning('Bot: me requested by blocked link', $context);
+        } else {
+            Logger::info('Bot: me', $context);
+        }
+
+        return ResponseHelper::json($response, [
+            'role'             => $actor['role'],
+            'account_id'       => $actor['account_id'],
+            'name'             => $actor['name'],
+            'telegram_user_id' => (int) $actor['link']['telegram_user_id'],
+            'chat_id'          => (int) $actor['link']['chat_id'],
+            'is_blocked'       => (int) $actor['link']['is_blocked'] === 1,
+            'linked_at'        => $actor['link']['linked_at'],
+        ]);
+    }
+
+    /** POST /bot/resolve */
+    public function resolve(Request $request, Response $response): Response
+    {
+        $chatId = $this->chatId($this->body($request));
+
+        $accounts = TelegramLink::findByChatId($chatId);
+        if (!$accounts) {
+            Logger::debug('Bot: resolve found no link', ['chat_id' => $chatId]);
+            throw new ApiException('این چت به حسابی وصل نیست', 404, 'NOT_LINKED');
+        }
+
+        Logger::info('Bot: resolve', [
+            'chat_id'    => $chatId,
+            'account_id' => (int) $accounts[0]['id'],
+            'role'       => (string) $accounts[0]['role'],
+        ]);
+
+        return ResponseHelper::json($response, [
+            'user' => $this->userPayload($accounts[0], $chatId),
+        ]);
+    }
+
+    /** POST /bot/link-phone */
+    public function linkPhone(Request $request, Response $response): Response
+    {
+        $body   = $this->body($request);
+        $chatId = $this->chatId($body);
+        $phone  = $this->phone($body);
+
+        $user = User::findByUsername($phone);
+        if (!$user) {
+            Logger::debug('Bot: link-phone found no matching account', ['chat_id' => $chatId]);
+            return ResponseHelper::json($response, ['user' => null]);
+        }
+
+        $context = [
+            'chat_id'    => $chatId,
+            'account_id' => (int) $user['id'],
+            'role'       => (string) $user['role'],
+        ];
+
+        $linkedHere = TelegramLink::findByChatId($chatId);
+        if ($linkedHere && !$this->containsUsername($linkedHere, $phone)) {
+            Logger::warning('Bot: link-phone rejected, chat already linked to another account', $context);
+            throw new ApiException('این چت قبلاً به حساب دیگری وصل شده است', 409, 'CHAT_ALREADY_LINKED');
+        }
+
+        if (!empty($user['chat_id']) && (int) $user['chat_id'] !== $chatId) {
+            Logger::warning('Bot: link-phone rejected, account already linked elsewhere', $context);
+            throw new ApiException('این حساب قبلاً به تلگرام دیگری وصل شده است', 409, 'USER_ALREADY_LINKED');
+        }
+
+        TelegramLink::attachChatId((int) $user['id'], $chatId);
+
+        Logger::info('Bot: link-phone attached', $context);
+
+        return ResponseHelper::json($response, [
+            'user' => $this->userPayload($user, $chatId),
+        ]);
+    }
+
+    /** POST /bot/register */
+    public function register(Request $request, Response $response): Response
+    {
+        $body     = $this->body($request);
+        $chatId   = $this->chatId($body);
+        $phone    = $this->phone($body);
+        $fullName = trim((string) ($body['full_name'] ?? ''));
+        $grade    = (int) ($body['grade'] ?? 0);
+        $major    = (string) ($body['major'] ?? '');
+        $national_id = $body['national_id'] ?? null;   // ← اصلاح شد
+
+        if (mb_strlen($fullName) < 2 || $grade < 7 || $grade > 12 || !in_array($major, self::MAJORS, true)) {
+            Logger::debug('Bot: register validation failed', [
+                'chat_id' => $chatId,
+                'grade'   => $grade,
+                'major'   => $major,
+            ]);
+            throw new ApiException('اطلاعات ثبت‌نام نامعتبر است', 422, 'VALIDATION_ERROR');
+        }
+        if ($grade <= 9) {
+            $major = 'راهنمایی';
+        }
+
+        if (User::findByUsername($phone)) {
+            Logger::warning('Bot: register rejected, phone already registered', ['chat_id' => $chatId]);
+            throw new ApiException('این شماره قبلاً ثبت شده است', 409, 'PHONE_ALREADY_REGISTERED');
+        }
+        if (TelegramLink::findByChatId($chatId)) {
+            Logger::warning('Bot: register rejected, chat already linked', ['chat_id' => $chatId]);
+            throw new ApiException('این چت قبلاً به حسابی وصل شده است', 409, 'CHAT_ALREADY_LINKED');
+        }
+
+        // Creates the student AND its users row (username = phone) in one transaction.
+        try {
+            (new StudentService())->create([
+                'name'        => $fullName,
+                'grade'       => $grade,
+                'field'       => $major,
+                'phone'       => $phone,
+                'national_id' => $national_id,
+                'chat_id'     => $chatId,
+            ]);
+        } catch (\Throwable $e) {
+            Logger::error('Bot: register failed to create student', [
+                'chat_id'    => $chatId,
+                'grade'      => $grade,
+                'major'      => $major,
+                'error'      => $e->getMessage(),
+                'exception'  => $e::class,
+                'file'       => $e->getFile(),
+                'line'       => $e->getLine(),
+            ]);
+            throw new ApiException($e->getMessage(), 500, 'REGISTER_FAILED'); // موقتاً پیام واقعی
+        }
+
+        $user = User::findByUsername($phone);
+        if (!$user) {
+            Logger::error('Bot: register could not reload created account', [
+                'chat_id' => $chatId,
+                'grade'   => $grade,
+            ]);
+            throw new ApiException('ساخت حساب ناموفق بود', 500, 'REGISTER_FAILED');
+        }
+
+        TelegramLink::attachChatId((int) $user['id'], $chatId);
+
+        Logger::info('Bot: register completed', [
+            'chat_id'    => $chatId,
+            'account_id' => (int) $user['id'],
+            'student_id' => (int) $user['linked_id'],
+            'grade'      => $grade,
+            'major'      => $major,
+        ]);
+
+        return ResponseHelper::json($response, [
+            'user' => $this->userPayload($user, $chatId),
+        ]);
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    private function body(Request $request): array
+    {
+        $body = $request->getParsedBody();
+        return is_array($body) ? $body : [];
+    }
+
+    private function chatId(array $body): int
+    {
+        $chatId = (int) ($body['chat_id'] ?? 0);
+        if ($chatId === 0) {
+            throw new ApiException('chat_id الزامی است', 422, 'VALIDATION_ERROR');
+        }
+        return $chatId;
+    }
+
+    private function phone(array $body): string
+    {
+        $phone = $this->normalizePhone((string) ($body['phone'] ?? ''));
+        if (!preg_match('/^09\d{9}$/', $phone)) {
+            throw new ApiException('شماره موبایل نامعتبر است', 422, 'VALIDATION_ERROR');
+        }
+        return $phone;
+    }
+
+
+    /** Persian/Arabic digits -> Latin; +98 / 0098 / 98 / 9xxxxxxxxx -> 09xxxxxxxxx */
+    private function normalizePhone(string $raw): string
+    {
+        $raw = strtr($raw, [
+            '۰' => '0', '۱' => '1', '۲' => '2', '۳' => '3', '۴' => '4',
+            '۵' => '5', '۶' => '6', '۷' => '7', '۸' => '8', '۹' => '9',
+            '٠' => '0', '١' => '1', '٢' => '2', '٣' => '3', '٤' => '4',
+            '٥' => '5', '٦' => '6', '٧' => '7', '٨' => '8', '٩' => '9',
+        ]);
+        $d = preg_replace('/\D+/', '', $raw) ?? '';
+
+        if (str_starts_with($d, '0098')) {
+            $d = '0' . substr($d, 4);
+        } elseif (str_starts_with($d, '98') && strlen($d) === 12) {
+            $d = '0' . substr($d, 2);
+        } elseif (strlen($d) === 10 && $d[0] === '9') {
+            $d = '0' . $d;
+        }
+        return $d;
+    }
+
+    private function containsUsername(array $accounts, string $username): bool
+    {
+        foreach ($accounts as $a) {
+            if (($a['username'] ?? null) === $username) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Shape expected by FamoApi::userAsLink(). */
+    private function userPayload(array $user, int $chatId): array
+    {
+        $name = $user['full_name'] ?? null;
+        if (!$name && ($user['role'] ?? '') === 'student') {
+            $student = Student::findById((int) $user['linked_id']);
+            $name = $student['name'] ?? '';
+        }
+
+        return [
+            'id'        => (int) ($user['id'] ?? 0),
+            'role'      => (string) $user['role'],
+            'linked_id' => (int) $user['linked_id'],
+            'full_name' => (string) $name,
+            'chat_id'   => $chatId,
+        ];
+    }
+}

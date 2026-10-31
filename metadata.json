@@ -1,0 +1,5 @@
+{
+  "name": "FAMO API — Public Cache & Redis Rate Limiter",
+  "description": "Slim 4 REST API with Redis caching for public endpoints, Redis-backed rate limiting, and server-side input validation.",
+  "requestFramePermissions": []
+}

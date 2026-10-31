@@ -1,0 +1,71 @@
+<?php
+
+namespace App\Modules\Bot;
+
+use App\Core\Database;
+
+class TelegramLink
+{
+    public static function findByChatId(int $chatId): array
+    {
+        $stmt = Database::getConnection()->prepare(
+            "SELECT u.id,
+                    u.username,
+                    u.role,
+                    u.linked_id,
+                    u.linked_id AS account_id,
+                    u.chat_id,
+                    COALESCE(u.full_name, s.name) AS full_name
+             FROM users u
+             LEFT JOIN students s ON u.role = 'student' AND s.id = u.linked_id
+             WHERE u.chat_id = :chat
+             ORDER BY u.role ASC"
+        );
+        $stmt->execute(['chat' => (string) $chatId]);
+
+        return $stmt->fetchAll();
+    }
+
+    public static function findByChatIdAndRoles(int $chatId, array $roles): ?array
+    {
+        if ($roles === []) {
+            return null;
+        }
+        $ph = implode(',', array_fill(0, count($roles), '?'));
+        $stmt = \App\Core\Database::getConnection()->prepare(
+            "SELECT u.role, u.linked_id AS account_id,
+                COALESCE(u.full_name, s.name) AS name
+         FROM users u
+         LEFT JOIN students s ON u.role = 'student' AND s.id = u.linked_id
+         WHERE u.chat_id = ? AND u.role IN ({$ph})
+         LIMIT 1"
+        );
+        $stmt->execute(array_merge([(string) $chatId], $roles));
+        $row = $stmt->fetch();
+
+        return $row ?: null;
+    }
+
+    public static function findByRoleAndAccount(string $role, int $accountId): ?array
+    {
+        $stmt = Database::getConnection()->prepare(
+            "SELECT *
+             FROM telegram_links
+             WHERE role = ? AND account_id = ?
+             LIMIT 1"
+        );
+        $stmt->execute([$role, (string) $accountId]);
+
+        return $stmt->fetch() ?: null;
+    }
+
+    public static function attachChatId(int $userId, int $chatId): int
+    {
+        $stmt = Database::getConnection()->prepare(
+            'UPDATE users SET chat_id = :chat WHERE id = :id'
+        );
+        $stmt->execute(['chat' => (string) $chatId, 'id' => $userId]);
+
+        return $stmt->rowCount();
+    }
+}
