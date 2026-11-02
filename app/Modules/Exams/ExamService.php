@@ -71,6 +71,34 @@ class ExamService
         return ['inserted' => $inserted];
     }
 
+    public function upsertComment(int $studentId, string $examDate, int $teacherUserId, string $body): array
+    {
+        $trimmedBody = trim($body);
+        if ($studentId <= 0 || $teacherUserId <= 0 || !$this->isValidDate($examDate) || $trimmedBody === '') {
+            throw new \App\Core\ApiException('داده‌های ناقص یا نامعتبر است', 422, 'VALIDATION_ERROR');
+        }
+
+        if (mb_strlen($trimmedBody) > 2000) {
+            throw new \App\Core\ApiException('متن نظر نمی‌تواند بیشتر از ۲۰۰۰ کاراکتر باشد', 422, 'VALIDATION_ERROR');
+        }
+
+        if (!ExamResult::studentExists($studentId)) {
+            throw new \App\Core\ApiException('دانش‌آموز یافت نشد', 404, 'NOT_FOUND');
+        }
+
+        if (!ExamResult::hasExamOnDate($studentId, $examDate)) {
+            throw new \App\Core\ApiException('نتیجه آزمونی برای این دانش‌آموز در این تاریخ ثبت نشده است', 404, 'NOT_FOUND');
+        }
+
+        $comment = ExamResult::upsertComment($studentId, $examDate, $teacherUserId, $trimmedBody);
+        $comments = ExamResult::findComments($examDate, $studentId);
+
+        return [
+            'comment'  => $comment,
+            'comments' => $comments,
+        ];
+    }
+
     private function isValidDate(string $date): bool
     {
         $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);

@@ -76,7 +76,9 @@ class ExamResult
         $stmt->execute([$studentId]);
         $student = $stmt->fetch();
 
-        if (!$student) return ['student' => null, 'subjects' => [], 'avg_percentage' => 0];
+        if (!$student) {
+            return ['student' => null, 'subjects' => [], 'avg_percentage' => 0, 'comments' => []];
+        }
 
         $stmt = $db->prepare(
             'SELECT subject, chapter, total_q, correct, wrong, skipped, percentage
@@ -91,7 +93,83 @@ class ExamResult
         $stmt->execute([$studentId, $examDate]);
         $avg = $stmt->fetchColumn();
 
-        return ['student' => $student, 'subjects' => $subjects, 'avg_percentage' => $avg ?: 0];
+        $comments = self::findComments($examDate, $studentId);
+
+        return [
+            'student'        => $student,
+            'subjects'       => $subjects,
+            'avg_percentage' => $avg ?: 0,
+            'comments'       => $comments,
+        ];
+    }
+
+    public static function studentExists(int $studentId): bool
+    {
+        $stmt = Database::getConnection()->prepare('SELECT 1 FROM students WHERE id = ? LIMIT 1');
+        $stmt->execute([$studentId]);
+        return (bool) $stmt->fetchColumn();
+    }
+
+    public static function hasExamOnDate(int $studentId, string $examDate): bool
+    {
+        $stmt = Database::getConnection()->prepare(
+            'SELECT 1 FROM exam_results WHERE student_id = ? AND exam_date = ? LIMIT 1'
+        );
+        $stmt->execute([$studentId, $examDate]);
+        return (bool) $stmt->fetchColumn();
+    }
+
+    public static function findComments(string $examDate, int $studentId): array
+    {
+        $stmt = Database::getConnection()->prepare(
+            "SELECT ec.id, ec.student_id, ec.exam_date, ec.teacher_user_id,
+                    COALESCE(i.name, u.full_name, u.username) AS author_name,
+                    u.role AS author_role,
+                    ec.body, ec.created_at, ec.updated_at
+             FROM exam_comments ec
+             JOIN users u ON ec.teacher_user_id = u.id
+             LEFT JOIN instructors i ON u.role = 'teacher' AND u.linked_id = i.id
+             WHERE ec.student_id = :student_id AND ec.exam_date = :exam_date
+             ORDER BY ec.updated_at DESC, ec.id DESC"
+        );
+        $stmt->execute([
+            'student_id' => $studentId,
+            'exam_date'  => $examDate,
+        ]);
+        return $stmt->fetchAll();
+    }
+
+    public static function upsertComment(int $studentId, string $examDate, int $teacherUserId, string $body): array
+    {
+        $db = Database::getConnection();
+        $stmt = $db->prepare(
+            'INSERT INTO exam_comments (student_id, exam_date, teacher_user_id, body)
+             VALUES (:student_id, :exam_date, :teacher_user_id, :body)
+             ON CONFLICT (student_id, exam_date, teacher_user_id)
+             DO UPDATE SET body = EXCLUDED.body, updated_at = CURRENT_TIMESTAMP
+             RETURNING id'
+        );
+        $stmt->execute([
+            'student_id'      => $studentId,
+            'exam_date'       => $examDate,
+            'teacher_user_id' => $teacherUserId,
+            'body'            => $body,
+        ]);
+        $commentId = (int) $stmt->fetchColumn();
+
+        $fetch = $db->prepare(
+            "SELECT ec.id, ec.student_id, ec.exam_date, ec.teacher_user_id,
+                    COALESCE(i.name, u.full_name, u.username) AS author_name,
+                    u.role AS author_role,
+                    ec.body, ec.created_at, ec.updated_at
+             FROM exam_comments ec
+             JOIN users u ON ec.teacher_user_id = u.id
+             LEFT JOIN instructors i ON u.role = 'teacher' AND u.linked_id = i.id
+             WHERE ec.id = :id
+             LIMIT 1"
+        );
+        $fetch->execute(['id' => $commentId]);
+        return $fetch->fetch() ?: [];
     }
 
     public static function findAll(array $filters, int $page, int $perPage): array

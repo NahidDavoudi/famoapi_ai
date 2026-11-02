@@ -66,6 +66,7 @@ return function (App $app) {
     $requireAdmin = new Authorization('admin');
     $requireSupporter = new Authorization('supporter');
     $requireTeacher = new Authorization('teacher');
+    $requireStaff = new Authorization('staff');
 
     $authController = new AuthController(new AuthService());
     $telegramAuthController = new TelegramAuthController(new TelegramAuthService());
@@ -298,6 +299,7 @@ return function (App $app) {
     $app->get('/api/v1/exams/dates', [$examController, 'getDates'])->add($authMiddleware);
     $app->get('/api/v1/exams/students', [$examController, 'getStudents'])->add($requireSupporter)->add($authMiddleware);
     $app->get('/api/v1/exams/details', [$examController, 'getDetails'])->add($authMiddleware);
+    $app->put('/api/v1/exams/comments', [$examController, 'upsertComment'])->add($requireStaff)->add($authMiddleware);
     $app->post('/api/v1/exams', [$examController, 'save'])->add($requireAdmin)->add($authMiddleware);
 
     // Weekly Plans (temporary: admin-only while the planner is being migrated)

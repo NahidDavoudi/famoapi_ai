@@ -143,4 +143,49 @@ class ExamController
         ], JSON_UNESCAPED_UNICODE));
         return $response;
     }
+
+    public function upsertComment(Request $request, Response $response): Response
+    {
+        $decoded = $request->getAttribute('user');
+        $body = $request->getParsedBody() ?? [];
+        $commentBody = $body['body'] ?? $body['comment'] ?? null;
+
+        $validator = new \App\Core\Validator();
+        $validator
+            ->required('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null)
+            ->positiveInt('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null)
+            ->required('exam_date', 'تاریخ آزمون', $body['exam_date'] ?? null)
+            ->date('exam_date', 'تاریخ آزمون', $body['exam_date'] ?? null)
+            ->required('body', 'متن نظر', $commentBody)
+            ->string('body', 'متن نظر', $commentBody)
+            ->maxLength('body', 'متن نظر', $commentBody, 2000);
+
+        if (!$validator->passes()) {
+            $response->getBody()->write(json_encode([
+                'success' => false, 'data' => null, 'pagination' => null,
+                'error' => ['code' => 'VALIDATION_ERROR', 'message' => $validator->firstError()],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        try {
+            $result = $this->service->upsertComment(
+                (int) $body['student_id'],
+                (string) $body['exam_date'],
+                (int) $decoded->sub,
+                (string) $commentBody
+            );
+        } catch (\App\Core\ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success' => false, 'data' => null, 'pagination' => null,
+                'error' => ['code' => $e->getErrorCode(), 'message' => $e->getMessage()],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success' => true, 'data' => $result, 'pagination' => null, 'error' => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
 }

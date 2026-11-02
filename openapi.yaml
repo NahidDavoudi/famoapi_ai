@@ -3029,12 +3029,62 @@ paths:
                                   type: number
                           avg_percentage:
                             type: number
+                          comments:
+                            type: array
+                            description: نظرات ثبت‌شده توسط اساتید/کادر آموزشی برای این دانش‌آموز در این آزمون
+                            items:
+                              $ref: "#/components/schemas/ExamComment"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/v1/exams/comments:
+    put:
+      tags: [Exams]
+      summary: Upsert a teacher/staff comment on a student's exam result
+      description: >
+        Creates or updates a comment for `(student_id, exam_date, teacher_user_id)`
+        using PostgreSQL `ON CONFLICT (student_id, exam_date, teacher_user_id) DO UPDATE`.
+        Accessible by `teacher`, `supporter`, and `admin` roles.
+      operationId: examUpsertComment
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExamCommentUpsertRequest"
+      responses:
+        "200":
+          description: Comment upserted successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          comment:
+                            $ref: "#/components/schemas/ExamComment"
+                          comments:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/ExamComment"
+                        required: [comment, comments]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
 
   # ───────────────────── Weekly Plans ─────────────────────
   /api/v1/plans:
@@ -7409,6 +7459,53 @@ components:
           format: password
           description: رمز عبور فعلی (الزامی هنگام تغییر شماره تلفن برای نقش‌های دارای 2FA یعنی admin/supporter/teacher)
       required: [phone]
+
+    ExamComment:
+      type: object
+      properties:
+        id:
+          type: integer
+        student_id:
+          type: integer
+        exam_date:
+          type: string
+          format: date
+        teacher_user_id:
+          type: integer
+        author_name:
+          type: string
+          description: نام نویسنده نظر (استاد، پشتیبان یا ادمین)
+        author_role:
+          type: string
+          enum: [teacher, supporter, admin]
+        body:
+          type: string
+          description: متن نظر ثبت‌شده روی نتیجه آزمون
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, student_id, exam_date, teacher_user_id, body, created_at, updated_at]
+
+    ExamCommentUpsertRequest:
+      type: object
+      properties:
+        student_id:
+          type: integer
+          minimum: 1
+          description: شناسه دانش‌آموز
+        exam_date:
+          type: string
+          format: date
+          description: تاریخ آزمون (YYYY-MM-DD)
+        body:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: متن نظر استاد یا پشتیبان
+      required: [student_id, exam_date, body]
 
   responses:
     BadRequest:

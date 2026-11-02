@@ -20,3 +20,5 @@ SET TIME ZONE 'UTC';
 \i database/migrations/003_courses_blog_and_public.sql
 \i database/migrations/004_attendance_and_tutoring.sql
 \i database/migrations/005_telegram_bot_threads_and_outbox.sql
+\i database/migrations/006_exam_comments_and_share_links.sql
+

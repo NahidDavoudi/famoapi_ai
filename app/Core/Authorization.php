@@ -23,6 +23,10 @@ class Authorization implements MiddlewareInterface
             'roles'   => ['teacher'],
             'message' => 'دسترسی محدود به مدرسان',
         ],
+        'staff' => [
+            'roles'   => ['admin', 'supporter', 'teacher'],
+            'message' => 'دسترسی محدود به اساتید، پشتیبانان و مدیران',
+        ],
     ];
 
     private string $requiredRole;

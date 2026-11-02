@@ -387,6 +387,13 @@ The repository maintains two OpenAPI 3.1.0 specifications:
 | `PATCH` / `PUT` | `/api/v1/subscriptions/{id}/status` | Supporter / Admin | Update subscription status (`pending`, `active`, `expired`, `cancelled`, `rejected`) & `note` |
 | `DELETE` | `/api/v1/subscriptions/{id}` | Authenticated (`StudentScope`) | Delete subscription (students can cancel/delete their own `pending` subscriptions) |
 
+### Exam Results & Teacher Comments (`Exams`)
+
+| Method | Endpoint | Access / Role | Description |
+| :---: | :--- | :--- | :--- |
+| `GET` | `/api/v1/exams/details` | Authenticated (`StudentScope`) | Per-subject exam breakdown + `avg_percentage` + teacher/staff `comments` array |
+| `PUT` | `/api/v1/exams/comments` | Teacher / Supporter / Admin | Upsert comment (`student_id`, `exam_date`, `body`) on `(student_id, exam_date, teacher_user_id)` |
+
 ### Standard JSON Response Envelope
 
 Every endpoint returns a consistent JSON structure:

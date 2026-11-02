@@ -477,7 +477,49 @@ export function createAppContext() {
     },
   ];
 
-  return { redis, cache, rateLimiter, blogPosts, users, admins, supporters, students, instructors };
+  const examResults = [
+    {
+      id: 1,
+      student_id: 20,
+      exam_date: '2026-10-25',
+      subject: 'ریاضی',
+      chapter: 'مشتق',
+      total_q: 20,
+      correct: 15,
+      wrong: 3,
+      skipped: 2,
+      percentage: 70.0,
+    },
+    {
+      id: 2,
+      student_id: 20,
+      exam_date: '2026-10-25',
+      subject: 'فیزیک',
+      chapter: 'دینامیک',
+      total_q: 20,
+      correct: 12,
+      wrong: 0,
+      skipped: 8,
+      percentage: 60.0,
+    },
+  ];
+  const examComments = [];
+  const examResultLinks = [];
+
+  return {
+    redis,
+    cache,
+    rateLimiter,
+    blogPosts,
+    users,
+    admins,
+    supporters,
+    students,
+    instructors,
+    examResults,
+    examComments,
+    examResultLinks,
+  };
 }
 
 export function handleAuthEndpoint(ctx, method, pathname, body = {}, authUser = null) {
@@ -687,6 +729,252 @@ export function handleAuthEndpoint(ctx, method, pathname, body = {}, authUser = 
           full_name: user.full_name,
           student_id: user.role === 'student' && user.linked_id > 0 ? user.linked_id : null,
           instructor_id: user.role === 'teacher' && user.linked_id > 0 ? user.linked_id : null,
+        },
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  return {
+    status: 404,
+    body: {
+      success: false,
+      data: null,
+      pagination: null,
+      error: { code: 'NOT_FOUND', message: 'مسیر یافت نشد' },
+    },
+  };
+}
+
+export function handleExamEndpoint(ctx, method, urlObj, body = {}, authUser = null) {
+  if (!authUser || !authUser.sub) {
+    return {
+      status: 401,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'AUTH_ERROR', message: 'توکن احراز هویت ارسال نشده است' },
+      },
+    };
+  }
+
+  const pathname = urlObj.pathname;
+  const user = ctx.users.find((u) => u.id === Number(authUser.sub));
+  if (!user) {
+    return {
+      status: 404,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'NOT_FOUND', message: 'کاربر یافت نشد' },
+      },
+    };
+  }
+
+  const formatCommentsFor = (studentId, examDate) => {
+    return ctx.examComments
+      .filter((c) => c.student_id === studentId && c.exam_date === examDate)
+      .sort((a, b) => b.id - a.id)
+      .map((c) => {
+        const author = ctx.users.find((u) => u.id === c.teacher_user_id);
+        let authorName = author?.full_name || author?.username || '';
+        if (author?.role === 'teacher' && author?.linked_id > 0) {
+          const inst = ctx.instructors.find((i) => i.id === author.linked_id);
+          if (inst?.name) authorName = inst.name;
+        }
+        return {
+          id: c.id,
+          student_id: c.student_id,
+          exam_date: c.exam_date,
+          teacher_user_id: c.teacher_user_id,
+          author_name: authorName,
+          author_role: author?.role || 'teacher',
+          body: c.body,
+          created_at: c.created_at,
+          updated_at: c.updated_at,
+        };
+      });
+  };
+
+  if (method === 'GET' && pathname === '/api/v1/exams/details') {
+    const examDate = urlObj.searchParams.get('exam_date') || '';
+    const requestedStudentId = Number(urlObj.searchParams.get('student_id') || 0);
+
+    let studentId = requestedStudentId;
+    if (user.role === 'student') {
+      const selfId = Number(user.linked_id || 0);
+      if (requestedStudentId > 0 && requestedStudentId !== selfId) {
+        return {
+          status: 403,
+          body: {
+            success: false,
+            data: null,
+            pagination: null,
+            error: { code: 'FORBIDDEN', message: 'دسترسی غیرمجاز' },
+          },
+        };
+      }
+      studentId = selfId;
+    }
+
+    if (!examDate || studentId <= 0) {
+      return {
+        status: 400,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'پارامترها ناقص است' },
+        },
+      };
+    }
+
+    const student = ctx.students.find((s) => s.id === studentId);
+    if (!student) {
+      return {
+        status: 404,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'NOT_FOUND', message: 'دانش‌آموز یافت نشد' },
+        },
+      };
+    }
+
+    const subjects = ctx.examResults
+      .filter((r) => r.student_id === studentId && r.exam_date === examDate)
+      .map((r) => ({
+        subject: r.subject,
+        chapter: r.chapter,
+        total_q: r.total_q,
+        correct: r.correct,
+        wrong: r.wrong,
+        skipped: r.skipped,
+        percentage: r.percentage,
+      }));
+
+    const avg =
+      subjects.length > 0
+        ? Number((subjects.reduce((acc, s) => acc + s.percentage, 0) / subjects.length).toFixed(1))
+        : 0;
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: {
+          student: {
+            id: student.id,
+            name: student.name,
+            grade: student.grade,
+            field: student.field,
+          },
+          subjects,
+          avg_percentage: avg,
+          comments: formatCommentsFor(studentId, examDate),
+        },
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  if (method === 'PUT' && pathname === '/api/v1/exams/comments') {
+    if (!['admin', 'supporter', 'teacher'].includes(user.role)) {
+      return {
+        status: 403,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'FORBIDDEN', message: 'دسترسی محدود به اساتید، پشتیبانان و مدیران' },
+        },
+      };
+    }
+
+    const studentId = Number(body?.student_id);
+    const examDate = typeof body?.exam_date === 'string' ? body.exam_date.trim() : '';
+    const commentText = typeof (body?.body ?? body?.comment) === 'string' ? (body.body ?? body.comment).trim() : '';
+
+    if (
+      !Number.isInteger(studentId) ||
+      studentId <= 0 ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(examDate) ||
+      !commentText ||
+      commentText.length > 2000
+    ) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'داده‌های ناقص یا نامعتبر است' },
+        },
+      };
+    }
+
+    const student = ctx.students.find((s) => s.id === studentId);
+    if (!student) {
+      return {
+        status: 404,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'NOT_FOUND', message: 'دانش‌آموز یافت نشد' },
+        },
+      };
+    }
+
+    const hasExam = ctx.examResults.some((r) => r.student_id === studentId && r.exam_date === examDate);
+    if (!hasExam) {
+      return {
+        status: 404,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'NOT_FOUND', message: 'نتیجه آزمونی برای این دانش‌آموز در این تاریخ ثبت نشده است' },
+        },
+      };
+    }
+
+    const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    let existing = ctx.examComments.find(
+      (c) => c.student_id === studentId && c.exam_date === examDate && c.teacher_user_id === user.id
+    );
+
+    if (existing) {
+      existing.body = commentText;
+      existing.updated_at = now;
+    } else {
+      existing = {
+        id: ctx.examComments.length + 1,
+        student_id: studentId,
+        exam_date: examDate,
+        teacher_user_id: user.id,
+        body: commentText,
+        created_at: now,
+        updated_at: now,
+      };
+      ctx.examComments.push(existing);
+    }
+
+    const allComments = formatCommentsFor(studentId, examDate);
+    const savedComment = allComments.find((c) => c.id === existing.id);
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: {
+          comment: savedComment,
+          comments: allComments,
         },
         pagination: null,
         error: null,

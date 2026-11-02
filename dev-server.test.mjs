@@ -6,6 +6,7 @@ import {
   handlePublicEndpoint,
   handleHealthEndpoint,
   handleAuthEndpoint,
+  handleExamEndpoint,
 } from './dev-server.mjs';
 
 test('Health endpoint (/health) returns current database and Redis connection status', () => {
@@ -137,6 +138,7 @@ test('PostgreSQL schema, migrations, and database configuration are properly nor
     './database/migrations/003_courses_blog_and_public.sql',
     './database/migrations/004_attendance_and_tutoring.sql',
     './database/migrations/005_telegram_bot_threads_and_outbox.sql',
+    './database/migrations/006_exam_comments_and_share_links.sql',
   ];
   const combinedMigrationsSql = migrationFiles
     .map((rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8'))
@@ -377,5 +379,134 @@ test('Phase 1 Step 1 — Auth change-password and profile endpoints (PHP impleme
   assert.equal(teacherOk.body.data.full_name, 'استاد ریاضی جدید');
   assert.equal(teacherOk.body.data.instructor_id, 30);
   assert.equal(ctx.instructors.find((i) => i.id === 30).name, 'استاد ریاضی جدید');
+});
+
+test('Exam Comments & Share Links Stage 1 — Migration 006, PUT /api/v1/exams/comments, and GET /api/v1/exams/details comments field', () => {
+  const mig006 = fs.readFileSync(
+    new URL('./database/migrations/006_exam_comments_and_share_links.sql', import.meta.url),
+    'utf8'
+  );
+  const schemaSql = fs.readFileSync(new URL('./database/schema.postgres.sql', import.meta.url), 'utf8');
+  const authPhp = fs.readFileSync(new URL('./app/Core/Authorization.php', import.meta.url), 'utf8');
+  const examResPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamResult.php', import.meta.url), 'utf8');
+  const examSvcPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamService.php', import.meta.url), 'utf8');
+  const examCtrlPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamController.php', import.meta.url), 'utf8');
+  const routesPhp = fs.readFileSync(new URL('./routes/api.php', import.meta.url), 'utf8');
+  const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
+  const readmeMd = fs.readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+
+  // 1. Verify Migration 006 (exam_comments & exam_result_links)
+  assert.match(mig006, /CREATE TABLE IF NOT EXISTS exam_comments/);
+  assert.match(
+    mig006,
+    /CONSTRAINT uk_exam_comments_student_date_teacher UNIQUE \(student_id,\s*exam_date,\s*teacher_user_id\)/
+  );
+  assert.match(mig006, /CREATE TABLE IF NOT EXISTS exam_result_links/);
+  assert.match(mig006, /token_hash\s+CHAR\(64\)\s+NOT NULL UNIQUE/);
+  assert.match(mig006, /expires_at\s+TIMESTAMP NOT NULL/);
+  assert.match(mig006, /revoked_at\s+TIMESTAMP DEFAULT NULL/);
+  assert.match(mig006, /sms_sent_at\s+TIMESTAMP DEFAULT NULL/);
+  assert.match(mig006, /created_by\s+BIGINT/);
+  assert.match(mig006, /last_viewed_at\s+TIMESTAMP DEFAULT NULL/);
+  assert.match(schemaSql, /006_exam_comments_and_share_links\.sql/);
+
+  // 2. Verify PHP Authorization, Model, Service, Controller, and Routes
+  assert.match(authPhp, /'staff'\s*=>\s*\[\s*'roles'\s*=>\s*\['admin',\s*'supporter',\s*'teacher'\]/);
+  assert.match(examResPhp, /ON CONFLICT \(student_id, exam_date, teacher_user_id\)/);
+  assert.match(examResPhp, /'comments'\s*=>\s*\$comments/);
+  assert.match(examSvcPhp, /public function upsertComment\(int \$studentId,\s*string \$examDate,\s*int \$teacherUserId,\s*string \$body\): array/);
+  assert.match(examCtrlPhp, /public function upsertComment\(Request \$request,\s*Response \$response\): Response/);
+  assert.match(
+    routesPhp,
+    /\$app->put\('\/api\/v1\/exams\/comments',\s*\[\$examController,\s*'upsertComment'\]\)->add\(\$requireStaff\)->add\(\$authMiddleware\)/
+  );
+
+  // 3. Verify OpenAPI & README
+  assert.match(rootSpec, /\/api\/v1\/exams\/comments:/);
+  assert.match(rootSpec, /operationId:\s*examUpsertComment/);
+  assert.match(rootSpec, /ExamComment:/);
+  assert.match(rootSpec, /ExamCommentUpsertRequest:/);
+  assert.match(readmeMd, /\/api\/v1\/exams\/comments/);
+
+  // 4. Behavioral verification via simulator
+  const ctx = createAppContext();
+  const commentUrl = new URL('http://localhost:3000/api/v1/exams/comments');
+
+  // 4a. Unauthenticated -> 401
+  const unauthRes = handleExamEndpoint(ctx, 'PUT', commentUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+    body: 'نظر تستی',
+  }, null);
+  assert.equal(unauthRes.status, 401);
+
+  // 4b. Student role -> 403 FORBIDDEN
+  const studentRes = handleExamEndpoint(ctx, 'PUT', commentUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+    body: 'نظر دانش‌آموز غیرمجاز',
+  }, { sub: 3, role: 'student' });
+  assert.equal(studentRes.status, 403);
+  assert.equal(studentRes.body.error.code, 'FORBIDDEN');
+
+  // 4c. Validation error (empty body) -> 422
+  const invalidRes = handleExamEndpoint(ctx, 'PUT', commentUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+    body: '   ',
+  }, { sub: 4, role: 'teacher' });
+  assert.equal(invalidRes.status, 422);
+  assert.equal(invalidRes.body.error.code, 'VALIDATION_ERROR');
+
+  // 4d. Missing exam on date -> 404 NOT_FOUND
+  const missingExamRes = handleExamEndpoint(ctx, 'PUT', commentUrl, {
+    student_id: 20,
+    exam_date: '2026-01-01',
+    body: 'نظر روی آزمون ناموجود',
+  }, { sub: 4, role: 'teacher' });
+  assert.equal(missingExamRes.status, 404);
+  assert.equal(missingExamRes.body.error.code, 'NOT_FOUND');
+
+  // 4e. Teacher creates comment -> 200
+  const teacherComment1 = handleExamEndpoint(ctx, 'PUT', commentUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+    body: 'در درس ریاضی پیشرفت بسیار خوبی داشته‌اید.',
+  }, { sub: 4, role: 'teacher' });
+  assert.equal(teacherComment1.status, 200);
+  assert.equal(teacherComment1.body.data.comment.author_name, 'استاد نمونه');
+  assert.equal(teacherComment1.body.data.comment.author_role, 'teacher');
+  assert.equal(teacherComment1.body.data.comments.length, 1);
+
+  // 4f. Same teacher updates comment on same (student_id, exam_date) -> upserts in place (still 1 comment from teacher)
+  const teacherComment2 = handleExamEndpoint(ctx, 'PUT', commentUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+    body: 'در درس ریاضی و فیزیک پیشرفت عالی داشته‌اید؛ تست‌های زمان‌دار بیشتری کار کنید.',
+  }, { sub: 4, role: 'teacher' });
+  assert.equal(teacherComment2.status, 200);
+  assert.equal(teacherComment2.body.data.comments.length, 1);
+  assert.equal(
+    teacherComment2.body.data.comment.body,
+    'در درس ریاضی و فیزیک پیشرفت عالی داشته‌اید؛ تست‌های زمان‌دار بیشتری کار کنید.'
+  );
+
+  // 4g. Supporter also adds a comment on the same exam -> 2 comments total
+  const supporterComment = handleExamEndpoint(ctx, 'PUT', commentUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+    body: 'پیگیری برنامه هفتگی طبق زمان‌بندی انجام شد.',
+  }, { sub: 2, role: 'supporter' });
+  assert.equal(supporterComment.status, 200);
+  assert.equal(supporterComment.body.data.comments.length, 2);
+
+  // 4h. GET /api/v1/exams/details returns backward-compatible student, subjects, avg_percentage, AND comments
+  const detailsUrl = new URL('http://localhost:3000/api/v1/exams/details?student_id=20&exam_date=2026-10-25');
+  const detailsRes = handleExamEndpoint(ctx, 'GET', detailsUrl, {}, { sub: 3, role: 'student' });
+  assert.equal(detailsRes.status, 200);
+  assert.equal(detailsRes.body.data.student.id, 20);
+  assert.equal(detailsRes.body.data.subjects.length, 2);
+  assert.equal(detailsRes.body.data.avg_percentage, 65);
+  assert.equal(detailsRes.body.data.comments.length, 2);
 });
 
