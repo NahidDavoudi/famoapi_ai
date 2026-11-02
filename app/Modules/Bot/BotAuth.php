@@ -26,16 +26,26 @@ final class BotAuth implements MiddlewareInterface
 {
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
-        $role      = strtolower(trim($request->getHeaderLine('X-Bot-Role')));
-        $accountId = (int) $request->getHeaderLine('X-Bot-Account-Id');
-        $chatId    = (int) $request->getHeaderLine('X-Telegram-Chat-Id');
-        $name      = trim($request->getHeaderLine('X-Bot-Account-Name'));
+        $role       = strtolower(trim($request->getHeaderLine('X-Bot-Role')));
+        $accountId  = (int) $request->getHeaderLine('X-Bot-Account-Id');
+        $tgUserId   = (int) $request->getHeaderLine('X-Telegram-User-Id');
+        $chatId     = (int) $request->getHeaderLine('X-Telegram-Chat-Id');
+        $name       = trim($request->getHeaderLine('X-Bot-Account-Name'));
 
-        if (!in_array($role, ['student', 'supporter', 'admin'], true)) {
+        if (!in_array($role, BotActor::ROLES, true)) {
             return $this->fail('BOT_ACTOR_MISSING', 'نقش ربات نامعتبر است', 400);
         }
 
-        // Fallback: اگر ربات account_id نفرستاده، از chat_id پیدا کن.
+        if ($accountId <= 0 && $tgUserId > 0) {
+            $link = TelegramLink::findByTelegramUserAndRole($tgUserId, $role);
+            if ($link) {
+                $accountId = (int) $link['account_id'];
+                if ($chatId <= 0) {
+                    $chatId = (int) $link['chat_id'];
+                }
+            }
+        }
+
         if ($accountId <= 0 && $chatId > 0) {
             $dbRoles = $role === 'supporter' ? ['supporter', 'admin'] : [$role];
             $link = TelegramLink::findByChatIdAndRoles($chatId, $dbRoles);
@@ -51,11 +61,27 @@ final class BotAuth implements MiddlewareInterface
             return $this->fail('BOT_NOT_LINKED', 'این حساب تلگرام به کاربری متصل نیست', 401);
         }
 
+        if ($role === 'student') {
+            $student = \App\Modules\Students\Student::findById($accountId);
+            if (!$student || (int) ($student['is_active'] ?? 0) !== 1) {
+                return $this->fail('BOT_ACCOUNT_INACTIVE', 'حساب دانش‌آموز غیرفعال است', 403);
+            }
+        } elseif ($role === 'supporter') {
+            if (!\App\Modules\Supporters\Supporter::isAccountActive($accountId)) {
+                return $this->fail('BOT_ACCOUNT_INACTIVE', 'حساب پشتیبان غیرفعال است', 403);
+            }
+        } elseif ($role === 'admin') {
+            if (!\App\Modules\Admins\Admin::isAccountActive($accountId)) {
+                return $this->fail('BOT_ACCOUNT_INACTIVE', 'حساب مدیر غیرفعال است', 403);
+            }
+        }
+
         return $handler->handle($request->withAttribute('bot_actor', [
-            'role'       => $role,
-            'account_id' => $accountId,
-            'name'       => $name,
-            'chat_id'    => $chatId,
+            'role'             => $role,
+            'account_id'       => $accountId,
+            'telegram_user_id' => $tgUserId,
+            'name'             => $name,
+            'chat_id'          => $chatId,
         ]));
     }
 

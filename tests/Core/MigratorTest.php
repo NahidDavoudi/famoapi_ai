@@ -30,4 +30,22 @@ class MigratorTest extends TestCase
 
         self::assertSame(["INSERT INTO notes VALUES ('it\\'s; fine')", 'SELECT 1'], $statements);
     }
+
+    public function testSplitStatementsPreservesPostgresDollarQuotedFunctions(): void
+    {
+        $sql = <<<'SQL'
+            CREATE OR REPLACE FUNCTION calc_response() RETURNS TRIGGER AS $$
+            BEGIN
+                NEW.response_time_minutes := 10;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            CREATE TRIGGER trg_calc BEFORE UPDATE ON reports_status FOR EACH ROW EXECUTE FUNCTION calc_response();
+            SQL;
+
+        $statements = Migrator::splitStatements($sql);
+        self::assertCount(2, $statements);
+        self::assertStringContainsString('NEW.response_time_minutes := 10;', $statements[0]);
+        self::assertStringStartsWith('CREATE TRIGGER trg_calc', $statements[1]);
+    }
 }

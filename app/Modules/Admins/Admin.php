@@ -6,17 +6,24 @@ namespace App\Modules\Admins;
 use App\Core\Database;
 
 /**
- * Model for the `admins` table. An admin is considered active while its row
- * exists; the table carries no is_active flag and the linked users row is the
- * actual credential holder.
+ * Model for the `admins` table and its linked `users` credential row.
  */
 class Admin
 {
     public static function findById(int $id): ?array
     {
-        $stmt = Database::getConnection()->prepare(
-            'SELECT * FROM users WHERE id = :id LIMIT 1'
-        );
+        $db = Database::getConnection();
+        try {
+            $stmt = $db->prepare('SELECT * FROM admins WHERE id = :id LIMIT 1');
+            $stmt->execute(['id' => $id]);
+            $admin = $stmt->fetch();
+            if ($admin) {
+                return $admin;
+            }
+        } catch (\Throwable) {
+        }
+
+        $stmt = $db->prepare("SELECT *, COALESCE(full_name, username) AS name FROM users WHERE id = :id AND role = 'admin' LIMIT 1");
         $stmt->execute(['id' => $id]);
         $row = $stmt->fetch();
 
@@ -25,6 +32,26 @@ class Admin
 
     public static function isAccountActive(int $id): bool
     {
-        return self::findById($id) !== null;
+        $admin = self::findById($id);
+        if (!$admin) {
+            return false;
+        }
+        if (isset($admin['is_active']) && (int) $admin['is_active'] === 0) {
+            return false;
+        }
+
+        $db = Database::getConnection();
+        try {
+            $stmt = $db->prepare("SELECT is_active FROM users WHERE role = 'admin' AND (linked_id = :lid OR id = :uid) LIMIT 1");
+            $stmt->execute(['lid' => $id, 'uid' => $id]);
+            $flag = $stmt->fetchColumn();
+            if ($flag !== false && (int) $flag === 0) {
+                return false;
+            }
+        } catch (\Throwable) {
+        }
+
+        return true;
     }
 }
+

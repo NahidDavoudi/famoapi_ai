@@ -1,36 +1,42 @@
 <?php
+
 namespace App\Modules\Subscription;
 
 use App\Core\Database;
-class Subscription {
+
+class Subscription
+{
     public static function findAll(): array
     {
         $pdo = Database::getConnection();
-        $stmt = $pdo->prepare("select * from subscriptions where 1");
+        $stmt = $pdo->prepare('SELECT * FROM subscriptions ORDER BY id DESC');
         $stmt->execute();
         return $stmt->fetchAll();
     }
-    public static function findById(int $id): array
+
+    public static function findById(int $id): ?array
     {
         $pdo = Database::getConnection();
-        $stmt = $pdo->prepare("select * from subscriptions where id = :id");
-        $stmt->bindValue(':id', $id);
+        $stmt = $pdo->prepare('SELECT * FROM subscriptions WHERE id = :id LIMIT 1');
+        $stmt->bindValue(':id', $id, \PDO::PARAM_INT);
         $stmt->execute();
-        return $stmt->fetch();
-    }
-    public static function create( array $data): int
-    {
-        $pdo = Database::getConnection();
-        $stmt = $pdo->prepare("INSERT INTO `subscriptions`(
-            `course_id`,
-            `student_id`,
-            `note`,
-            `end_at`
-        )
-        VALUES(?,?,?,?)");
-        $stmt->execute([$data['course_id'], $data['student_id'], $data['note'], $data['end_at']]);
-        $id = $pdo->lastInsertId();
-        return $id;
+        $row = $stmt->fetch();
+        return $row ?: null;
     }
 
+    public static function create(array $data): int
+    {
+        $pdo = Database::getConnection();
+        $stmt = $pdo->prepare(
+            'INSERT INTO subscriptions (course_id, student_id, note, end_at)
+             VALUES (:course_id, :student_id, :note, :end_at)'
+        );
+        $stmt->execute([
+            'course_id'  => (int) $data['course_id'],
+            'student_id' => (int) $data['student_id'],
+            'note'       => $data['note'] ?? null,
+            'end_at'     => $data['end_at'] ?? null,
+        ]);
+        return (int) $pdo->lastInsertId();
+    }
 }

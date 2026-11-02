@@ -273,12 +273,25 @@ class Supporter
     private static function hasUsersActiveFlag(): bool
     {
         if (self::$usersActiveFlag === null) {
-            $stmt = Database::getConnection()->prepare(
-                "SELECT COUNT(*) FROM information_schema.COLUMNS
-                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'is_active'"
-            );
-            $stmt->execute();
-            self::$usersActiveFlag = (int) $stmt->fetchColumn() > 0;
+            try {
+                $pdo = Database::getConnection();
+                $driver = strtolower((string) $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME));
+                if ($driver === 'mysql') {
+                    $stmt = $pdo->prepare(
+                        "SELECT COUNT(*) FROM information_schema.COLUMNS
+                         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'is_active'"
+                    );
+                } else {
+                    $stmt = $pdo->prepare(
+                        "SELECT COUNT(*) FROM information_schema.columns
+                         WHERE table_schema = current_schema() AND table_name = 'users' AND column_name = 'is_active'"
+                    );
+                }
+                $stmt->execute();
+                self::$usersActiveFlag = (int) $stmt->fetchColumn() > 0;
+            } catch (\Throwable) {
+                self::$usersActiveFlag = true;
+            }
         }
 
         return self::$usersActiveFlag;

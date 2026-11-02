@@ -125,11 +125,13 @@ class SupporterService
             }
 
             $stmt = $db->prepare(
-                'INSERT INTO users (username, password_hash, role, linked_id)
-                 VALUES (:username, :password_hash, :role, :linked_id)'
+                'INSERT INTO users (username, phone, full_name, password_hash, role, linked_id)
+                 VALUES (:username, :phone, :full_name, :password_hash, :role, :linked_id)'
             );
             $stmt->execute([
                 'username'      => $data['phone'] ?? $data['name'],
+                'phone'         => $data['phone'] ?? null,
+                'full_name'     => $data['name'] ?? null,
                 'password_hash' => password_hash('1234', PASSWORD_DEFAULT),
                 'role'          => 'supporter',
                 'linked_id'     => $supporterId,
@@ -214,6 +216,18 @@ class SupporterService
                 }
                 $avatarPath = Storage::upload($avatarFile, 'supporters', $id);
                 Supporter::update($id, ['avatar' => $avatarPath]);
+            }
+
+            if (array_key_exists('phone', $data) && $data['phone'] !== null) {
+                $stmt = $db->prepare(
+                    'UPDATE users SET username = :username, phone = :phone WHERE linked_id = :linked_id AND role = :role'
+                );
+                $stmt->execute([
+                    'username'  => $data['phone'],
+                    'phone'     => $data['phone'],
+                    'linked_id' => $id,
+                    'role'      => 'supporter',
+                ]);
             }
 
             if (isset($data['password'])) {

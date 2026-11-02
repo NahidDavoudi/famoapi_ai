@@ -26,7 +26,7 @@ class MessageAttachment
         $stmt = $db->prepare(
             'INSERT INTO report_message_attachments
                 (message_id, kind, tg_file_id, file_name, mime_type, file_size, created_at)
-             VALUES (:message_id, :kind, :tg_file_id, :file_name, :mime_type, :file_size, UTC_TIMESTAMP())'
+             VALUES (:message_id, :kind, :tg_file_id, :file_name, :mime_type, :file_size, CURRENT_TIMESTAMP)'
         );
 
         foreach ($attachments as $attachment) {

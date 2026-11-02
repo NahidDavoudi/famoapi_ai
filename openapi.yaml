@@ -173,10 +173,10 @@ paths:
                           user_id:
                             type: integer
                             description: شناسه کاربر
-                          email_mask:
+                          phone_mask:
                             type: string
                             nullable: true
-                            description: ایمیل ماسک شده (در صورت فعال بودن 2FA)
+                            description: شماره موبایل ماسک شده (در صورت فعال بودن 2FA)
                           user:
                             type: object
                             properties:
@@ -184,6 +184,9 @@ paths:
                                 type: integer
                               username:
                                 type: string
+                              phone:
+                                type: string
+                                nullable: true
                               role:
                                 type: string
                                 enum: [admin, supporter, student, teacher]
@@ -192,7 +195,7 @@ paths:
                                 nullable: true
                                 description: شناسه دانش‌آموز متصل (فقط برای نقش student)
         "202":
-          description: 2FA required (admin/supporter)
+          description: 2FA required (admin/supporter/teacher)
           content:
             application/json:
               schema:
@@ -208,9 +211,9 @@ paths:
                           user_id:
                             type: integer
                             description: شناسه کاربر برای مرحله دوم ورود
-                          email_mask:
+                          phone_mask:
                             type: string
-                            description: ایمیل ماسک شده کاربر
+                            description: شماره موبایل ماسک شده کاربر
         "401":
           $ref: "#/components/responses/Unauthorized"
         "422":
@@ -233,7 +236,7 @@ paths:
                   description: شناسه کاربر برگشتی از مرحله اول ورود
                 code:
                   type: string
-                  description: کد ۶ رقمی ارسال شده به ایمیل
+                  description: کد ۶ رقمی ارسال شده از طریق پیامک (SMS)
               required: [user_id, code]
       responses:
         "200":

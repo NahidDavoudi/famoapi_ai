@@ -40,10 +40,13 @@ class Stats
     public static function assignedCountsBySupporter(): array
     {
         $stmt = Database::getConnection()->query(
-            'SELECT supporter_id, COUNT(*) AS total
-             FROM students
-             WHERE supporter_id IS NOT NULL AND is_active = 1
-             GROUP BY supporter_id'
+            'SELECT COALESCE(a.supporter_id, s.supporter_id) AS supporter_id, COUNT(*) AS total
+             FROM students s
+             LEFT JOIN student_supporter_assignments a
+               ON a.student_id = s.id AND a.is_active = 1
+             WHERE s.is_active = 1
+               AND COALESCE(a.supporter_id, s.supporter_id) IS NOT NULL
+             GROUP BY COALESCE(a.supporter_id, s.supporter_id)'
         );
 
         $counts = [];

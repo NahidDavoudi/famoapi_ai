@@ -92,7 +92,7 @@ class TelegramAuthService
 
         $claims = TelegramTicket::validate($ticket);
 
-        $user = User::findByUsername($username);
+        $user = User::findByUsername($username) ?? User::findByPhone($username);
         if (!$user || !password_verify($password, (string) ($user['password_hash'] ?? ''))) {
             throw new ApiException('نام کاربری یا رمز عبور اشتباه است', 401, 'AUTH_ERROR');
         }
@@ -108,7 +108,8 @@ class TelegramAuthService
         $tgUserId = (int) ($claims->tg_user_id ?? 0);
 
         if ($role === 'supporter' || $role === 'admin') {
-            $challenge = $this->issueSmsChallenge($claims, (int) $user['id'], (string) $user['username'], $ip);
+            $mobile = !empty($user['phone']) ? (string) $user['phone'] : (string) $user['username'];
+            $challenge = $this->issueSmsChallenge($claims, (int) $user['id'], $mobile, $ip);
 
             return [
                 'requires_2fa' => true,
@@ -271,7 +272,7 @@ class TelegramAuthService
     private function consumeChallenge(string $challengeId): void
     {
         $stmt = Database::getConnection()->prepare(
-            'UPDATE telegram_2fa_challenges SET consumed_at = UTC_TIMESTAMP()
+            'UPDATE telegram_2fa_challenges SET consumed_at = CURRENT_TIMESTAMP
              WHERE challenge_nonce = :n AND consumed_at IS NULL'
         );
         $stmt->execute(['n' => $challengeId]);

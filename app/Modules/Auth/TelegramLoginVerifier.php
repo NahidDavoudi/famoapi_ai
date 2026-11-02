@@ -104,7 +104,7 @@ class TelegramLoginVerifier
                 'expires_at' => gmdate('Y-m-d H:i:s', time() + $ttl),
             ]);
         } catch (\PDOException $e) {
-            if ((string) $e->getCode() === '23000') {
+            if (in_array((string) $e->getCode(), ['23000', '23505'], true)) {
                 throw new ApiException('Telegram auth payload is replayed', 409, 'TELEGRAM_REPLAY', $e);
             }
             throw $e;

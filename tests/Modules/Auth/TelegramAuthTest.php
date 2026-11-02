@@ -572,8 +572,9 @@ class TelegramAuthTest extends TestCase
         $code = $this->latestLoginCode($supporter['userId']);
         $this->assertNotNull($code);
 
+        $expiredAt = gmdate('Y-m-d H:i:s', time() - 60);
         $this->db->exec(
-            "UPDATE telegram_2fa_challenges SET expires_at = UTC_TIMESTAMP() - INTERVAL 60 SECOND
+            "UPDATE telegram_2fa_challenges SET expires_at = '{$expiredAt}'
              WHERE challenge_nonce = " . $this->db->quote($challengeId)
         );
 

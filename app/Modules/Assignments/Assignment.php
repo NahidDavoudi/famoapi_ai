@@ -41,14 +41,21 @@ class Assignment
 
     public static function deactivateActive(int $studentId): int
     {
-        $stmt = Database::getConnection()->prepare(
+        $db = Database::getConnection();
+        $stmt = $db->prepare(
             'UPDATE student_supporter_assignments
-             SET is_active = 0, deactivated_at = UTC_TIMESTAMP()
+             SET is_active = 0, deactivated_at = CURRENT_TIMESTAMP
              WHERE student_id = :student_id AND is_active = 1'
         );
         $stmt->execute(['student_id' => $studentId]);
+        $affected = $stmt->rowCount();
 
-        return $stmt->rowCount();
+        if ($affected > 0) {
+            $db->prepare('UPDATE students SET supporter_id = NULL WHERE id = :student_id')
+               ->execute(['student_id' => $studentId]);
+        }
+
+        return $affected;
     }
 
     public static function insert(int $studentId, int $supporterId, ?int $assignedBy, ?string $note): int
@@ -57,7 +64,7 @@ class Assignment
         $stmt = $db->prepare(
             'INSERT INTO student_supporter_assignments
                 (student_id, supporter_id, is_active, assigned_by, note, assigned_at)
-             VALUES (:student_id, :supporter_id, 1, :assigned_by, :note, UTC_TIMESTAMP())'
+             VALUES (:student_id, :supporter_id, 1, :assigned_by, :note, CURRENT_TIMESTAMP)'
         );
         $stmt->execute([
             'student_id'   => $studentId,
@@ -65,8 +72,12 @@ class Assignment
             'assigned_by'  => $assignedBy,
             'note'         => $note,
         ]);
+        $id = (int) $db->lastInsertId();
 
-        return (int) $db->lastInsertId();
+        $db->prepare('UPDATE students SET supporter_id = :supporter_id WHERE id = :student_id')
+           ->execute(['supporter_id' => $supporterId, 'student_id' => $studentId]);
+
+        return $id;
     }
 
     /**

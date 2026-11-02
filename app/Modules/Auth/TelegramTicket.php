@@ -76,9 +76,9 @@ class TelegramTicket
 
         $stmt = Database::getConnection()->prepare(
             "UPDATE telegram_auth_nonces
-             SET consumed_at = UTC_TIMESTAMP()
+             SET consumed_at = CURRENT_TIMESTAMP
              WHERE kind = 'ticket' AND nonce = :jti
-               AND consumed_at IS NULL AND expires_at > UTC_TIMESTAMP()"
+               AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP"
         );
         $stmt->execute(['jti' => $jti]);
 

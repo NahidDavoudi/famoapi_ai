@@ -7,8 +7,14 @@ $dotenv->load();
 
 date_default_timezone_set('UTC');
 
+$driver = $_ENV['DB_DRIVER'] ?? 'pgsql';
+$port = $_ENV['DB_PORT'] ?? ($driver === 'pgsql' ? '5432' : '3306');
+$dsn = $driver === 'pgsql'
+    ? "pgsql:host={$_ENV['DB_HOST']};port={$port};dbname={$_ENV['DB_NAME']}"
+    : "mysql:host={$_ENV['DB_HOST']};port={$port};dbname={$_ENV['DB_NAME']};charset=utf8mb4";
+
 $db = new \PDO(
-    "mysql:host={$_ENV['DB_HOST']};port={$_ENV['DB_PORT']};dbname={$_ENV['DB_NAME']};charset=utf8mb4",
+    $dsn,
     $_ENV['DB_USER'],
     $_ENV['DB_PASS'],
     [
@@ -17,6 +23,10 @@ $db = new \PDO(
         \PDO::ATTR_EMULATE_PREPARES => false,
     ]
 );
+if ($driver === 'pgsql') {
+    $db->exec("SET NAMES 'UTF8'");
+    $db->exec("SET TIME ZONE 'UTC'");
+}
 
 if (!class_exists('App\\Core\\Database')) {
     require_once __DIR__ . '/../app/Core/Database.php';

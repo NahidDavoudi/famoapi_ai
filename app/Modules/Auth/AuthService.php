@@ -73,7 +73,7 @@ class AuthService
 
         $stmt = $db->prepare(
             'SELECT * FROM login_codes
-             WHERE user_id = ? AND code = ? AND used = 0 AND expires_at > UTC_TIMESTAMP()
+             WHERE user_id = ? AND code = ? AND used = 0 AND expires_at > CURRENT_TIMESTAMP
              ORDER BY id DESC LIMIT 1'
         );
         $stmt->execute([$userId, $code]);
@@ -85,7 +85,7 @@ class AuthService
 
         $stmt = $db->prepare(
             'UPDATE login_codes SET used = 1
-             WHERE id = ? AND used = 0 AND expires_at > UTC_TIMESTAMP()'
+             WHERE id = ? AND used = 0 AND expires_at > CURRENT_TIMESTAMP'
         );
         $stmt->execute([$record['id']]);
         if ($stmt->rowCount() !== 1) {
@@ -102,7 +102,7 @@ class AuthService
 
     public function createStudentAccount(array $data): array
     {
-        if (User::findByUsername($data['phone'])) {
+        if (User::findByPhone($data['phone'])) {
             throw new \App\Core\ApiException('این شماره تلفن قبلاً ثبت‌نام کرده است', 409, 'REGISTRATION_ERROR');
         }
 
@@ -119,6 +119,7 @@ class AuthService
                 'id'        => $userId,
                 'full_name' => $data['name'],
                 'username'  => $data['phone'],
+                'phone'     => $data['phone'],
                 'password'  => $data['password'],
                 'role'      => 'student',
             ]);
@@ -159,7 +160,7 @@ class AuthService
 
     public function login(string $username, string $password, ?string $ip = null): array
     {
-        $user = User::findByUsername($username);
+        $user = User::findByUsername($username) ?? User::findByPhone($username);
 
         if (!$user || !password_verify($password, $user['password_hash'])) {
             throw new \App\Core\ApiException('نام کاربری یا رمز عبور اشتباه است', 401, 'AUTH_ERROR');
@@ -173,7 +174,7 @@ class AuthService
 
         if ($role === 'admin' || $role === 'supporter' || $role === 'teacher') {
             // TODO: برای فعال‌سازی روی سایر نقش‌ها (مثلاً student)، این شرط را گسترش دهید
-            $mobile = $user['username'];
+            $mobile = !empty($user['phone']) ? (string) $user['phone'] : (string) $user['username'];
             $smsWindow = 3600;
             $phoneMax = max(1, (int) ($_ENV['AUTH_SMS_PHONE_HOURLY_MAX'] ?? 5));
             $phoneKey = RateLimiter::key('sms:phone', $mobile);
@@ -237,6 +238,7 @@ class AuthService
             'user'  => [
                 'id'         => (int) $user['id'],
                 'username'   => $user['username'],
+                'phone'      => $user['phone'] ?? $user['username'] ?? null,
                 'role'       => $role,
                 'student_id' => $studentId,
             ],
@@ -269,6 +271,7 @@ class AuthService
         return [
             'id'            => (int) $user['id'],
             'username'      => $user['username'],
+            'phone'         => $user['phone'] ?? $user['username'] ?? null,
             'role'          => $user['role'],
             'full_name'     => $user['full_name'] ?? null,
             'student_id'    => $this->studentIdFor($user),

@@ -718,7 +718,10 @@ export function handleHealthEndpoint(ctx) {
 
 const REQUIRED_PHP_FILES = [
   'public/openapi.yaml',
+  'database/schema.postgres.sql',
+  'config/database.php',
   'app/Core/Database.php',
+  'app/Core/Migrator.php',
   'app/Core/RedisClient.php',
   'app/Core/Cache.php',
   'app/Core/PublicCacheMiddleware.php',

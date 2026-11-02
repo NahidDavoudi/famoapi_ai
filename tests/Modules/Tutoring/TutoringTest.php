@@ -26,10 +26,10 @@ class TutoringTest extends TestCase
     private function cleanup(): void
     {
         $this->db->exec(
-            "DELETE s FROM tutoring_sessions s JOIN tutoring_classrooms c ON c.id = s.classroom_id WHERE c.name LIKE 'TUT_TST_%'"
+            "DELETE FROM tutoring_sessions WHERE classroom_id IN (SELECT id FROM tutoring_classrooms WHERE name LIKE 'TUT_TST_%')"
         );
         $this->db->exec(
-            "DELETE s FROM tutoring_sessions s JOIN students st ON st.id = s.student_id WHERE st.field = '" . self::FIELD . "'"
+            "DELETE FROM tutoring_sessions WHERE student_id IN (SELECT id FROM students WHERE field = '" . self::FIELD . "')"
         );
         $this->db->exec(
             "DELETE FROM tutoring_teacher_status_log WHERE instructor_id IN (SELECT id FROM instructors WHERE name LIKE 'TUT_TST_%')"

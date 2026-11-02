@@ -66,12 +66,14 @@ final class RateLimiter
         }
 
         try {
+            $now = gmdate('Y-m-d H:i:s');
+            $dayAgo = gmdate('Y-m-d H:i:s', time() - 86400);
             $stmt = Database::getConnection()->prepare(
                 'DELETE FROM auth_throttle
-                 WHERE (locked_until IS NULL OR locked_until < UTC_TIMESTAMP())
-                   AND window_started_at < (UTC_TIMESTAMP() - INTERVAL 1 DAY)'
+                 WHERE (locked_until IS NULL OR locked_until < :now)
+                   AND window_started_at < :day_ago'
             );
-            $stmt->execute();
+            $stmt->execute(['now' => $now, 'day_ago' => $dayAgo]);
             return $stmt->rowCount();
         } catch (\Throwable) {
             return 0;
@@ -154,13 +156,44 @@ final class RateLimiter
 
     private static function dbAttempt(string $key, int $max, int $window, int $lockout): array
     {
-        $sql = 'INSERT INTO auth_throttle (throttle_key, attempts, window_started_at, locked_until)
-                VALUES (:k, 1, UTC_TIMESTAMP(), NULL)
-                ON DUPLICATE KEY UPDATE
-                    attempts = IF(window_started_at < (UTC_TIMESTAMP() - INTERVAL ' . $window . ' SECOND), 1, attempts + 1),
-                    window_started_at = IF(window_started_at < (UTC_TIMESTAMP() - INTERVAL ' . $window . ' SECOND), UTC_TIMESTAMP(), window_started_at),
-                    locked_until = IF(attempts >= ' . $max . ', UTC_TIMESTAMP() + INTERVAL ' . $lockout . ' SECOND, locked_until)';
-        Database::getConnection()->prepare($sql)->execute(['k' => $key]);
+        $pdo = Database::getConnection();
+        $nowTs = time();
+        $now = gmdate('Y-m-d H:i:s', $nowTs);
+        $windowCutoff = gmdate('Y-m-d H:i:s', $nowTs - $window);
+        $lockUntil = gmdate('Y-m-d H:i:s', $nowTs + $lockout);
+        $initialLocked = $max <= 1 ? $lockUntil : null;
+
+        $sql = 'INSERT INTO auth_throttle (throttle_key, attempts, window_started_at, locked_until, updated_at)
+                VALUES (:k, 1, :now_ins, :init_lock, :now_upd)
+                ON CONFLICT (throttle_key) DO UPDATE SET
+                    attempts = CASE
+                        WHEN auth_throttle.window_started_at < :cutoff THEN 1
+                        ELSE auth_throttle.attempts + 1
+                    END,
+                    window_started_at = CASE
+                        WHEN auth_throttle.window_started_at < :cutoff_w THEN :now_w
+                        ELSE auth_throttle.window_started_at
+                    END,
+                    locked_until = CASE
+                        WHEN (CASE WHEN auth_throttle.window_started_at < :cutoff_l THEN 1 ELSE auth_throttle.attempts + 1 END) >= :max_att
+                            THEN :lock_until
+                        ELSE auth_throttle.locked_until
+                    END,
+                    updated_at = :now_u';
+
+        $pdo->prepare($sql)->execute([
+            'k'          => $key,
+            'now_ins'    => $now,
+            'init_lock'  => $initialLocked,
+            'now_upd'    => $now,
+            'cutoff'     => $windowCutoff,
+            'cutoff_w'   => $windowCutoff,
+            'now_w'      => $now,
+            'cutoff_l'   => $windowCutoff,
+            'max_att'    => $max,
+            'lock_until' => $lockUntil,
+            'now_u'      => $now,
+        ]);
 
         return self::dbStatus($key, $max);
     }

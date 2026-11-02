@@ -119,15 +119,23 @@ class Appointment
 
     public static function getThisWeekForStudent(int $studentId): ?array
     {
+        $monday = gmdate('Y-m-d', strtotime('monday this week'));
+        $sunday = gmdate('Y-m-d', strtotime('sunday this week'));
+
         $stmt = Database::getConnection()->prepare(
             "SELECT a.*, s.name as student_name, s.grade, s.field, s.phone
              FROM appointments a
              JOIN students s ON a.student_id = s.id
              WHERE a.student_id = :student_id
-               AND YEARWEEK(a.appointment_date, 1) = YEARWEEK(CURDATE(), 1)
+               AND a.appointment_date BETWEEN :week_start AND :week_end
+             ORDER BY a.appointment_date ASC
              LIMIT 1"
         );
-        $stmt->execute(['student_id' => $studentId]);
+        $stmt->execute([
+            'student_id' => $studentId,
+            'week_start' => $monday,
+            'week_end'   => $sunday,
+        ]);
         $result = $stmt->fetch();
         return $result ?: null;
     }

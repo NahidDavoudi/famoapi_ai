@@ -39,11 +39,12 @@ public function create(array $data): array
         $studentId = Student::create($data);
 
         $stmt = $db->prepare(
-            'INSERT INTO users (username, full_name, password_hash, role, linked_id)
-             VALUES (:username, :full_name, :password_hash, :role, :linked_id)'
+            'INSERT INTO users (username, phone, full_name, password_hash, role, linked_id)
+             VALUES (:username, :phone, :full_name, :password_hash, :role, :linked_id)'
         );
         $stmt->execute([
             'username'      => $data['phone'],
+            'phone'         => $data['phone'],
             'full_name'     => $data['name'],
             'password_hash' => password_hash('1234', PASSWORD_DEFAULT),
             'role'          => 'student',
@@ -78,10 +79,11 @@ public function create(array $data): array
 
         if (isset($data['phone']) && $data['phone'] !== $student['phone']) {
             $stmt = Database::getConnection()->prepare(
-                'UPDATE users SET username = :username WHERE linked_id = :linked_id AND role = :role'
+                'UPDATE users SET username = :username, phone = :phone WHERE linked_id = :linked_id AND role = :role'
             );
             $stmt->execute([
                 'username'  => $data['phone'],
+                'phone'     => $data['phone'],
                 'linked_id' => $id,
                 'role'      => 'student',
             ]);
@@ -113,11 +115,12 @@ public function create(array $data): array
 
         $db = Database::getConnection();
         $stmt = $db->prepare(
-            'INSERT INTO users (username, full_name, password_hash, role, linked_id)
-             VALUES (:username, :full_name, :password_hash, :role, :linked_id)'
+            'INSERT INTO users (username, phone, full_name, password_hash, role, linked_id)
+             VALUES (:username, :phone, :full_name, :password_hash, :role, :linked_id)'
         );
         $stmt->execute([
             'username'      => $student['phone'],
+            'phone'         => $student['phone'],
             'full_name'     => $student['name'],
             'password_hash' => password_hash('1234', PASSWORD_DEFAULT),
             'role'          => 'student',

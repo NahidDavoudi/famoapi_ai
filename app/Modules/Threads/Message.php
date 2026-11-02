@@ -28,7 +28,7 @@ class Message
                 (thread_id, student_id, sender_role, sender_account_id, body, media_group_id,
                  is_broadcast, read_by_student, read_by_supporter, created_at)
              VALUES (:thread_id, :student_id, :sender_role, :sender_account_id, :body, :media_group_id,
-                 :is_broadcast, :read_by_student, :read_by_supporter, UTC_TIMESTAMP())'
+                 :is_broadcast, :read_by_student, :read_by_supporter, CURRENT_TIMESTAMP)'
         );
         $stmt->execute([
             'thread_id'         => $threadId,
@@ -127,9 +127,17 @@ class Message
              WHERE m.student_id = :student_id
                AND m.sender_role = 'student'
                AND m.read_by_supporter = 0
-AND (t.supporter_id = :supporter_a OR EXISTS (
-                      SELECT 1 FROM students s
-                      WHERE s.id = m.student_id AND s.supporter_id = :supporter_b))
+               AND (
+                   t.supporter_id = :supporter_a
+                   OR EXISTS (
+                       SELECT 1 FROM student_supporter_assignments a
+                       WHERE a.student_id = m.student_id AND a.supporter_id = :supporter_b AND a.is_active = 1
+                   )
+                   OR EXISTS (
+                       SELECT 1 FROM students s
+                       WHERE s.id = m.student_id AND s.supporter_id = :supporter_c
+                   )
+               )
              ORDER BY m.created_at DESC, m.id DESC
              LIMIT 1"
         );
@@ -137,6 +145,7 @@ AND (t.supporter_id = :supporter_a OR EXISTS (
             'student_id'  => $studentId,
             'supporter_a' => $supporterId,
             'supporter_b' => $supporterId,
+            'supporter_c' => $supporterId,
         ]);
         $day = $stmt->fetchColumn();
 
@@ -157,15 +166,24 @@ AND (t.supporter_id = :supporter_a OR EXISTS (
              WHERE m.student_id = :student_id
                AND m.sender_role = 'student'
                AND m.read_by_supporter = 0
-AND (t.supporter_id = :supporter_a OR EXISTS (
-                      SELECT 1 FROM students s
-                      WHERE s.id = m.student_id AND s.supporter_id = :supporter_b))
+               AND (
+                   t.supporter_id = :supporter_a
+                   OR EXISTS (
+                       SELECT 1 FROM student_supporter_assignments a
+                       WHERE a.student_id = m.student_id AND a.supporter_id = :supporter_b AND a.is_active = 1
+                   )
+                   OR EXISTS (
+                       SELECT 1 FROM students s
+                       WHERE s.id = m.student_id AND s.supporter_id = :supporter_c
+                   )
+               )
              ORDER BY m.created_at ASC, m.id ASC
              LIMIT :limit"
         );
         $stmt->bindValue(':student_id', $studentId, \PDO::PARAM_INT);
         $stmt->bindValue(':supporter_a', $supporterId, \PDO::PARAM_INT);
         $stmt->bindValue(':supporter_b', $supporterId, \PDO::PARAM_INT);
+        $stmt->bindValue(':supporter_c', $supporterId, \PDO::PARAM_INT);
         $stmt->bindValue(':limit', $limit, \PDO::PARAM_INT);
         $stmt->execute();
 
@@ -220,15 +238,21 @@ AND (t.supporter_id = :supporter_a OR EXISTS (
              JOIN students s ON s.id = m.student_id
              WHERE m.sender_role = 'student'
                AND m.read_by_supporter = 0
-AND (t.supporter_id = :supporter_a OR EXISTS (
-                      SELECT 1 FROM students s
-                      WHERE s.id = m.student_id AND s.supporter_id = :supporter_b))
+               AND (
+                   t.supporter_id = :supporter_a
+                   OR EXISTS (
+                       SELECT 1 FROM student_supporter_assignments a
+                       WHERE a.student_id = m.student_id AND a.supporter_id = :supporter_b AND a.is_active = 1
+                   )
+                   OR s.supporter_id = :supporter_c
+               )
              GROUP BY m.student_id, s.name, s.grade, s.field
              ORDER BY last_message_at DESC
              LIMIT :limit OFFSET :offset"
         );
         $stmt->bindValue(':supporter_a', $supporterId, \PDO::PARAM_INT);
         $stmt->bindValue(':supporter_b', $supporterId, \PDO::PARAM_INT);
+        $stmt->bindValue(':supporter_c', $supporterId, \PDO::PARAM_INT);
         $stmt->bindValue(':limit', $perPage, \PDO::PARAM_INT);
         $stmt->bindValue(':offset', $offset, \PDO::PARAM_INT);
         $stmt->execute();
@@ -244,11 +268,23 @@ AND (t.supporter_id = :supporter_a OR EXISTS (
              JOIN report_threads t ON t.id = m.thread_id
              WHERE m.sender_role = 'student'
                AND m.read_by_supporter = 0
-AND (t.supporter_id = :supporter_a OR EXISTS (
-                      SELECT 1 FROM students s
-                      WHERE s.id = m.student_id AND s.supporter_id = :supporter_b))"
+               AND (
+                   t.supporter_id = :supporter_a
+                   OR EXISTS (
+                       SELECT 1 FROM student_supporter_assignments a
+                       WHERE a.student_id = m.student_id AND a.supporter_id = :supporter_b AND a.is_active = 1
+                   )
+                   OR EXISTS (
+                       SELECT 1 FROM students s
+                       WHERE s.id = m.student_id AND s.supporter_id = :supporter_c
+                   )
+               )"
         );
-        $stmt->execute(['supporter_a' => $supporterId, 'supporter_b' => $supporterId]);
+        $stmt->execute([
+            'supporter_a' => $supporterId,
+            'supporter_b' => $supporterId,
+            'supporter_c' => $supporterId,
+        ]);
 
         return (int) $stmt->fetchColumn();
     }

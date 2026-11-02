@@ -271,7 +271,8 @@ class OutboxTest extends TestCase
         $id = $this->assertJsonResponse($claimA, 200)['data']['items'][0]['id'];
 
         // Simulate a dead worker: lock older than the TTL.
-        $this->db->exec("UPDATE bot_outbox SET locked_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 10 SECOND) WHERE id = {$id}");
+        $pastLock = gmdate('Y-m-d H:i:s', time() - 10);
+        $this->db->exec("UPDATE bot_outbox SET locked_at = '{$pastLock}' WHERE id = {$id}");
 
         $claimB = $this->call('POST', '/api/v1/bot/outbox/claim', ['limit' => 1, 'worker_id' => 'B']);
         $items = $this->assertJsonResponse($claimB, 200)['data']['items'];

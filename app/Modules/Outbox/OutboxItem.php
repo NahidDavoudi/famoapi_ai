@@ -25,7 +25,7 @@ class OutboxItem
                     (kind, recipient_role, recipient_account_id, telegram_user_id, chat_id, status,
                      payload_json, ref_type, ref_id, dedup_key, max_attempts, available_at, created_at, updated_at)
                  VALUES (:kind, :recipient_role, :recipient_account_id, :telegram_user_id, :chat_id, :status,
-                     :payload_json, :ref_type, :ref_id, :dedup_key, :max_attempts, UTC_TIMESTAMP(), UTC_TIMESTAMP(), UTC_TIMESTAMP())'
+                     :payload_json, :ref_type, :ref_id, :dedup_key, :max_attempts, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
             );
             $stmt->execute([
                 'kind'                 => $data['kind'],
@@ -43,7 +43,7 @@ class OutboxItem
 
             return (int) $db->lastInsertId();
         } catch (\PDOException $e) {
-            if ((string) $e->getCode() === '23000') {
+            if (in_array((string) $e->getCode(), ['23000', '23505'], true)) {
                 return 0;
             }
             throw $e;
@@ -68,7 +68,7 @@ class OutboxItem
     {
         $stmt = Database::getConnection()->prepare(
             'SELECT id FROM bot_outbox
-             WHERE status = :status AND available_at <= UTC_TIMESTAMP() AND attempts < max_attempts
+             WHERE status = :status AND available_at <= CURRENT_TIMESTAMP AND attempts < max_attempts
              ORDER BY id ASC
              LIMIT :limit'
         );
@@ -93,10 +93,10 @@ class OutboxItem
         $placeholders = implode(', ', array_fill(0, count($ids), '?'));
         $stmt = Database::getConnection()->prepare(
             "UPDATE bot_outbox
-             SET status = 'processing', locked_by = ?, locked_at = UTC_TIMESTAMP(), attempts = attempts + 1
+             SET status = 'processing', locked_by = ?, locked_at = CURRENT_TIMESTAMP, attempts = attempts + 1
              WHERE id IN ({$placeholders})
                AND status = 'pending'
-               AND available_at <= UTC_TIMESTAMP()
+               AND available_at <= CURRENT_TIMESTAMP
                AND attempts < max_attempts"
         );
         $stmt->execute(array_merge([$workerId], array_values($ids)));
@@ -128,16 +128,17 @@ class OutboxItem
     /** Return stale processing rows (dead workers) to the pending pool. */
     public static function releaseStale(int $ttlSeconds): int
     {
+        $cutoff = gmdate('Y-m-d H:i:s', time() - max(1, $ttlSeconds));
         $stmt = Database::getConnection()->prepare(
             'UPDATE bot_outbox
              SET status = :pending, locked_by = NULL, locked_at = NULL
              WHERE status = :processing
                AND locked_at IS NOT NULL
-               AND locked_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL :ttl SECOND)'
+               AND locked_at < :cutoff'
         );
         $stmt->bindValue(':pending', 'pending');
         $stmt->bindValue(':processing', 'processing');
-        $stmt->bindValue(':ttl', $ttlSeconds, \PDO::PARAM_INT);
+        $stmt->bindValue(':cutoff', $cutoff);
         $stmt->execute();
 
         return $stmt->rowCount();
@@ -148,7 +149,7 @@ class OutboxItem
         $stmt = Database::getConnection()->prepare(
             'UPDATE bot_outbox
              SET status = :sent, telegram_message_id = :tg_message_id, error = NULL,
-                 locked_by = NULL, locked_at = NULL, sent_at = UTC_TIMESTAMP()
+                 locked_by = NULL, locked_at = NULL, sent_at = CURRENT_TIMESTAMP
              WHERE id = :id'
         );
         $stmt->execute(['sent' => 'sent', 'tg_message_id' => $telegramMessageId, 'id' => $id]);
@@ -158,15 +159,16 @@ class OutboxItem
 
     public static function markRetry(int $id, string $error, int $backoffSeconds): int
     {
+        $availableAt = gmdate('Y-m-d H:i:s', time() + max(0, $backoffSeconds));
         $stmt = Database::getConnection()->prepare(
             'UPDATE bot_outbox
              SET status = :pending, error = :error, locked_by = NULL, locked_at = NULL,
-                 available_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL :backoff SECOND)
+                 available_at = :available_at
              WHERE id = :id'
         );
         $stmt->bindValue(':pending', 'pending');
         $stmt->bindValue(':error', mb_substr($error, 0, 500));
-        $stmt->bindValue(':backoff', $backoffSeconds, \PDO::PARAM_INT);
+        $stmt->bindValue(':available_at', $availableAt);
         $stmt->bindValue(':id', $id, \PDO::PARAM_INT);
         $stmt->execute();
 

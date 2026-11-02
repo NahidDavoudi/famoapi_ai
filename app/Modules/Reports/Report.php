@@ -16,11 +16,11 @@ class Report
 
         if ($dateFrom) {
             $conditions[] = 'r.report_date >= ?';
-            $params[] = $dateFrom;
+            $params[] = $dateFrom . ' 00:00:00';
         }
         if ($dateTo) {
-            $conditions[] = 'r.report_date < DATE_ADD(?, INTERVAL 1 DAY)';
-            $params[] = $dateTo;
+            $conditions[] = 'r.report_date <= ?';
+            $params[] = $dateTo . ' 23:59:59';
         }
 
         $sql = 'SELECT r.*, s.name as student_name, s.grade, s.field,
@@ -43,10 +43,16 @@ class Report
         $conditions = ['1=1'];
         $params = [];
 
-        if ($dateFrom) { $conditions[] = 'r.report_date >= ?'; $params[] = $dateFrom; }
-        if ($dateTo) { $conditions[] = 'r.report_date < DATE_ADD(?, INTERVAL 1 DAY)'; $params[] = $dateTo; }
+        if ($dateFrom) {
+            $conditions[] = 'r.report_date >= ?';
+            $params[] = $dateFrom . ' 00:00:00';
+        }
+        if ($dateTo) {
+            $conditions[] = 'r.report_date <= ?';
+            $params[] = $dateTo . ' 23:59:59';
+        }
 
-        $sql = 'SELECT COUNT(*) FROM reports_status WHERE ' . implode(' AND ', $conditions);
+        $sql = 'SELECT COUNT(*) FROM reports_status r WHERE ' . implode(' AND ', $conditions);
         $stmt = Database::getConnection()->prepare($sql);
         $stmt->execute($params);
         return (int) $stmt->fetchColumn();
@@ -66,3 +72,4 @@ class Report
         return $stmt->fetchAll();
     }
 }
+

@@ -127,7 +127,7 @@ class Attendance
         } catch (\PDOException $e) {
             // Only a concurrent insert of the same client_uuid is an idempotent
             // replay. Foreign-key and other integrity violations must surface.
-            if ((string) $e->getCode() === '23000' && $clientUuid !== null) {
+            if (in_array((string) $e->getCode(), ['23000', '23505'], true) && $clientUuid !== null) {
                 $existing = self::findEntryByClientUuid($clientUuid);
                 if ($existing !== null) {
                     return $existing;

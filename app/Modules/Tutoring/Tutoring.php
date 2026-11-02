@@ -211,7 +211,7 @@ class Tutoring
 
             return self::findSessionById((int) $db->lastInsertId());
         } catch (\PDOException $e) {
-            if ((string) $e->getCode() !== '23000') {
+            if (!in_array((string) $e->getCode(), ['23000', '23505'], true)) {
                 throw $e;
             }
 
@@ -240,17 +240,18 @@ class Tutoring
         $db = Database::getConnection();
 
         $stmt = $db->prepare(
-            'UPDATE tutoring_sessions s
-               JOIN tutoring_classrooms c ON c.id = s.classroom_id
-                SET s.ended_at = :ended_at, s.updated_at = :updated_at
-              WHERE s.id = :id
-                AND c.instructor_id = :instructor_id
-                AND s.ended_at IS NULL'
+            'UPDATE tutoring_sessions
+                SET ended_at = :ended_at, updated_at = :updated_at
+              WHERE id = :id
+                AND ended_at IS NULL
+                AND classroom_id IN (
+                    SELECT id FROM tutoring_classrooms WHERE instructor_id = :instructor_id
+                )'
         );
         $stmt->execute([
-            'ended_at' => $endedAtUtc,
-            'updated_at' => IranDay::nowUtc(),
-            'id' => $sessionId,
+            'ended_at'      => $endedAtUtc,
+            'updated_at'    => IranDay::nowUtc(),
+            'id'            => $sessionId,
             'instructor_id' => $instructorId,
         ]);
 

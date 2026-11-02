@@ -22,7 +22,7 @@ class BroadcastRecipient
         $stmt = $db->prepare(
             'INSERT INTO report_broadcast_recipients
                 (broadcast_id, student_id, message_id, outbox_id, status, error, created_at, updated_at)
-             VALUES (:broadcast_id, :student_id, :message_id, :outbox_id, :status, :error, UTC_TIMESTAMP(), UTC_TIMESTAMP())'
+             VALUES (:broadcast_id, :student_id, :message_id, :outbox_id, :status, :error, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
         );
         $stmt->execute([
             'broadcast_id' => $broadcastId,
@@ -39,7 +39,7 @@ class BroadcastRecipient
     public static function setOutboxId(int $id, int $outboxId): void
     {
         $stmt = Database::getConnection()->prepare(
-            'UPDATE report_broadcast_recipients SET outbox_id = :outbox_id, updated_at = UTC_TIMESTAMP() WHERE id = :id'
+            'UPDATE report_broadcast_recipients SET outbox_id = :outbox_id, updated_at = CURRENT_TIMESTAMP WHERE id = :id'
         );
         $stmt->execute(['outbox_id' => $outboxId, 'id' => $id]);
     }
@@ -48,7 +48,7 @@ class BroadcastRecipient
     {
         $stmt = Database::getConnection()->prepare(
             'UPDATE report_broadcast_recipients
-             SET status = :status, telegram_message_id = :tg_message_id, error = :error, updated_at = UTC_TIMESTAMP()
+             SET status = :status, telegram_message_id = :tg_message_id, error = :error, updated_at = CURRENT_TIMESTAMP
              WHERE id = :id'
         );
         $stmt->execute([

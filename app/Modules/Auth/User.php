@@ -26,12 +26,12 @@ class User
         return $result ?: null;
     }
 
-    public static function findByEmail(string $email): ?array
+    public static function findByPhone(string $phone): ?array
     {
         $stmt = Database::getConnection()->prepare(
-            'SELECT * FROM users WHERE email = :email LIMIT 1'
+            'SELECT * FROM users WHERE phone = :phone OR username = :username LIMIT 1'
         );
-        $stmt->execute(['email' => $email]);
+        $stmt->execute(['phone' => $phone, 'username' => $phone]);
         $result = $stmt->fetch();
         return $result ?: null;
     }

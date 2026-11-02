@@ -24,7 +24,7 @@ class Broadcast
         $stmt = $db->prepare(
             'INSERT INTO report_broadcasts
                 (supporter_id, audience, day, body, attachment_count, recipient_count, created_at)
-             VALUES (:supporter_id, :audience, :day, :body, :attachment_count, :recipient_count, UTC_TIMESTAMP())'
+             VALUES (:supporter_id, :audience, :day, :body, :attachment_count, :recipient_count, CURRENT_TIMESTAMP)'
         );
         $stmt->execute([
             'supporter_id'     => $supporterId,

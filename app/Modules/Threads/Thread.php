@@ -48,7 +48,7 @@ class Thread
         try {
             $stmt = $db->prepare(
                 'INSERT INTO report_threads (student_id, day, supporter_id, created_at, updated_at)
-                 VALUES (:student_id, :day, :supporter_id, UTC_TIMESTAMP(), UTC_TIMESTAMP())'
+                 VALUES (:student_id, :day, :supporter_id, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
             );
             $stmt->execute([
                 'student_id'   => $studentId,
@@ -58,7 +58,7 @@ class Thread
 
             return (int) $db->lastInsertId();
         } catch (\PDOException $e) {
-            if ((string) $e->getCode() === '23000') {
+            if (in_array((string) $e->getCode(), ['23000', '23505'], true)) {
                 $existing = self::findByStudentDay($studentId, $day);
                 if ($existing) {
                     return (int) $existing['id'];
@@ -79,7 +79,7 @@ class Thread
     {
         $stmt = Database::getConnection()->prepare(
             'UPDATE report_threads
-             SET supporter_id = :supporter_id, updated_at = UTC_TIMESTAMP()
+             SET supporter_id = :supporter_id, updated_at = CURRENT_TIMESTAMP
              WHERE id = :id AND supporter_id IS NULL'
         );
         $stmt->execute(['supporter_id' => $supporterId, 'id' => $threadId]);

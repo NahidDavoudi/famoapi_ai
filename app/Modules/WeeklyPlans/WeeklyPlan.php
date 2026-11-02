@@ -18,7 +18,7 @@ class WeeklyPlan
              FROM weekly_plans p
              LEFT JOIN events e ON e.plan_id = p.id
              WHERE p.student_id = :student_id
-             GROUP BY p.id
+             GROUP BY p.id, p.student_id, p.week_date, p.weekly_notes, p.times_json, p.created_at, p.updated_at
              ORDER BY p.id DESC'
         );
         $stmt->execute(['student_id' => $studentId]);
@@ -302,8 +302,9 @@ class WeeklyPlan
         $db = Database::getConnection();
         $db->beginTransaction();
         try {
-            $db->prepare('DELETE e FROM events e INNER JOIN weekly_plans p ON p.id = e.plan_id WHERE p.student_id = :student_id')
-                ->execute(['student_id' => $studentId]);
+            $db->prepare(
+                'DELETE FROM events WHERE plan_id IN (SELECT id FROM weekly_plans WHERE student_id = :student_id)'
+            )->execute(['student_id' => $studentId]);
             $stmt = $db->prepare('DELETE FROM weekly_plans WHERE student_id = :student_id');
             $stmt->execute(['student_id' => $studentId]);
             $deleted = $stmt->rowCount();

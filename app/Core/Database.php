@@ -14,8 +14,9 @@ class Database
     public static function getConnection(): \PDO
     {
         if (self::$instance === null) {
+            $driver = strtolower(trim((string) ($_ENV['DB_DRIVER'] ?? 'pgsql')));
             $host = trim((string) ($_ENV['DB_HOST'] ?? ''));
-            $port = trim((string) ($_ENV['DB_PORT'] ?? '3306'));
+            $port = trim((string) ($_ENV['DB_PORT'] ?? '5432'));
             $name = trim((string) ($_ENV['DB_NAME'] ?? ''));
             $user = trim((string) ($_ENV['DB_USER'] ?? ''));
             $pass = (string) ($_ENV['DB_PASS'] ?? '');
@@ -37,7 +38,11 @@ class Database
                 );
             }
 
-            $dsn = "mysql:host={$host};port={$portInt};dbname={$name};charset=utf8mb4";
+            if ($driver === 'mysql') {
+                $dsn = "mysql:host={$host};port={$portInt};dbname={$name};charset=utf8mb4";
+            } else {
+                $dsn = "pgsql:host={$host};port={$portInt};dbname={$name}";
+            }
 
             self::$instance = new \PDO($dsn, $user, $pass, [
                 \PDO::ATTR_ERRMODE            => \PDO::ERRMODE_EXCEPTION,
@@ -45,7 +50,12 @@ class Database
                 \PDO::ATTR_EMULATE_PREPARES   => false,
             ]);
 
-            self::$instance->query("SET NAMES utf8mb4 COLLATE utf8mb4_persian_ci");
+            if ($driver === 'mysql') {
+                self::$instance->exec("SET NAMES utf8mb4 COLLATE utf8mb4_persian_ci");
+            } else {
+                self::$instance->exec("SET NAMES 'UTF8'");
+                self::$instance->exec("SET TIME ZONE 'UTC'");
+            }
         }
 
         return self::$instance;
