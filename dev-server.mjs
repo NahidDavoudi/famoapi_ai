@@ -391,6 +391,23 @@ const INITIAL_BLOG_POSTS = [
   },
 ];
 
+export function normalizeIranianPhone(raw) {
+  if (raw === null || raw === undefined || typeof raw === 'boolean') return null;
+  let str = String(raw).trim();
+  if (!str) return null;
+  const persian = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+  const arabic = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+  for (let i = 0; i < 10; i++) {
+    str = str.replaceAll(persian[i], String(i)).replaceAll(arabic[i], String(i));
+  }
+  str = str.replace(/[\s\-().]/g, '');
+  if (str.startsWith('+98')) str = '0' + str.slice(3);
+  else if (str.startsWith('0098')) str = '0' + str.slice(4);
+  else if (str.startsWith('98') && str.length === 12) str = '0' + str.slice(2);
+  else if (str.startsWith('9') && str.length === 10) str = '0' + str;
+  return /^09\d{9}$/.test(str) ? str : null;
+}
+
 export function createAppContext() {
   const redis = new RedisStore('famo:');
   const cache = new CacheManager(redis);
@@ -401,7 +418,291 @@ export function createAppContext() {
   });
   const blogPosts = structuredClone(INITIAL_BLOG_POSTS);
 
-  return { redis, cache, rateLimiter, blogPosts };
+  const admins = [
+    { id: 1, name: 'ادمین اصلی', phone: '09120000001', chat_id: '1001', is_active: 1 },
+  ];
+  const supporters = [
+    { id: 10, name: 'پشتیبان اول', phone: '09120000002', grade: 12, field: 'تجربی', is_active: 1 },
+  ];
+  const students = [
+    { id: 20, name: 'دانش‌آموز نمونه', phone: '09120000003', national_id: '0012345678', grade: 12, field: 'ریاضی', is_active: 1 },
+  ];
+  const instructors = [
+    { id: 30, name: 'استاد نمونه', title: 'مدرس ریاضی', is_active: 1 },
+  ];
+  const users = [
+    {
+      id: 1,
+      username: 'admin_root',
+      phone: '09120000001',
+      password: 'admin123',
+      full_name: 'ادمین اصلی',
+      role: 'admin',
+      linked_id: 1,
+      chat_id: '1001',
+      is_active: 1,
+    },
+    {
+      id: 2,
+      username: '09120000002',
+      phone: '09120000002',
+      password: 'supp123',
+      full_name: 'پشتیبان اول',
+      role: 'supporter',
+      linked_id: 10,
+      chat_id: null,
+      is_active: 1,
+    },
+    {
+      id: 3,
+      username: '09120000003',
+      phone: '09120000003',
+      password: 'stud123',
+      full_name: 'دانش‌آموز نمونه',
+      role: 'student',
+      linked_id: 20,
+      chat_id: null,
+      is_active: 1,
+    },
+    {
+      id: 4,
+      username: 'teacher_one',
+      phone: '09120000004',
+      password: 'teach123',
+      full_name: 'استاد نمونه',
+      role: 'teacher',
+      linked_id: 30,
+      chat_id: null,
+      is_active: 1,
+    },
+  ];
+
+  return { redis, cache, rateLimiter, blogPosts, users, admins, supporters, students, instructors };
+}
+
+export function handleAuthEndpoint(ctx, method, pathname, body = {}, authUser = null) {
+  if (!authUser || !authUser.sub) {
+    return {
+      status: 401,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'AUTH_ERROR', message: 'توکن احراز هویت ارسال نشده است' },
+      },
+    };
+  }
+
+  const user = ctx.users.find((u) => u.id === Number(authUser.sub));
+  if (!user) {
+    return {
+      status: 404,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'NOT_FOUND', message: 'کاربر یافت نشد' },
+      },
+    };
+  }
+
+  if (method === 'POST' && pathname === '/api/v1/auth/change-password') {
+    const currentPassword = body?.current_password;
+    const newPassword = body?.new_password;
+
+    if (typeof currentPassword !== 'string' || currentPassword.trim() === '') {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'رمز عبور فعلی الزامی است' },
+        },
+      };
+    }
+
+    if (typeof newPassword !== 'string' || newPassword.length < 4) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'رمز عبور جدید باید حداقل 4 کاراکتر باشد' },
+        },
+      };
+    }
+
+    if (user.password !== currentPassword) {
+      return {
+        status: 401,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'INVALID_PASSWORD', message: 'رمز عبور فعلی اشتباه است' },
+        },
+      };
+    }
+
+    user.password = newPassword;
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: { message: 'رمز عبور با موفقیت تغییر یافت' },
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  if (method === 'PUT' && pathname === '/api/v1/auth/profile') {
+    const rawName = body?.full_name ?? body?.name;
+    if (typeof rawName !== 'string' || rawName.trim().length < 2 || rawName.trim().length > 150) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'نام و نام خانوادگی الزامی است' },
+        },
+      };
+    }
+
+    const normalizedPhone = normalizeIranianPhone(body?.phone);
+    if (!normalizedPhone) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'شماره تلفن معتبر نیست (نمونه صحیح: 09123456789)' },
+        },
+      };
+    }
+
+    const oldPhone = normalizeIranianPhone(user.phone) || normalizeIranianPhone(user.username) || '';
+    const phoneChanged = normalizedPhone !== oldPhone;
+    const twoFaRoles = ['admin', 'supporter', 'teacher'];
+
+    if (phoneChanged && twoFaRoles.includes(user.role)) {
+      const currentPassword = typeof body?.current_password === 'string' ? body.current_password : '';
+      if (!currentPassword) {
+        return {
+          status: 422,
+          body: {
+            success: false,
+            data: null,
+            pagination: null,
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: 'برای تغییر شماره تلفن، وارد کردن رمز عبور فعلی الزامی است',
+            },
+          },
+        };
+      }
+      if (user.password !== currentPassword) {
+        return {
+          status: 401,
+          body: {
+            success: false,
+            data: null,
+            pagination: null,
+            error: { code: 'INVALID_PASSWORD', message: 'رمز عبور فعلی اشتباه است' },
+          },
+        };
+      }
+    }
+
+    const syncUsername =
+      user.username === user.phone || (oldPhone && normalizeIranianPhone(user.username) === oldPhone);
+
+    const duplicateUser = ctx.users.find(
+      (u) =>
+        u.id !== user.id &&
+        (u.phone === normalizedPhone || (syncUsername && u.username === normalizedPhone))
+    );
+    if (duplicateUser) {
+      return {
+        status: 409,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: {
+            code: 'DUPLICATE_PHONE',
+            message: 'این شماره تلفن قبلاً برای کاربر دیگری ثبت شده است',
+          },
+        },
+      };
+    }
+
+    const fullName = rawName.trim();
+    user.full_name = fullName;
+    user.phone = normalizedPhone;
+    if (syncUsername) {
+      user.username = normalizedPhone;
+    }
+
+    if (user.linked_id > 0) {
+      if (user.role === 'admin') {
+        const rec = ctx.admins.find((a) => a.id === user.linked_id);
+        if (rec) {
+          rec.name = fullName;
+          rec.phone = normalizedPhone;
+        }
+      } else if (user.role === 'supporter') {
+        const rec = ctx.supporters.find((s) => s.id === user.linked_id);
+        if (rec) {
+          rec.name = fullName;
+          rec.phone = normalizedPhone;
+        }
+      } else if (user.role === 'student') {
+        const rec = ctx.students.find((s) => s.id === user.linked_id);
+        if (rec) {
+          rec.name = fullName;
+          rec.phone = normalizedPhone;
+        }
+      } else if (user.role === 'teacher') {
+        const rec = ctx.instructors.find((i) => i.id === user.linked_id);
+        if (rec) {
+          rec.name = fullName;
+        }
+      }
+    }
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: {
+          id: user.id,
+          username: user.username,
+          phone: user.phone,
+          role: user.role,
+          full_name: user.full_name,
+          student_id: user.role === 'student' && user.linked_id > 0 ? user.linked_id : null,
+          instructor_id: user.role === 'teacher' && user.linked_id > 0 ? user.linked_id : null,
+        },
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  return {
+    status: 404,
+    body: {
+      success: false,
+      data: null,
+      pagination: null,
+      error: { code: 'NOT_FOUND', message: 'مسیر یافت نشد' },
+    },
+  };
 }
 
 export function handlePublicEndpoint(ctx, method, urlObj, clientIp = '127.0.0.1') {

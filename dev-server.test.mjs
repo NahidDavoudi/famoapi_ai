@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createAppContext, handlePublicEndpoint, handleHealthEndpoint } from './dev-server.mjs';
+import {
+  createAppContext,
+  handlePublicEndpoint,
+  handleHealthEndpoint,
+  handleAuthEndpoint,
+} from './dev-server.mjs';
 
 test('Health endpoint (/health) returns current database and Redis connection status', () => {
   const ctx = createAppContext();
@@ -245,3 +250,132 @@ test('Dashboard pending_reports query, blog categories route, PATCH catch-all, a
   assert.match(rootSpec, /\/api\/v1\/blog\/categories:/);
   assert.match(rootSpec, /enum:\s*\[present,\s*absent,\s*excused\]/);
 });
+
+test('Phase 1 Step 1 — Auth change-password and profile endpoints (PHP implementation, OpenAPI, README, and behavioral scenarios)', () => {
+  const authCtrl = fs.readFileSync(new URL('./app/Modules/Auth/AuthController.php', import.meta.url), 'utf8');
+  const authSvc = fs.readFileSync(new URL('./app/Modules/Auth/AuthService.php', import.meta.url), 'utf8');
+  const routesPhp = fs.readFileSync(new URL('./routes/api.php', import.meta.url), 'utf8');
+  const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
+  const readmeMd = fs.readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+
+  // 1. Verify PHP Controller, Service, and Routes
+  assert.match(authCtrl, /public function changePassword\(Request \$request,\s*Response \$response\): Response/);
+  assert.match(authCtrl, /public function updateProfile\(Request \$request,\s*Response \$response\): Response/);
+  assert.match(authSvc, /public function changePassword\(int \$userId,\s*string \$currentPassword,\s*string \$newPassword\): void/);
+  assert.match(authSvc, /public function updateProfile\(int \$userId,\s*array \$data\): array/);
+  assert.match(authSvc, /INVALID_PASSWORD/);
+  assert.match(authSvc, /DUPLICATE_PHONE/);
+  assert.match(authSvc, /\$twoFaRoles = \['admin', 'supporter', 'teacher'\]/);
+  assert.match(authSvc, /UPDATE admins SET name = :name, phone = :phone WHERE id = :id/);
+  assert.match(authSvc, /UPDATE supporters SET name = :name, phone = :phone WHERE id = :id/);
+  assert.match(authSvc, /UPDATE students SET name = :name, phone = :phone WHERE id = :id/);
+  assert.match(authSvc, /UPDATE instructors SET name = :name WHERE id = :id/);
+  assert.match(routesPhp, /\$app->post\('\/api\/v1\/auth\/change-password',\s*\[\$authController,\s*'changePassword'\]\)->add\(\$authMiddleware\)/);
+  assert.match(routesPhp, /\$app->put\('\/api\/v1\/auth\/profile',\s*\[\$authController,\s*'updateProfile'\]\)->add\(\$authMiddleware\)/);
+
+  // 2. Verify OpenAPI & README documentation
+  assert.match(rootSpec, /\/api\/v1\/auth\/change-password:/);
+  assert.match(rootSpec, /operationId:\s*authChangePassword/);
+  assert.match(rootSpec, /\/api\/v1\/auth\/profile:/);
+  assert.match(rootSpec, /operationId:\s*authUpdateProfile/);
+  assert.match(rootSpec, /AuthChangePasswordRequest:/);
+  assert.match(rootSpec, /AuthProfileUpdateRequest:/);
+  assert.match(rootSpec, /AuthUserProfile:/);
+  assert.match(readmeMd, /\/api\/v1\/auth\/change-password/);
+  assert.match(readmeMd, /\/api\/v1\/auth\/profile/);
+
+  // 3. Behavioral tests via simulator
+  const ctx = createAppContext();
+
+  // 3a. Unauthenticated requests -> 401
+  const unauthChange = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/change-password', {
+    current_password: 'stud123',
+    new_password: 'newpassword',
+  }, null);
+  assert.equal(unauthChange.status, 401);
+
+  // 3b. change-password: validation error (new_password < 4 chars) -> 422
+  const shortPass = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/change-password', {
+    current_password: 'stud123',
+    new_password: '123',
+  }, { sub: 3, role: 'student' });
+  assert.equal(shortPass.status, 422);
+  assert.equal(shortPass.body.error.code, 'VALIDATION_ERROR');
+
+  // 3c. change-password: wrong current_password -> 401 INVALID_PASSWORD
+  const wrongPass = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/change-password', {
+    current_password: 'wrong_password',
+    new_password: 'newPass456',
+  }, { sub: 3, role: 'student' });
+  assert.equal(wrongPass.status, 401);
+  assert.equal(wrongPass.body.error.code, 'INVALID_PASSWORD');
+
+  // 3d. change-password: success -> 200
+  const okPass = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/change-password', {
+    current_password: 'stud123',
+    new_password: 'newPass456',
+  }, { sub: 3, role: 'student' });
+  assert.equal(okPass.status, 200);
+  assert.equal(okPass.body.success, true);
+
+  // 3e. profile update (student): normalizes Persian digits, syncs username (since username === old phone) & students table, returns me() structure
+  const studentProfile = handleAuthEndpoint(ctx, 'PUT', '/api/v1/auth/profile', {
+    full_name: 'دانش‌آموز ویرایش‌شده',
+    phone: '+98 ۹۱۲ ۳۳۳ ۴۴۵۵',
+  }, { sub: 3, role: 'student' });
+  assert.equal(studentProfile.status, 200);
+  assert.equal(studentProfile.body.data.full_name, 'دانش‌آموز ویرایش‌شده');
+  assert.equal(studentProfile.body.data.phone, '09123334455');
+  assert.equal(studentProfile.body.data.username, '09123334455');
+  assert.equal(studentProfile.body.data.student_id, 20);
+  assert.equal(ctx.students.find((s) => s.id === 20).name, 'دانش‌آموز ویرایش‌شده');
+  assert.equal(ctx.students.find((s) => s.id === 20).phone, '09123334455');
+
+  // 3f. profile update: duplicate phone in other users -> 409 DUPLICATE_PHONE
+  const dupPhone = handleAuthEndpoint(ctx, 'PUT', '/api/v1/auth/profile', {
+    full_name: 'دانش‌آموز ویرایش‌شده',
+    phone: '09120000001', // belongs to admin (user id 1)
+  }, { sub: 3, role: 'student' });
+  assert.equal(dupPhone.status, 409);
+  assert.equal(dupPhone.body.error.code, 'DUPLICATE_PHONE');
+
+  // 3g. profile update (2FA role: admin/supporter/teacher): changing phone without current_password -> 422 VALIDATION_ERROR
+  const adminNoPass = handleAuthEndpoint(ctx, 'PUT', '/api/v1/auth/profile', {
+    full_name: 'ادمین جدید',
+    phone: '09129998877',
+  }, { sub: 1, role: 'admin' });
+  assert.equal(adminNoPass.status, 422);
+  assert.equal(adminNoPass.body.error.code, 'VALIDATION_ERROR');
+
+  // 3h. profile update (2FA role): changing phone with wrong current_password -> 401 INVALID_PASSWORD
+  const adminWrongPass = handleAuthEndpoint(ctx, 'PUT', '/api/v1/auth/profile', {
+    full_name: 'ادمین جدید',
+    phone: '09129998877',
+    current_password: 'wrong',
+  }, { sub: 1, role: 'admin' });
+  assert.equal(adminWrongPass.status, 401);
+  assert.equal(adminWrongPass.body.error.code, 'INVALID_PASSWORD');
+
+  // 3i. profile update (2FA role): changing phone with valid current_password -> 200 & preserves custom username ('admin_root')
+  const adminOk = handleAuthEndpoint(ctx, 'PUT', '/api/v1/auth/profile', {
+    full_name: 'ادمین جدید',
+    phone: '09129998877',
+    current_password: 'admin123',
+  }, { sub: 1, role: 'admin' });
+  assert.equal(adminOk.status, 200);
+  assert.equal(adminOk.body.data.phone, '09129998877');
+  assert.equal(adminOk.body.data.username, 'admin_root');
+  assert.equal(ctx.admins.find((a) => a.id === 1).name, 'ادمین جدید');
+  assert.equal(ctx.admins.find((a) => a.id === 1).phone, '09129998877');
+
+  // 3j. profile update (teacher): syncs instructors.name while storing phone in users.phone
+  const teacherOk = handleAuthEndpoint(ctx, 'PUT', '/api/v1/auth/profile', {
+    name: 'استاد ریاضی جدید',
+    phone: '09120000004', // unchanged phone -> no current_password needed
+  }, { sub: 4, role: 'teacher' });
+  assert.equal(teacherOk.status, 200);
+  assert.equal(teacherOk.body.data.full_name, 'استاد ریاضی جدید');
+  assert.equal(teacherOk.body.data.instructor_id, 30);
+  assert.equal(ctx.instructors.find((i) => i.id === 30).name, 'استاد ریاضی جدید');
+});
+

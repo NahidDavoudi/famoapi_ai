@@ -368,6 +368,9 @@ The repository maintains two OpenAPI 3.1.0 specifications:
 | `POST` | `/api/v1/auth/login` | User login (returns JWT or `202` 2FA challenge) | Auth Rate Limit |
 | `POST` | `/api/v1/auth/register` | Student self-registration | Auth Rate Limit |
 | `POST` | `/api/v1/auth/verify-2fa` | Verify 6-digit OTP (`code`, `user_id`) | 2FA Rate Limit |
+| `GET` | `/api/v1/auth/me` | Get authenticated user's profile from JWT | Authenticated |
+| `POST` | `/api/v1/auth/change-password` | Change password (`current_password`, `new_password` >= 4 chars) | Authenticated |
+| `PUT` | `/api/v1/auth/profile` | Update `full_name`/`name` & `phone` with transactional role sync & 2FA password guard | Authenticated |
 | `POST` | `/api/v1/auth/logout` | Clear authentication cookie | Public |
 | `POST` | `/api/v1/auth/telegram/*` | Telegram Login Widget verification, registration, & linking | Telegram Rate Limit |
 

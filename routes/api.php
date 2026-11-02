@@ -133,6 +133,8 @@ return function (App $app) {
     $app->post('/api/v1/auth/register', [$authController, 'register']);
     $app->post('/api/v1/auth/verify-2fa', [$authController, 'verify2fa']);
     $app->get('/api/v1/auth/me', [$authController, 'me'])->add($authMiddleware);
+    $app->post('/api/v1/auth/change-password', [$authController, 'changePassword'])->add($authMiddleware);
+    $app->put('/api/v1/auth/profile', [$authController, 'updateProfile'])->add($authMiddleware);
     // Logout only clears the shared auth cookie and must work for expired sessions.
     $app->post('/api/v1/auth/logout', [$authController, 'logout']);
 

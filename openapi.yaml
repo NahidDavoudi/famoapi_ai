@@ -355,25 +355,119 @@ paths:
                   - $ref: "#/components/schemas/SuccessResponse"
                   - properties:
                       data:
-                        type: object
-                        properties:
-                          id:
-                            type: integer
-                          username:
-                            type: string
-                          full_name:
-                            type: string
-                            nullable: true
-                          role:
-                            type: string
-                          student_id:
-                            type: integer
-                            nullable: true
-                            description: شناسه دانش‌آموز متصل (null برای admin/supporter)
+                        $ref: "#/components/schemas/AuthUserProfile"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/v1/auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Change current user's password
+      operationId: authChangePassword
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthChangePasswordRequest"
+      responses:
+        "200":
+          description: Password changed successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          message:
+                            type: string
+                            example: رمز عبور با موفقیت تغییر یافت
+                        required: [message]
+        "401":
+          description: Unauthorized or wrong current password (INVALID_PASSWORD)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                data: null
+                pagination: null
+                error:
+                  code: INVALID_PASSWORD
+                  message: رمز عبور فعلی اشتباه است
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/auth/profile:
+    put:
+      tags: [Auth]
+      summary: Update current user's profile (full_name and phone, synced with role table)
+      description: >
+        Updates `full_name` (or `name`) and `phone` (normalized via `PhoneNumber::normalizeOrFail`)
+        in `users` and the linked role table (`admins`, `supporters`, `students`, `instructors`)
+        within a transaction. If the previous `username` matched the previous `phone`, `username`
+        is also synced to the new `phone`. For 2FA roles (`admin`, `supporter`, `teacher`),
+        changing `phone` requires `current_password`.
+      operationId: authUpdateProfile
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthProfileUpdateRequest"
+      responses:
+        "200":
+          description: Updated profile data (same structure as /api/v1/auth/me)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/AuthUserProfile"
+        "401":
+          description: Unauthorized or wrong current password when changing 2FA phone (INVALID_PASSWORD)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                data: null
+                pagination: null
+                error:
+                  code: INVALID_PASSWORD
+                  message: رمز عبور فعلی اشتباه است
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Phone number already registered to another user (DUPLICATE_PHONE)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                data: null
+                pagination: null
+                error:
+                  code: DUPLICATE_PHONE
+                  message: این شماره تلفن قبلاً برای کاربر دیگری ثبت شده است
+        "422":
+          $ref: "#/components/responses/ValidationError"
 
   /api/v1/auth/logout:
     post:
@@ -7253,6 +7347,68 @@ components:
           type: string
           description: Masked destination phone, e.g. 0912***89
       required: [requires_2fa, challenge_id, phone_mask]
+
+    AuthUserProfile:
+      type: object
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        phone:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum: [admin, supporter, student, teacher]
+        full_name:
+          type: string
+          nullable: true
+        student_id:
+          type: integer
+          nullable: true
+          description: شناسه دانش‌آموز متصل (فقط برای نقش student)
+        instructor_id:
+          type: integer
+          nullable: true
+          description: شناسه مدرس متصل (فقط برای نقش teacher)
+      required: [id, username, role]
+
+    AuthChangePasswordRequest:
+      type: object
+      properties:
+        current_password:
+          type: string
+          format: password
+          description: رمز عبور فعلی کاربر
+        new_password:
+          type: string
+          format: password
+          minLength: 4
+          description: رمز عبور جدید (حداقل ۴ کاراکتر)
+      required: [current_password, new_password]
+
+    AuthProfileUpdateRequest:
+      type: object
+      properties:
+        full_name:
+          type: string
+          minLength: 2
+          maxLength: 150
+          description: نام و نام خانوادگی (کلید `name` نیز پذیرفته می‌شود)
+        name:
+          type: string
+          minLength: 2
+          maxLength: 150
+          description: نام جایگزین برای `full_name`
+        phone:
+          type: string
+          description: شماره تلفن همراه ایرانی (نرمال‌سازی شده به 09XXXXXXXXX)
+        current_password:
+          type: string
+          format: password
+          description: رمز عبور فعلی (الزامی هنگام تغییر شماره تلفن برای نقش‌های دارای 2FA یعنی admin/supporter/teacher)
+      required: [phone]
 
   responses:
     BadRequest:
