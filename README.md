@@ -50,9 +50,14 @@
 - **Redis-Backed Rate Limiting**:
   - Distributed sliding-window/fixed-window rate limiting (`RateLimiter` & `RateLimitMiddleware`) protecting public endpoints, login/2FA flows, SMS OTP dispatches, and Telegram handoff routes.
   - Emits standard `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `Retry-After` HTTP headers.
-- **Strict Input & Environment Validation**:
+- **Strict Input, Phone Number & Environment Validation**:
   - Request-level environment validation (`EnvValidator`) and JSON payload verification (`RequestValidationMiddleware`).
   - Chainable field validator (`App\Core\Validator`) returning localized, structured `422 VALIDATION_ERROR` responses.
+  - Canonical Iranian mobile phone number validator & normalizer (`App\Core\PhoneNumber`) converting Persian/Arabic numerals (`۰-۹`, `٠-٩`) and international prefixes (`+98`, `0098`, `98`, `9...`) to `09XXXXXXXXX` before database persistence, with E.164 (`+989...`) and masked (`0912***89`) helpers.
+- **Course Subscriptions Management (`App\Modules\Subscription`)**:
+  - Full lifecycle management for student course enrollments (`subscriptions` table) with `pending`, `active`, `expired`, `cancelled`, and `rejected` statuses.
+  - Student self-enrollment (`POST /api/v1/subscriptions`), self-scoped listing (`GET /api/v1/subscriptions/me`), pending cancellation (`DELETE /api/v1/subscriptions/{id}`), and supporter/admin status approval & management (`PUT`/`PATCH`).
+  - Automatic duplicate prevention (`409 ALREADY_SUBSCRIBED`) when an active or pending subscription already exists for the same student and course.
 - **Infrastructure Health Probe**:
   - Lightweight `GET /health` and `GET /api/v1/health` endpoints reporting real-time PostgreSQL (`SELECT 1`) and Redis (`PING`) connectivity and latency in milliseconds.
 - **Complete OpenAPI 3.1.0 Specifications**:
@@ -72,6 +77,7 @@ famo-api/
 │   │   ├── Database.php       # PDO PostgreSQL singleton & health check (ping / checkHealth)
 │   │   ├── EnvValidator.php   # Mandatory & format environment variable validator
 │   │   ├── Migrator.php       # PostgreSQL advisory-locked SQL migration runner
+│   │   ├── PhoneNumber.php    # Iranian mobile number validator, normalizer (09XXXXXXXXX), & masker
 │   │   ├── PublicCacheMiddleware.php # HTTP response cache for /api/v1/public/*
 │   │   ├── RateLimiter.php    # Redis + PostgreSQL fallback rate limiter
 │   │   ├── RateLimitMiddleware.php   # Per-IP rate limiting middleware
@@ -365,6 +371,19 @@ The repository maintains two OpenAPI 3.1.0 specifications:
 | `POST` | `/api/v1/auth/logout` | Clear authentication cookie | Public |
 | `POST` | `/api/v1/auth/telegram/*` | Telegram Login Widget verification, registration, & linking | Telegram Rate Limit |
 
+### Course Subscription Endpoints (`Subscriptions`)
+
+| Method | Endpoint | Access / Role | Description |
+| :---: | :--- | :--- | :--- |
+| `GET` | `/api/v1/subscriptions` | Authenticated (`StudentScope`) | Paginated & filterable list (`student_id`, `course_id`, `status`, `is_active`, `search`) |
+| `GET` | `/api/v1/subscriptions/me` | Student | List subscriptions for the currently authenticated student (`only_active` filter) |
+| `GET` | `/api/v1/students/{id}/subscriptions` | Authenticated (`StudentScope`) | List all subscriptions for a specific student (`only_active` filter) |
+| `GET` | `/api/v1/subscriptions/{id}` | Authenticated (`StudentScope`) | Get single subscription with nested `course` and `student` objects |
+| `POST` | `/api/v1/subscriptions` | Authenticated | Create subscription (student self-enrolls as `pending`; staff can set status/dates) |
+| `PUT` | `/api/v1/subscriptions/{id}` | Supporter / Admin | Update subscription fields (`course_id`, `student_id`, `status`, `is_active`, `note`, dates) |
+| `PATCH` / `PUT` | `/api/v1/subscriptions/{id}/status` | Supporter / Admin | Update subscription status (`pending`, `active`, `expired`, `cancelled`, `rejected`) & `note` |
+| `DELETE` | `/api/v1/subscriptions/{id}` | Authenticated (`StudentScope`) | Delete subscription (students can cancel/delete their own `pending` subscriptions) |
+
 ### Standard JSON Response Envelope
 
 Every endpoint returns a consistent JSON structure:
@@ -424,6 +443,9 @@ npm test
 ## 🗺 Roadmap & Technical Notes
 
 - [x] Migrate database architecture to PostgreSQL 15+ and normalize all primary and foreign key `id` columns across all tables to consistently use `BIGINT`.
+- [x] Migrate user accounts (`users`) from email to mobile phone numbers (`phone`) and enforce canonical Iranian mobile normalization (`09XXXXXXXXX`) via `App\Core\PhoneNumber`.
+- [x] Complete the Course Subscription module (`App\Modules\Subscription` — Model, Service, Controller, Routes, and OpenAPI 3.1.0 documentation).
+- [x] Wire protected `GET /api/v1/blog/categories`, support `excused` status in `PUT /api/v1/attendance/entries`, include `PATCH` in catch-all 404 route, and enforce PostgreSQL-strict `SMALLINT` predicate (`WHERE status = 0 OR status IS NULL`) on `reports_status` in `DashboardController`.
 
 ---
 

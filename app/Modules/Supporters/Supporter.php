@@ -3,6 +3,7 @@
 namespace App\Modules\Supporters;
 
 use App\Core\Database;
+use App\Core\PhoneNumber;
 
 class Supporter
 {
@@ -299,6 +300,10 @@ class Supporter
 
     public static function create(array $data): int
     {
+        $phone = isset($data['phone']) && $data['phone'] !== ''
+            ? PhoneNumber::normalizeOrFail($data['phone'], 'شماره تلفن پشتیبان معتبر نیست')
+            : null;
+
         $db = Database::getConnection();
         $stmt = $db->prepare(
             'INSERT INTO supporters (name, grade, field, phone, chat_id, avatar, is_active)
@@ -308,7 +313,7 @@ class Supporter
             'name'      => $data['name'],
             'grade'     => $data['grade'] ?? null,
             'field'     => $data['field'] ?? null,
-            'phone'     => $data['phone'] ?? null,
+            'phone'     => $phone,
             'chat_id'   => $data['chat_id'] ?? null,
             'avatar'    => $data['avatar'] ?? null,
             'is_active' => array_key_exists('is_active', $data) ? (int) $data['is_active'] : 1,
@@ -318,6 +323,10 @@ class Supporter
 
     public static function update(int $id, array $data): int
     {
+        if (array_key_exists('phone', $data) && $data['phone'] !== null && $data['phone'] !== '') {
+            $data['phone'] = PhoneNumber::normalizeOrFail($data['phone'], 'شماره تلفن پشتیبان معتبر نیست');
+        }
+
         $sets = [];
         $params = ['id' => $id];
         $allowed = ['name', 'grade', 'field', 'phone', 'chat_id', 'avatar', 'is_active'];

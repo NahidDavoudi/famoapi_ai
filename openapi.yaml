@@ -930,6 +930,31 @@ paths:
           $ref: "#/components/responses/Forbidden"
 
   # ───────────────────── Blog (protected) ─────────────────────
+  /api/v1/blog/categories:
+    get:
+      tags: [Blog]
+      summary: Get active blog categories (supporter+)
+      operationId: blogGetCategories
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of blog categories with published post counts
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/BlogCategory"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
   /api/v1/blog/posts:
     get:
       tags: [Blog]
@@ -1916,6 +1941,366 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  # ───────────────────── Subscriptions ─────────────────────
+  /api/v1/subscriptions:
+    get:
+      tags: [Subscriptions]
+      summary: List course subscriptions (paginated & filterable)
+      description: |
+        Returns a paginated list of course subscriptions joined with `course` and `student` details.
+        - **Admin / Supporter**: Can list all subscriptions and filter by `student_id`, `course_id`, `status`, `is_active`, and `search`.
+        - **Student**: Automatically scoped to their own `student_id` via `StudentScope`.
+      operationId: subscriptionList
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: student_id
+          in: query
+          schema:
+            type: integer
+          description: فیلتر بر اساس شناسه دانش‌آموز (برای نقش student به صورت خودکار روی خودش قفل می‌شود)
+        - name: course_id
+          in: query
+          schema:
+            type: integer
+          description: فیلتر بر اساس شناسه دوره
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, active, expired, cancelled, rejected]
+          description: فیلتر بر اساس وضعیت اشتراک
+        - name: is_active
+          in: query
+          schema:
+            type: integer
+            enum: [0, 1]
+          description: فیلتر بر اساس فعال بودن (0 یا 1)
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: جستجو در نام دانش‌آموز، شماره موبایل، نام دوره یا یادداشت
+      responses:
+        "200":
+          description: Paginated list of subscriptions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Subscription"
+                  - $ref: "#/components/schemas/WithPagination"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Subscriptions]
+      summary: Create a course subscription
+      description: |
+        Creates a new course subscription.
+        - **Student**: Subscribes themselves (`student_id` is resolved from JWT) with `status: "pending"`.
+        - **Admin / Supporter**: Must provide `student_id` and `course_id`, and can optionally set `status`, `is_active`, `started_at`, `end_at`, and `note`.
+        - Rejects duplicate active or pending subscriptions for the same `(student_id, course_id)` with `409 ALREADY_SUBSCRIBED`.
+      operationId: subscriptionCreate
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubscriptionCreateRequest"
+      responses:
+        "201":
+          description: Subscription created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/Subscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Active or pending subscription already exists for this student and course (`ALREADY_SUBSCRIBED`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                data: null
+                pagination: null
+                error:
+                  code: ALREADY_SUBSCRIBED
+                  message: این دانش‌آموز در حال حاضر اشتراک فعال یا در انتظار تایید برای این دوره دارد
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/subscriptions/me:
+    get:
+      tags: [Subscriptions]
+      summary: Get current authenticated student's subscriptions
+      operationId: subscriptionGetMine
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: only_active
+          in: query
+          schema:
+            type: boolean
+          description: فقط اشتراک‌های فعال نمایش داده شوند (1 یا true)
+      responses:
+        "200":
+          description: List of current student's subscriptions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Subscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/subscriptions/{id}:
+    get:
+      tags: [Subscriptions]
+      summary: Get single subscription by ID
+      operationId: subscriptionGetById
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Subscription found
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/Subscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Subscriptions]
+      summary: Update subscription details (supporter/admin only)
+      operationId: subscriptionUpdate
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubscriptionUpdateRequest"
+      responses:
+        "200":
+          description: Subscription updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/Subscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [Subscriptions]
+      summary: Delete or cancel subscription
+      description: |
+        - **Admin / Supporter**: Can delete any subscription.
+        - **Student**: Can only delete their own subscription when its `status` is `pending` (returns `400 CANNOT_DELETE_SUBSCRIPTION` otherwise).
+      operationId: subscriptionDelete
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Subscription deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/subscriptions/{id}/status:
+    patch:
+      tags: [Subscriptions]
+      summary: Update subscription status (supporter/admin only)
+      operationId: subscriptionPatchStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubscriptionStatusUpdateRequest"
+      responses:
+        "200":
+          description: Subscription status updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/Subscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      tags: [Subscriptions]
+      summary: Update subscription status via PUT (supporter/admin only)
+      operationId: subscriptionPutStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubscriptionStatusUpdateRequest"
+      responses:
+        "200":
+          description: Subscription status updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/Subscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/students/{id}/subscriptions:
+    get:
+      tags: [Students, Subscriptions]
+      summary: List subscriptions for a specific student
+      operationId: studentGetSubscriptions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: شناسه دانش‌آموز
+        - name: only_active
+          in: query
+          schema:
+            type: boolean
+          description: فقط اشتراک‌های فعال نمایش داده شوند (1 یا true)
+      responses:
+        "200":
+          description: List of student subscriptions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Subscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   # ───────────────────── Instructors ─────────────────────
   /api/v1/instructors:
@@ -3418,7 +3803,7 @@ paths:
                   type: integer
                 status:
                   type: string
-                  enum: [present, absent]
+                  enum: [present, absent, excused]
                 removed:
                   type: boolean
                 client_uuid:
@@ -5608,6 +5993,149 @@ components:
           type: string
           format: date-time
 
+    Subscription:
+      type: object
+      properties:
+        id:
+          type: integer
+        course_id:
+          type: integer
+        student_id:
+          type: integer
+        status:
+          type: string
+          enum: [pending, active, expired, cancelled, rejected]
+          example: active
+        is_active:
+          type: integer
+          enum: [0, 1]
+          example: 1
+        note:
+          type: string
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        end_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        course:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+              nullable: true
+            price:
+              type: integer
+            icon:
+              type: string
+              nullable: true
+            description:
+              type: string
+              nullable: true
+        student:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+              nullable: true
+            phone:
+              type: string
+              nullable: true
+            grade:
+              type: integer
+              nullable: true
+            field:
+              type: string
+              nullable: true
+      required: [id, course_id, student_id, status, is_active, course, student]
+
+    SubscriptionCreateRequest:
+      type: object
+      properties:
+        student_id:
+          type: integer
+          description: شناسه دانش‌آموز (برای نقش student اختیاری است و از توکن خوانده می‌شود)
+        course_id:
+          type: integer
+          description: شناسه دوره
+        status:
+          type: string
+          enum: [pending, active, expired, cancelled, canceled, rejected]
+          description: وضعیت اولیه اشتراک (فقط برای پشتیبان/ادمین؛ برای دانش‌آموز همیشه pending ثبت می‌شود)
+        is_active:
+          type: integer
+          enum: [0, 1]
+          description: وضعیت فعال بودن (فقط برای پشتیبان/ادمین)
+        note:
+          type: string
+          maxLength: 1000
+          nullable: true
+          description: یادداشت یا توضیحات اشتراک
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: تاریخ شروع اشتراک (فقط برای پشتیبان/ادمین)
+        end_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: تاریخ پایان اشتراک (فقط برای پشتیبان/ادمین)
+      required: [course_id]
+
+    SubscriptionUpdateRequest:
+      type: object
+      properties:
+        student_id:
+          type: integer
+        course_id:
+          type: integer
+        status:
+          type: string
+          enum: [pending, active, expired, cancelled, canceled, rejected]
+        is_active:
+          type: integer
+          enum: [0, 1]
+        note:
+          type: string
+          maxLength: 1000
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        end_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    SubscriptionStatusUpdateRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [pending, active, expired, cancelled, canceled, rejected]
+          description: وضعیت جدید اشتراک
+        note:
+          type: string
+          maxLength: 1000
+          nullable: true
+          description: یادداشت اختیاری هنگام تغییر وضعیت
+      required: [status]
+
     Instructor:
       type: object
       properties:
@@ -6212,7 +6740,7 @@ components:
           nullable: true
         status:
           type: string
-          enum: [present, absent]
+          enum: [present, absent, excused]
           nullable: true
         arrived_at:
           type: string
@@ -6945,6 +7473,8 @@ tags:
     description: Student analytics
   - name: Courses
     description: Course management
+  - name: Subscriptions
+    description: Course subscription management (student & supporter/admin)
   - name: Instructors
     description: Instructor management
   - name: Supporters

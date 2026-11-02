@@ -90,8 +90,8 @@ class Validator
     public function phone(string $field, string $label, mixed $value): self
     {
         if ($value !== null && $value !== '') {
-            if (!is_scalar($value) || is_bool($value) || !preg_match('/^09\d{9}$/', (string) $value)) {
-                $this->errors[] = "{$label} باید با 09 شروع شود و 11 رقم باشد";
+            if (!PhoneNumber::isValid($value)) {
+                $this->errors[] = "{$label} معتبر نیست (نمونه صحیح: 09123456789)";
             }
         }
         return $this;

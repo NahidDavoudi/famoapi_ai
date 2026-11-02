@@ -27,7 +27,7 @@ class DashboardController
         )->fetchColumn();
 
         $stats['pending_reports'] = (int) $db->query(
-            "SELECT COUNT(*) FROM reports_status WHERE status = 0 OR status IS NULL OR status = 'pending'"
+            'SELECT COUNT(*) FROM reports_status WHERE status = 0 OR status IS NULL'
         )->fetchColumn();
 
         $stats['avg_by_field'] = $db->query(

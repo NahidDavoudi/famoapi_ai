@@ -60,7 +60,7 @@ class AttendanceService
         }
 
         $status = $data['status'] ?? null;
-        if ($status !== null && !in_array($status, ['present', 'absent'], true)) {
+        if ($status !== null && !in_array($status, ['present', 'absent', 'excused'], true)) {
             throw new ApiException('وضعیت نامعتبر است', 422, 'VALIDATION_ERROR');
         }
 

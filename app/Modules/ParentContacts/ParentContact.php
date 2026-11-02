@@ -3,6 +3,7 @@
 namespace App\Modules\ParentContacts;
 
 use App\Core\Database;
+use App\Core\PhoneNumber;
 
 class ParentContact
 {
@@ -39,6 +40,8 @@ class ParentContact
 
     public static function create(int $studentId, array $data): int
     {
+        $phone = PhoneNumber::normalizeOrFail($data['phone'] ?? null, 'شماره تماس والد معتبر نیست');
+
         $stmt = Database::getConnection()->prepare(
             'INSERT INTO parent_contacts (student_id, parent_name, relationship, phone, is_primary)
              VALUES (:student_id, :parent_name, :relationship, :phone, :is_primary)'
@@ -47,7 +50,7 @@ class ParentContact
             'student_id' => $studentId,
             'parent_name' => $data['parent_name'],
             'relationship' => $data['relationship'],
-            'phone' => $data['phone'],
+            'phone' => $phone,
             'is_primary' => (int) $data['is_primary'],
         ]);
         return (int) Database::getConnection()->lastInsertId();
@@ -66,6 +69,10 @@ class ParentContact
 
     public static function updateForStudent(int $studentId, int $id, array $data): int
     {
+        if (array_key_exists('phone', $data)) {
+            $data['phone'] = PhoneNumber::normalizeOrFail($data['phone'], 'شماره تماس والد معتبر نیست');
+        }
+
         $fields = ['parent_name', 'relationship', 'phone', 'is_primary'];
         $sets = [];
         $params = ['student_id' => $studentId, 'id' => $id];

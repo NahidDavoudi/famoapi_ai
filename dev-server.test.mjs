@@ -156,3 +156,92 @@ test('PostgreSQL schema, migrations, and database configuration are properly nor
   assert.match(migratorCore, /pg_try_advisory_lock/);
 });
 
+test('PhoneNumber helper validates and normalizes Iranian mobile numbers before saving to the database', () => {
+  const phoneHelper = fs.readFileSync(new URL('./app/Core/PhoneNumber.php', import.meta.url), 'utf8');
+  const validatorPhp = fs.readFileSync(new URL('./app/Core/Validator.php', import.meta.url), 'utf8');
+  const userPhp = fs.readFileSync(new URL('./app/Modules/Auth/User.php', import.meta.url), 'utf8');
+  const authServicePhp = fs.readFileSync(new URL('./app/Modules/Auth/AuthService.php', import.meta.url), 'utf8');
+  const studentPhp = fs.readFileSync(new URL('./app/Modules/Students/Student.php', import.meta.url), 'utf8');
+  const studentServicePhp = fs.readFileSync(new URL('./app/Modules/Students/StudentService.php', import.meta.url), 'utf8');
+  const supporterPhp = fs.readFileSync(new URL('./app/Modules/Supporters/Supporter.php', import.meta.url), 'utf8');
+  const supporterServicePhp = fs.readFileSync(new URL('./app/Modules/Supporters/SupporterService.php', import.meta.url), 'utf8');
+  const parentContactPhp = fs.readFileSync(new URL('./app/Modules/ParentContacts/ParentContact.php', import.meta.url), 'utf8');
+
+  // Verify helper methods and Persian/Arabic digit + prefix normalization
+  assert.match(phoneHelper, /final class PhoneNumber/);
+  assert.match(phoneHelper, /public static function toEnglishDigits\(string \$input\): string/);
+  assert.match(phoneHelper, /public static function normalize\(mixed \$raw\): \?string/);
+  assert.match(phoneHelper, /public static function normalizeOrFail\(/);
+  assert.match(phoneHelper, /public static function isValid\(mixed \$raw\): bool/);
+  assert.match(phoneHelper, /public static function toE164\(mixed \$raw\): \?string/);
+  assert.match(phoneHelper, /public static function mask\(string \$phone\): string/);
+
+  // Verify integration across Validator, Models, and Services before DB persistence
+  assert.match(validatorPhp, /PhoneNumber::isValid\(\$value\)/);
+  assert.match(userPhp, /PhoneNumber::normalizeOrFail\(\$data\['phone'\]\)/);
+  assert.match(authServicePhp, /PhoneNumber::normalizeOrFail\(\$data\['phone'\]/);
+  assert.match(studentPhp, /PhoneNumber::normalizeOrFail\(\$data\['phone'\]/);
+  assert.match(studentServicePhp, /PhoneNumber::normalizeOrFail\(\$data\['phone'\]/);
+  assert.match(supporterPhp, /PhoneNumber::normalizeOrFail\(\$data\['phone'\]/);
+  assert.match(supporterServicePhp, /PhoneNumber::normalizeOrFail\(\$phone/);
+  assert.match(parentContactPhp, /PhoneNumber::normalizeOrFail\(\$data\['phone'\]/);
+});
+
+test('Course Subscription module (Model, Service, Controller, Routes) and documentation (openapi.yaml & README.md) are complete and synchronized', () => {
+  const subModel = fs.readFileSync(new URL('./app/Modules/Subscription/Subscription.php', import.meta.url), 'utf8');
+  const subService = fs.readFileSync(new URL('./app/Modules/Subscription/SubscriptionService.php', import.meta.url), 'utf8');
+  const subController = fs.readFileSync(new URL('./app/Modules/Subscription/SubscriptionController.php', import.meta.url), 'utf8');
+  const routesPhp = fs.readFileSync(new URL('./routes/api.php', import.meta.url), 'utf8');
+  const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
+  const readmeMd = fs.readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+
+  // Verify Subscription model, service, and controller
+  assert.match(subModel, /class Subscription/);
+  assert.match(subModel, /public static function findActiveOrPendingByStudentAndCourse\(/);
+  assert.match(subService, /class SubscriptionService/);
+  assert.match(subService, /ALREADY_SUBSCRIBED/);
+  assert.match(subController, /class SubscriptionController/);
+  assert.match(subController, /public function mySubscriptions\(/);
+  assert.match(subController, /public function studentSubscriptions\(/);
+  assert.match(subController, /public function updateStatus\(/);
+
+  // Verify routes in routes/api.php
+  assert.match(routesPhp, /\/subscriptions\/me/);
+  assert.match(routesPhp, /\/subscriptions\/\{id:\[0-9\]\+\}\/status/);
+  assert.match(routesPhp, /\/students\/\{id:\[0-9\]\+\}\/subscriptions/);
+
+  // Verify OpenAPI 3.1.0 documentation
+  assert.match(rootSpec, /\/api\/v1\/subscriptions:/);
+  assert.match(rootSpec, /\/api\/v1\/subscriptions\/me:/);
+  assert.match(rootSpec, /\/api\/v1\/subscriptions\/\{id\}:/);
+  assert.match(rootSpec, /\/api\/v1\/subscriptions\/\{id\}\/status:/);
+  assert.match(rootSpec, /\/api\/v1\/students\/\{id\}\/subscriptions:/);
+  assert.match(rootSpec, /SubscriptionCreateRequest:/);
+  assert.match(rootSpec, /SubscriptionUpdateRequest:/);
+  assert.match(rootSpec, /SubscriptionStatusUpdateRequest:/);
+
+  // Verify README.md documentation
+  assert.match(readmeMd, /Course Subscription Endpoints \(`Subscriptions`\)/);
+  assert.match(readmeMd, /\/api\/v1\/subscriptions\/me/);
+  assert.match(readmeMd, /PhoneNumber\.php/);
+});
+
+test('Dashboard pending_reports query, blog categories route, PATCH catch-all, and attendance excused status are properly configured and documented', () => {
+  const dashboardPhp = fs.readFileSync(new URL('./app/Modules/Dashboard/DashboardController.php', import.meta.url), 'utf8');
+  const routesPhp = fs.readFileSync(new URL('./routes/api.php', import.meta.url), 'utf8');
+  const attendanceCtrl = fs.readFileSync(new URL('./app/Modules/Attendance/AttendanceController.php', import.meta.url), 'utf8');
+  const attendanceSvc = fs.readFileSync(new URL('./app/Modules/Attendance/AttendanceService.php', import.meta.url), 'utf8');
+  const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
+
+  assert.match(dashboardPhp, /SELECT COUNT\(\*\) FROM reports_status WHERE status = 0 OR status IS NULL/);
+  assert.doesNotMatch(dashboardPhp, /status = 'pending'/);
+
+  assert.match(routesPhp, /\$app->get\('\/api\/v1\/blog\/categories',\s*\[\$blogController,\s*'getCategories'\]\)/);
+  assert.match(routesPhp, /\$app->map\(\['GET',\s*'POST',\s*'PUT',\s*'PATCH',\s*'DELETE'\],\s*'\/api\/v1\/\{routes:\.\+\}'/);
+
+  assert.match(attendanceCtrl, /\['present',\s*'absent',\s*'excused'\]/);
+  assert.match(attendanceSvc, /\['present',\s*'absent',\s*'excused'\]/);
+
+  assert.match(rootSpec, /\/api\/v1\/blog\/categories:/);
+  assert.match(rootSpec, /enum:\s*\[present,\s*absent,\s*excused\]/);
+});

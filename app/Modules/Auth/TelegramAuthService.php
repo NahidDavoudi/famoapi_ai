@@ -5,6 +5,7 @@ namespace App\Modules\Auth;
 
 use App\Core\ApiException;
 use App\Core\Database;
+use App\Core\PhoneNumber;
 use App\Core\RateLimitedException;
 use App\Core\RateLimiter;
 use App\Core\SmsService;
@@ -208,6 +209,7 @@ class TelegramAuthService
      */
     private function issueSmsChallenge(object $claims, int $userId, string $phone, ?string $ip): array
     {
+        $phone = PhoneNumber::normalize($phone) ?? $phone;
         $phoneKey = RateLimiter::key('sms:phone', $phone);
         $phoneMax = max(1, (int) ($_ENV['AUTH_SMS_PHONE_HOURLY_MAX'] ?? 5));
         $phoneStatus = RateLimiter::attempt($phoneKey, $phoneMax, 3600, 3600);
@@ -227,7 +229,7 @@ class TelegramAuthService
         $db = Database::getConnection();
         $ttl = max(1, (int) ($_ENV['AUTH_2FA_CHALLENGE_TTL'] ?? 300));
         $code = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-        $expiresAt = gmdate('Y-m-d H:i:s', time() + $ttl);
+        $expiresAt = gmdate('Y-m-d H:i:s', time() + 300);
 
         $db->prepare('UPDATE login_codes SET used = 1 WHERE user_id = ? AND used = 0')->execute([$userId]);
         $db->prepare('INSERT INTO login_codes (user_id, code, expires_at) VALUES (?, ?, ?)')
@@ -243,7 +245,7 @@ class TelegramAuthService
 
         return [
             'nonce' => $nonce,
-            'mask'  => substr($phone, 0, 4) . '***' . substr($phone, -2),
+            'mask'  => PhoneNumber::mask($phone),
         ];
     }
 

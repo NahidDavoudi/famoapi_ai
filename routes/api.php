@@ -17,6 +17,8 @@ use App\Modules\Instructors\InstructorService;
 use App\Modules\Public\PublicController;
 use App\Modules\Students\StudentController;
 use App\Modules\Students\StudentService;
+use App\Modules\Subscription\SubscriptionController;
+use App\Modules\Subscription\SubscriptionService;
 use App\Modules\Supporters\SupporterController;
 use App\Modules\Supporters\SupporterService;
 use App\Modules\Exams\ExamController;
@@ -72,6 +74,7 @@ return function (App $app) {
     $blogController = new BlogController();
     $studentController = new StudentController(new StudentService());
     $courseController = new CourseController(new CourseService());
+    $subscriptionController = new SubscriptionController(new SubscriptionService());
     $instructorController = new InstructorController(new InstructorService());
     $supporterController = new SupporterController(new SupporterService());
     $examController = new ExamController(new ExamService());
@@ -156,6 +159,7 @@ return function (App $app) {
     $app->get('/api/v1/dashboard/stats', [$dashboardController, 'stats'])->add($requireSupporter)->add($authMiddleware);
 
     // Blog (protected)
+    $app->get('/api/v1/blog/categories', [$blogController, 'getCategories'])->add($requireSupporter)->add($authMiddleware);
     $app->get('/api/v1/blog/posts', [$blogController, 'getAllPosts'])->add($requireSupporter)->add($authMiddleware);
     $app->get('/api/v1/blog/posts/{id:[0-9]+}', [$blogController, 'getPostById'])->add($requireSupporter)->add($authMiddleware);
     $app->post('/api/v1/blog/posts', [$blogController, 'createPost'])->add($requireAdmin)->add($authMiddleware);
@@ -188,6 +192,17 @@ return function (App $app) {
     $app->get('/api/v1/courses/{id:[0-9]+}', [$courseController, 'get'])->add($authMiddleware);
     $app->put('/api/v1/courses/{id:[0-9]+}', [$courseController, 'update'])->add($requireAdmin)->add($authMiddleware);
     $app->delete('/api/v1/courses/{id:[0-9]+}', [$courseController, 'delete'])->add($requireAdmin)->add($authMiddleware);
+
+    // Course Subscriptions (protected)
+    $app->get('/api/v1/subscriptions', [$subscriptionController, 'list'])->add($authMiddleware);
+    $app->get('/api/v1/subscriptions/me', [$subscriptionController, 'mySubscriptions'])->add($authMiddleware);
+    $app->post('/api/v1/subscriptions', [$subscriptionController, 'create'])->add($authMiddleware);
+    $app->get('/api/v1/subscriptions/{id:[0-9]+}', [$subscriptionController, 'get'])->add($authMiddleware);
+    $app->put('/api/v1/subscriptions/{id:[0-9]+}', [$subscriptionController, 'update'])->add($requireSupporter)->add($authMiddleware);
+    $app->patch('/api/v1/subscriptions/{id:[0-9]+}/status', [$subscriptionController, 'updateStatus'])->add($requireSupporter)->add($authMiddleware);
+    $app->put('/api/v1/subscriptions/{id:[0-9]+}/status', [$subscriptionController, 'updateStatus'])->add($requireSupporter)->add($authMiddleware);
+    $app->delete('/api/v1/subscriptions/{id:[0-9]+}', [$subscriptionController, 'delete'])->add($authMiddleware);
+    $app->get('/api/v1/students/{id:[0-9]+}/subscriptions', [$subscriptionController, 'studentSubscriptions'])->add($authMiddleware);
 
     // Instructors (protected)
     $app->get('/api/v1/instructors', [$instructorController, 'list'])->add($requireSupporter)->add($authMiddleware);
@@ -346,7 +361,7 @@ return function (App $app) {
     })->add($requireAdmin)->add($authMiddleware);
 
     // Catch-all 404
-    $app->map(['GET', 'POST', 'PUT', 'DELETE'], '/api/v1/{routes:.+}', function (Request $request, Response $response) {
+    $app->map(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], '/api/v1/{routes:.+}', function (Request $request, Response $response) {
         throw new HttpNotFoundException($request);
     });
 };

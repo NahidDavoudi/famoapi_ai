@@ -72,7 +72,7 @@ class AttendanceController
             ->date('date', 'تاریخ', $body['date'] ?? null)
             ->required('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null)
             ->positiveInt('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null)
-            ->inArray('status', 'وضعیت', $body['status'] ?? null, ['present', 'absent']);
+            ->inArray('status', 'وضعیت', $body['status'] ?? null, ['present', 'absent', 'excused']);
 
         if (!$validator->passes()) {
             return $this->fail($response, new ApiException($validator->firstError(), 422, 'VALIDATION_ERROR'));

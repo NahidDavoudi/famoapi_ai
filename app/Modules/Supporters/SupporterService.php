@@ -7,8 +7,8 @@ use App\Core\AssetUrl;
 use App\Core\Cache;
 use App\Core\Database;
 use App\Core\Pagination;
+use App\Core\PhoneNumber;
 use App\Core\Storage;
-use App\Modules\Bot\PhoneNormalizer;
 use Psr\Http\Message\UploadedFileInterface;
 
 class SupporterService
@@ -43,12 +43,7 @@ class SupporterService
             return null;
         }
 
-        $normalized = PhoneNormalizer::normalize($phone);
-        if ($normalized === null) {
-            throw new ApiException('شماره تلفن پشتیبان معتبر نیست', 422, 'VALIDATION_ERROR');
-        }
-
-        return $normalized;
+        return PhoneNumber::normalizeOrFail($phone, 'شماره تلفن پشتیبان معتبر نیست');
     }
 
     /**

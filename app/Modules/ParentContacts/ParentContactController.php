@@ -3,6 +3,7 @@
 namespace App\Modules\ParentContacts;
 
 use App\Core\ApiException;
+use App\Core\PhoneNumber;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 
@@ -95,8 +96,8 @@ class ParentContactController
         if (array_key_exists('phone', $body) && (!is_string($body['phone']) || trim($body['phone']) === '')) {
             return 'شماره تماس نمی‌تواند خالی باشد';
         }
-        if (isset($body['phone']) && mb_strlen(trim($body['phone'])) > 15) {
-            return 'شماره تماس نمی‌تواند بیشتر از ۱۵ کاراکتر باشد';
+        if (isset($body['phone']) && !PhoneNumber::isValid($body['phone'])) {
+            return 'شماره تماس والد معتبر نیست (نمونه صحیح: 09123456789)';
         }
         if (array_key_exists('is_primary', $body) && !in_array($body['is_primary'], [true, false, 0, 1, '0', '1'], true)) {
             return 'مقدار مخاطب اصلی باید بولی باشد';
@@ -115,7 +116,13 @@ class ParentContactController
         $data = [];
         foreach (['parent_name', 'relationship', 'phone', 'is_primary'] as $field) {
             if (array_key_exists($field, $body)) {
-                $data[$field] = in_array($field, ['parent_name', 'phone'], true) ? trim($body[$field]) : $body[$field];
+                if ($field === 'phone') {
+                    $data['phone'] = PhoneNumber::normalizeOrFail($body['phone'], 'شماره تماس والد معتبر نیست');
+                } elseif ($field === 'parent_name') {
+                    $data['parent_name'] = trim($body['parent_name']);
+                } else {
+                    $data[$field] = $body[$field];
+                }
             }
         }
         if (array_key_exists('is_primary', $data)) {

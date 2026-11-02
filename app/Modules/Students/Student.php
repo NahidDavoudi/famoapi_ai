@@ -3,6 +3,7 @@
 namespace App\Modules\Students;
 
 use App\Core\Database;
+use App\Core\PhoneNumber;
 
 class Student
 {
@@ -140,6 +141,8 @@ class Student
 
     public static function create(array $data): int
     {
+        $phone = PhoneNumber::normalizeOrFail($data['phone'] ?? null, 'شماره تلفن دانش‌آموز معتبر نیست');
+
         $db = Database::getConnection();
         $stmt = $db->prepare(
             'INSERT INTO students
@@ -151,7 +154,7 @@ class Student
             'name'         => $data['name'],
             'grade'        => $data['grade'],
             'field'        => $data['field'],
-            'phone'        => $data['phone'],
+            'phone'        => $phone,
             'national_id'  => $data['national_id'] ?? null,
             'chat_id'      => $data['chat_id']      ?? null,
             'supporter_id' => $data['supporter_id'] ?? null,
@@ -161,6 +164,10 @@ class Student
 
     public static function update(int $id, array $data): int
     {
+        if (array_key_exists('phone', $data) && $data['phone'] !== null && $data['phone'] !== '') {
+            $data['phone'] = PhoneNumber::normalizeOrFail($data['phone'], 'شماره تلفن دانش‌آموز معتبر نیست');
+        }
+
         $sets = [];
         $params = ['id' => $id];
         $allowed = ['name', 'grade', 'field', 'phone', 'national_id', 'is_active', 'supporter_id'];

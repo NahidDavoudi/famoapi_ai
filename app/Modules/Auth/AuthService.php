@@ -4,6 +4,7 @@ namespace App\Modules\Auth;
 
 use App\Core\Auth;
 use App\Core\Database;
+use App\Core\PhoneNumber;
 use App\Core\RateLimitedException;
 use App\Core\RateLimiter;
 use App\Core\SmsService;
@@ -102,6 +103,8 @@ class AuthService
 
     public function createStudentAccount(array $data): array
     {
+        $data['phone'] = PhoneNumber::normalizeOrFail($data['phone'] ?? null, 'شماره تلفن همراه معتبر نیست');
+
         if (User::findByPhone($data['phone'])) {
             throw new \App\Core\ApiException('این شماره تلفن قبلاً ثبت‌نام کرده است', 409, 'REGISTRATION_ERROR');
         }
@@ -174,7 +177,8 @@ class AuthService
 
         if ($role === 'admin' || $role === 'supporter' || $role === 'teacher') {
             // TODO: برای فعال‌سازی روی سایر نقش‌ها (مثلاً student)، این شرط را گسترش دهید
-            $mobile = !empty($user['phone']) ? (string) $user['phone'] : (string) $user['username'];
+            $rawMobile = !empty($user['phone']) ? (string) $user['phone'] : (string) $user['username'];
+            $mobile = PhoneNumber::normalize($rawMobile) ?? $rawMobile;
             $smsWindow = 3600;
             $phoneMax = max(1, (int) ($_ENV['AUTH_SMS_PHONE_HOURLY_MAX'] ?? 5));
             $phoneKey = RateLimiter::key('sms:phone', $mobile);
@@ -221,7 +225,7 @@ class AuthService
                 'user_id'      => (int) $user['id'],
                 'username'     => $user['username'],
                 'role'         => $role,
-                'phone_mask'   => substr($mobile, 0, 4) . '***' . substr($mobile, -2),
+                'phone_mask'   => PhoneNumber::mask($mobile),
             ];
         }
 

@@ -717,16 +717,22 @@ export function handleHealthEndpoint(ctx) {
 }
 
 const REQUIRED_PHP_FILES = [
+  'openapi.yaml',
   'public/openapi.yaml',
+  'README.md',
   'database/schema.postgres.sql',
   'config/database.php',
   'app/Core/Database.php',
   'app/Core/Migrator.php',
+  'app/Core/PhoneNumber.php',
   'app/Core/RedisClient.php',
   'app/Core/Cache.php',
   'app/Core/PublicCacheMiddleware.php',
   'app/Core/RateLimiter.php',
   'app/Core/RateLimitMiddleware.php',
+  'app/Modules/Subscription/Subscription.php',
+  'app/Modules/Subscription/SubscriptionService.php',
+  'app/Modules/Subscription/SubscriptionController.php',
   'app/Modules/Blog/BlogController.php',
   'app/Modules/Blog/BlogService.php',
   'config/redis.php',

@@ -3,6 +3,7 @@
 namespace App\Modules\Auth;
 
 use App\Core\Database;
+use App\Core\PhoneNumber;
 
 class User
 {
@@ -28,10 +29,11 @@ class User
 
     public static function findByPhone(string $phone): ?array
     {
+        $normalized = PhoneNumber::normalize($phone) ?? trim($phone);
         $stmt = Database::getConnection()->prepare(
             'SELECT * FROM users WHERE phone = :phone OR username = :username LIMIT 1'
         );
-        $stmt->execute(['phone' => $phone, 'username' => $phone]);
+        $stmt->execute(['phone' => $normalized, 'username' => $normalized]);
         $result = $stmt->fetch();
         return $result ?: null;
     }
@@ -48,6 +50,13 @@ class User
 
     public static function create(array $data): int
     {
+        if (isset($data['phone']) && $data['phone'] !== '') {
+            $data['phone'] = PhoneNumber::normalizeOrFail($data['phone']);
+        }
+        if (isset($data['username']) && PhoneNumber::isValid($data['username'])) {
+            $data['username'] = PhoneNumber::normalize($data['username']);
+        }
+
         $data['password_hash'] = password_hash($data['password'], PASSWORD_DEFAULT);
         unset($data['password']);
 
@@ -64,6 +73,12 @@ class User
 
     public static function update(int $id, array $data): int
     {
+        if (array_key_exists('phone', $data) && $data['phone'] !== null && $data['phone'] !== '') {
+            $data['phone'] = PhoneNumber::normalizeOrFail($data['phone']);
+        }
+        if (isset($data['username']) && PhoneNumber::isValid($data['username'])) {
+            $data['username'] = PhoneNumber::normalize($data['username']);
+        }
         if (isset($data['password'])) {
             $data['password_hash'] = password_hash($data['password'], PASSWORD_DEFAULT);
             unset($data['password']);

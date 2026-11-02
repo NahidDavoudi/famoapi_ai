@@ -2,8 +2,8 @@
 
 namespace App\Modules\Supporters;
 
+use App\Core\PhoneNumber;
 use App\Core\Validator;
-use App\Modules\Bot\PhoneNormalizer;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Psr\Http\Message\UploadedFileInterface;
@@ -121,7 +121,7 @@ class SupporterController
         if ($message === '') {
             $message = $validator->firstError();
         }
-        if ($message === '' && PhoneNormalizer::normalize((string) ($body['phone'] ?? '')) === null) {
+        if ($message === '' && !PhoneNumber::isValid($body['phone'] ?? '')) {
             $message = 'شماره تلفن پشتیبان معتبر نیست';
         }
 

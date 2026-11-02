@@ -5,6 +5,7 @@ namespace App\Modules\Students;
 use App\Core\ApiException;
 use App\Core\Database;
 use App\Core\Pagination;
+use App\Core\PhoneNumber;
 use App\Modules\Supporters\Supporter;
 
 class StudentService
@@ -22,43 +23,46 @@ class StudentService
         ];
     }
 
-public function create(array $data): array
-{
-    // پشتیبان رو بر اساس (رشته، پایه) از supporter_scopes پیدا کن
-    $supporterId = Supporter::findForStudent(
-        (string) ($data['field'] ?? ''),
-        (int) ($data['grade'] ?? 0)
-    );
+    public function create(array $data): array
+    {
+        $data['phone'] = PhoneNumber::normalizeOrFail($data['phone'] ?? null, 'شماره تلفن دانش‌آموز معتبر نیست');
 
-    $db = Database::getConnection();
-    $db->beginTransaction();
-
-    try {
-        $data['supporter_id'] = $supporterId;
-
-        $studentId = Student::create($data);
-
-        $stmt = $db->prepare(
-            'INSERT INTO users (username, phone, full_name, password_hash, role, linked_id)
-             VALUES (:username, :phone, :full_name, :password_hash, :role, :linked_id)'
+        // پشتیبان رو بر اساس (رشته، پایه) از supporter_scopes پیدا کن
+        $supporterId = Supporter::findForStudent(
+            (string) ($data['field'] ?? ''),
+            (int) ($data['grade'] ?? 0)
         );
-        $stmt->execute([
-            'username'      => $data['phone'],
-            'phone'         => $data['phone'],
-            'full_name'     => $data['name'],
-            'password_hash' => password_hash('1234', PASSWORD_DEFAULT),
-            'role'          => 'student',
-            'linked_id'     => $studentId,
-        ]);
 
-        $db->commit();
-    } catch (\Throwable $e) {
-        $db->rollBack();
-        throw new ApiException($e->getMessage(), 500, 'REGISTER_FAILED');
+        $db = Database::getConnection();
+        $db->beginTransaction();
+
+        try {
+            $data['supporter_id'] = $supporterId;
+
+            $studentId = Student::create($data);
+
+            $stmt = $db->prepare(
+                'INSERT INTO users (username, phone, full_name, password_hash, role, linked_id)
+                 VALUES (:username, :phone, :full_name, :password_hash, :role, :linked_id)'
+            );
+            $stmt->execute([
+                'username'      => $data['phone'],
+                'phone'         => $data['phone'],
+                'full_name'     => $data['name'],
+                'password_hash' => password_hash('1234', PASSWORD_DEFAULT),
+                'role'          => 'student',
+                'linked_id'     => $studentId,
+            ]);
+
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollBack();
+            throw new ApiException($e->getMessage(), 500, 'REGISTER_FAILED');
+        }
+
+        return $this->get($studentId);
     }
 
-    return $this->get($studentId);
-}
     public function get(int $id): array
     {
         $student = Student::findById($id);
@@ -73,6 +77,10 @@ public function create(array $data): array
         $student = Student::findById($id);
         if (!$student) {
             throw new ApiException('دانش‌آموز یافت نشد', 404, 'NOT_FOUND');
+        }
+
+        if (array_key_exists('phone', $data)) {
+            $data['phone'] = PhoneNumber::normalizeOrFail($data['phone'], 'شماره تلفن دانش‌آموز معتبر نیست');
         }
 
         Student::update($id, $data);
@@ -113,14 +121,16 @@ public function create(array $data): array
             throw new ApiException('این دانش‌آموز قبلاً حساب کاربری دارد', 409, 'ACCOUNT_ERROR');
         }
 
+        $phone = PhoneNumber::normalizeOrFail($student['phone'] ?? null, 'شماره تلفن دانش‌آموز معتبر نیست');
+
         $db = Database::getConnection();
         $stmt = $db->prepare(
             'INSERT INTO users (username, phone, full_name, password_hash, role, linked_id)
              VALUES (:username, :phone, :full_name, :password_hash, :role, :linked_id)'
         );
         $stmt->execute([
-            'username'      => $student['phone'],
-            'phone'         => $student['phone'],
+            'username'      => $phone,
+            'phone'         => $phone,
             'full_name'     => $student['name'],
             'password_hash' => password_hash('1234', PASSWORD_DEFAULT),
             'role'          => 'student',
