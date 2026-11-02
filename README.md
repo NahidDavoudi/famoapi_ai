@@ -387,12 +387,14 @@ The repository maintains two OpenAPI 3.1.0 specifications:
 | `PATCH` / `PUT` | `/api/v1/subscriptions/{id}/status` | Supporter / Admin | Update subscription status (`pending`, `active`, `expired`, `cancelled`, `rejected`) & `note` |
 | `DELETE` | `/api/v1/subscriptions/{id}` | Authenticated (`StudentScope`) | Delete subscription (students can cancel/delete their own `pending` subscriptions) |
 
-### Exam Results & Teacher Comments (`Exams`)
+### Exam Results, Teacher Comments & Parent Share Links (`Exams`)
 
 | Method | Endpoint | Access / Role | Description |
 | :---: | :--- | :--- | :--- |
 | `GET` | `/api/v1/exams/details` | Authenticated (`StudentScope`) | Per-subject exam breakdown + `avg_percentage` + teacher/staff `comments` array |
 | `PUT` | `/api/v1/exams/comments` | Teacher / Supporter / Admin | Upsert comment (`student_id`, `exam_date`, `body`) on `(student_id, exam_date, teacher_user_id)` |
+| `POST` | `/api/v1/exams/share-links` | Supporter / Admin | Generate 14-day base64url share link (`random_bytes(32)`, SHA-256 hash stored in PostgreSQL) |
+| `GET` | `/api/v1/public/exam-results/{token}` | Public (20 req/min IP limit) | Parent view of exam result & comments (no `national_id`/`phone`, `Cache-Control: no-store`, `X-Robots-Tag: noindex`, uniform `404`) |
 
 ### Standard JSON Response Envelope
 

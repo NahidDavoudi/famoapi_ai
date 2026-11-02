@@ -172,6 +172,111 @@ class ExamResult
         return $fetch->fetch() ?: [];
     }
 
+    public static function createShareLink(
+        int $studentId,
+        string $examDate,
+        string $tokenHash,
+        string $expiresAt,
+        ?int $createdBy
+    ): int {
+        $db = Database::getConnection();
+        $stmt = $db->prepare(
+            'INSERT INTO exam_result_links (token_hash, student_id, exam_date, expires_at, created_by)
+             VALUES (:token_hash, :student_id, :exam_date, :expires_at, :created_by)
+             RETURNING id'
+        );
+        $stmt->execute([
+            'token_hash' => $tokenHash,
+            'student_id' => $studentId,
+            'exam_date'  => $examDate,
+            'expires_at' => $expiresAt,
+            'created_by' => $createdBy,
+        ]);
+        return (int) $stmt->fetchColumn();
+    }
+
+    public static function findActiveShareLinkByHash(string $tokenHash): ?array
+    {
+        $stmt = Database::getConnection()->prepare(
+            'SELECT id, token_hash, student_id, exam_date, expires_at, revoked_at, last_viewed_at, created_at
+             FROM exam_result_links
+             WHERE token_hash = :token_hash
+               AND revoked_at IS NULL
+               AND expires_at > CURRENT_TIMESTAMP
+             LIMIT 1'
+        );
+        $stmt->execute(['token_hash' => $tokenHash]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
+    public static function touchShareLinkViewed(int $linkId): void
+    {
+        $stmt = Database::getConnection()->prepare(
+            'UPDATE exam_result_links SET last_viewed_at = CURRENT_TIMESTAMP WHERE id = :id'
+        );
+        $stmt->execute(['id' => $linkId]);
+    }
+
+    public static function findPublicResult(int $studentId, string $examDate): ?array
+    {
+        $db = Database::getConnection();
+        // Explicitly select only non-sensitive student fields (no national_id, no phone, no chat_id)
+        $stmt = $db->prepare('SELECT name, grade, field FROM students WHERE id = ? LIMIT 1');
+        $stmt->execute([$studentId]);
+        $student = $stmt->fetch();
+        if (!$student) {
+            return null;
+        }
+
+        $stmt = $db->prepare(
+            'SELECT subject, chapter, total_q, correct, wrong, skipped, percentage
+             FROM exam_results
+             WHERE student_id = ? AND exam_date = ?
+             ORDER BY subject'
+        );
+        $stmt->execute([$studentId, $examDate]);
+        $subjects = $stmt->fetchAll();
+        if ($subjects === []) {
+            return null;
+        }
+
+        $stmt = $db->prepare(
+            'SELECT ROUND(AVG(percentage), 1) AS avg FROM exam_results WHERE student_id = ? AND exam_date = ?'
+        );
+        $stmt->execute([$studentId, $examDate]);
+        $avg = $stmt->fetchColumn();
+
+        $cStmt = $db->prepare(
+            "SELECT COALESCE(i.name, u.full_name, u.username) AS author_name,
+                    u.role AS author_role,
+                    ec.body, ec.created_at, ec.updated_at
+             FROM exam_comments ec
+             JOIN users u ON ec.teacher_user_id = u.id
+             LEFT JOIN instructors i ON u.role = 'teacher' AND u.linked_id = i.id
+             WHERE ec.student_id = :student_id AND ec.exam_date = :exam_date
+             ORDER BY ec.updated_at DESC, ec.id DESC"
+        );
+        $cStmt->execute([
+            'student_id' => $studentId,
+            'exam_date'  => $examDate,
+        ]);
+        $comments = $cStmt->fetchAll();
+
+        return [
+            'student_name'   => $student['name'],
+            'student'        => [
+                'name'  => $student['name'],
+                'grade' => isset($student['grade']) ? (int) $student['grade'] : null,
+                'field' => $student['field'] ?? null,
+            ],
+            'exam_date'      => $examDate,
+            'subjects'       => $subjects,
+            'avg_percentage' => $avg !== false && $avg !== null ? (float) $avg : 0.0,
+            'comments'       => $comments,
+        ];
+    }
+
     public static function findAll(array $filters, int $page, int $perPage): array
     {
         $conditions = ['1=1'];

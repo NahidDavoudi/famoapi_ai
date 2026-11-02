@@ -7,6 +7,7 @@ import {
   handleHealthEndpoint,
   handleAuthEndpoint,
   handleExamEndpoint,
+  handlePublicExamResultEndpoint,
 } from './dev-server.mjs';
 
 test('Health endpoint (/health) returns current database and Redis connection status', () => {
@@ -509,4 +510,156 @@ test('Exam Comments & Share Links Stage 1 — Migration 006, PUT /api/v1/exams/c
   assert.equal(detailsRes.body.data.avg_percentage, 65);
   assert.equal(detailsRes.body.data.comments.length, 2);
 });
+
+test('Exam Comments & Share Links Stage 2 — POST /api/v1/exams/share-links and GET /api/v1/public/exam-results/{token}', () => {
+  const pubCachePhp = fs.readFileSync(new URL('./app/Core/PublicCacheMiddleware.php', import.meta.url), 'utf8');
+  const examResPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamResult.php', import.meta.url), 'utf8');
+  const examSvcPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamService.php', import.meta.url), 'utf8');
+  const examCtrlPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamController.php', import.meta.url), 'utf8');
+  const routesPhp = fs.readFileSync(new URL('./routes/api.php', import.meta.url), 'utf8');
+  const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
+  const publicSpec = fs.readFileSync(new URL('./public/openapi.yaml', import.meta.url), 'utf8');
+  const readmeMd = fs.readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+
+  // 1. Verify PHP Implementation
+  assert.match(pubCachePhp, /str_starts_with\(\$path,\s*'\/api\/v1\/public\/exam-results\/'\)/);
+  assert.match(examResPhp, /public static function createShareLink\(/);
+  assert.match(examResPhp, /public static function findActiveShareLinkByHash\(string \$tokenHash\): \?array/);
+  assert.match(examResPhp, /public static function findPublicResult\(int \$studentId,\s*string \$examDate\): \?array/);
+  assert.match(examSvcPhp, /random_bytes\(32\)/);
+  assert.match(examSvcPhp, /hash\('sha256',\s*\$rawToken\)/);
+  assert.match(examSvcPhp, /14\s*\*\s*86400/);
+  assert.match(examCtrlPhp, /'Cache-Control',\s*'no-store, no-cache, must-revalidate'/);
+  assert.match(examCtrlPhp, /'X-Robots-Tag',\s*'noindex, nofollow'/);
+  assert.match(
+    routesPhp,
+    /\$app->post\('\/api\/v1\/exams\/share-links',\s*\[\$examController,\s*'createShareLink'\]\)->add\(\$requireSupporter\)->add\(\$authMiddleware\)/
+  );
+  assert.match(
+    routesPhp,
+    /\$app->get\('\/api\/v1\/public\/exam-results\/\{token\}',\s*\[\$examController,\s*'getPublicSharedResult'\]\)\s*->add\(new \\App\\Core\\RateLimitMiddleware\('public:exam_result:ip',\s*20,\s*60\)\)/
+  );
+
+  // 2. Verify OpenAPI & README
+  assert.equal(rootSpec, publicSpec);
+  assert.match(rootSpec, /\/api\/v1\/exams\/share-links:/);
+  assert.match(rootSpec, /operationId:\s*examCreateShareLink/);
+  assert.match(rootSpec, /\/api\/v1\/public\/exam-results\/\{token\}:/);
+  assert.match(rootSpec, /operationId:\s*publicGetSharedExamResult/);
+  assert.match(rootSpec, /ExamShareLinkCreateRequest:/);
+  assert.match(rootSpec, /ExamShareLinkResponse:/);
+  assert.match(rootSpec, /PublicSharedExamResult:/);
+  assert.match(readmeMd, /\/api\/v1\/exams\/share-links/);
+  assert.match(readmeMd, /\/api\/v1\/public\/exam-results\/\{token\}/);
+
+  // 3. Behavioral verification via simulator
+  const ctx = createAppContext();
+  const shareUrl = new URL('http://localhost:3000/api/v1/exams/share-links');
+  const commentUrl = new URL('http://localhost:3000/api/v1/exams/comments');
+
+  // Seed a teacher comment so public view includes comments
+  handleExamEndpoint(ctx, 'PUT', commentUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+    body: 'عملکرد در ریاضی بسیار خوب بود.',
+  }, { sub: 4, role: 'teacher' });
+
+  // 3a. Unauthenticated POST /api/v1/exams/share-links -> 401
+  const unauthShare = handleExamEndpoint(ctx, 'POST', shareUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+  }, null);
+  assert.equal(unauthShare.status, 401);
+
+  // 3b. Student and Teacher roles -> 403 FORBIDDEN (only admin/supporter allowed)
+  const studentShare = handleExamEndpoint(ctx, 'POST', shareUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+  }, { sub: 3, role: 'student' });
+  assert.equal(studentShare.status, 403);
+
+  const teacherShare = handleExamEndpoint(ctx, 'POST', shareUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+  }, { sub: 4, role: 'teacher' });
+  assert.equal(teacherShare.status, 403);
+
+  // 3c. Validation error -> 422
+  const invalidShare = handleExamEndpoint(ctx, 'POST', shareUrl, {
+    student_id: 20,
+    exam_date: 'invalid-date',
+  }, { sub: 2, role: 'supporter' });
+  assert.equal(invalidShare.status, 422);
+
+  // 3d. Supporter creates share link -> 201 Created with 43-char base64url token, only SHA-256 stored in DB
+  const createRes = handleExamEndpoint(ctx, 'POST', shareUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+  }, { sub: 2, role: 'supporter' });
+  assert.equal(createRes.status, 201);
+  const rawToken = createRes.body.data.token;
+  assert.match(rawToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(createRes.body.data.share_path, `/api/v1/public/exam-results/${rawToken}`);
+  assert.equal(ctx.examResultLinks.length, 1);
+  assert.notEqual(ctx.examResultLinks[0].token_hash, rawToken);
+  assert.match(ctx.examResultLinks[0].token_hash, /^[a-f0-9]{64}$/);
+  assert.equal(ctx.examResultLinks[0].sms_sent_at, null);
+  assert.equal(ctx.examResultLinks[0].last_viewed_at, null);
+
+  // 3e. GET /api/v1/public/exam-results/{token} returns 200 with privacy-safe payload, no-store/noindex headers, and no Redis public cache
+  const pubRes = handlePublicExamResultEndpoint(ctx, rawToken, '198.51.100.25');
+  assert.equal(pubRes.status, 200);
+  assert.equal(pubRes.headers['Cache-Control'], 'no-store, no-cache, must-revalidate');
+  assert.equal(pubRes.headers['X-Robots-Tag'], 'noindex, nofollow');
+  assert.equal(pubRes.headers['X-Cache'], undefined);
+  assert.equal(pubRes.headers['X-RateLimit-Limit'], '20');
+  assert.equal(pubRes.body.data.student_name, 'دانش‌آموز نمونه');
+  assert.equal(pubRes.body.data.exam_date, '2026-10-25');
+  assert.equal(pubRes.body.data.avg_percentage, 65);
+  assert.equal(pubRes.body.data.subjects.length, 2);
+  assert.equal(pubRes.body.data.comments.length, 1);
+  // Privacy guard: no national_id, phone, or student id exposed
+  assert.equal(pubRes.body.data.student.national_id, undefined);
+  assert.equal(pubRes.body.data.student.phone, undefined);
+  assert.equal(pubRes.body.data.national_id, undefined);
+  assert.equal(pubRes.body.data.phone, undefined);
+  assert.notEqual(ctx.examResultLinks[0].last_viewed_at, null);
+
+  // 3f. Uniform 404 for malformed, unknown, expired, or revoked tokens
+  const malformedRes = handlePublicExamResultEndpoint(ctx, 'short-token', '198.51.100.25');
+  const unknownRes = handlePublicExamResultEndpoint(
+    ctx,
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq',
+    '198.51.100.25'
+  );
+  assert.equal(malformedRes.status, 404);
+  assert.equal(unknownRes.status, 404);
+  assert.deepEqual(malformedRes.body, unknownRes.body);
+
+  // Expired token -> identical 404
+  const savedExpires = ctx.examResultLinks[0].expires_at;
+  ctx.examResultLinks[0].expires_at = '2020-01-01 00:00:00';
+  const expiredRes = handlePublicExamResultEndpoint(ctx, rawToken, '198.51.100.25');
+  assert.equal(expiredRes.status, 404);
+  assert.deepEqual(expiredRes.body, unknownRes.body);
+  ctx.examResultLinks[0].expires_at = savedExpires;
+
+  // Revoked token -> identical 404
+  ctx.examResultLinks[0].revoked_at = '2026-10-26 12:00:00';
+  const revokedRes = handlePublicExamResultEndpoint(ctx, rawToken, '198.51.100.25');
+  assert.equal(revokedRes.status, 404);
+  assert.deepEqual(revokedRes.body, unknownRes.body);
+  ctx.examResultLinks[0].revoked_at = null;
+
+  // 3g. Stricter rate limit (maxAttempts = 20 per 60s window; attempts >= 20 locks out with 429)
+  const testIp = '203.0.113.77';
+  for (let i = 1; i < 20; i++) {
+    const r = handlePublicExamResultEndpoint(ctx, rawToken, testIp);
+    assert.equal(r.status, 200);
+  }
+  const rateLimitedRes = handlePublicExamResultEndpoint(ctx, rawToken, testIp);
+  assert.equal(rateLimitedRes.status, 429);
+  assert.equal(rateLimitedRes.body.error.code, 'RATE_LIMITED');
+});
+
 

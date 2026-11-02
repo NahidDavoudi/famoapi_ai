@@ -30,6 +30,9 @@ class PublicCacheMiddleware implements MiddlewareInterface
         }
 
         $path = $request->getUri()->getPath();
+        if ( str_starts_with($path, '/api/v1/public/exam-results/') ) {
+            return $handler->handle($request);
+        }
         $query = $request->getUri()->getQuery();
         // Individual blog post detail increments views on each visit in BlogService::getPost
         $isPostDetailWithViewCounter = preg_match('#^/api/v1/public/blog/posts/[^/]+$#', $path) === 1;

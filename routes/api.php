@@ -158,6 +158,10 @@ return function (App $app) {
         ->add(new \App\Core\PublicCacheMiddleware(300))
         ->add(new \App\Core\RateLimitMiddleware('public:ip'));
 
+    // Public shared exam result link (exempt from PublicCacheMiddleware; stricter 20/min rate limit)
+    $app->get('/api/v1/public/exam-results/{token}', [$examController, 'getPublicSharedResult'])
+        ->add(new \App\Core\RateLimitMiddleware('public:exam_result:ip', 20, 60));
+
     // Dashboard (protected)
     $app->get('/api/v1/dashboard/stats', [$dashboardController, 'stats'])->add($requireSupporter)->add($authMiddleware);
 
@@ -300,6 +304,7 @@ return function (App $app) {
     $app->get('/api/v1/exams/students', [$examController, 'getStudents'])->add($requireSupporter)->add($authMiddleware);
     $app->get('/api/v1/exams/details', [$examController, 'getDetails'])->add($authMiddleware);
     $app->put('/api/v1/exams/comments', [$examController, 'upsertComment'])->add($requireStaff)->add($authMiddleware);
+    $app->post('/api/v1/exams/share-links', [$examController, 'createShareLink'])->add($requireSupporter)->add($authMiddleware);
     $app->post('/api/v1/exams', [$examController, 'save'])->add($requireAdmin)->add($authMiddleware);
 
     // Weekly Plans (temporary: admin-only while the planner is being migrated)

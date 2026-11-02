@@ -974,6 +974,79 @@ paths:
         "429":
           $ref: "#/components/responses/RateLimited"
 
+  /api/v1/public/exam-results/{token}:
+    get:
+      tags: [Public, Exams]
+      summary: View shared exam result by token (unauthenticated parent view)
+      description: |
+        Returns a student's exam result breakdown, average percentage, and teacher/staff comments
+        for a valid, unrevoked, non-expired share token.
+        - **Security & Privacy**:
+          - Only SHA-256 (`token_hash`) is stored in PostgreSQL (`exam_result_links`), with a 14-day TTL.
+          - Response excludes `national_id` and `phone`.
+          - Exempt from `PublicCacheMiddleware`; emits `Cache-Control: no-store, no-cache, must-revalidate` and `X-Robots-Tag: noindex, nofollow`.
+          - Stricter IP rate limit (`20` requests per `60` seconds).
+          - Invalid, expired, or revoked tokens always return an identical `404 NOT_FOUND` response.
+      operationId: publicGetSharedExamResult
+      parameters:
+        - name: token
+          in: path
+          required: true
+          description: 43-character base64url token generated from `random_bytes(32)`
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{32,64}$"
+      responses:
+        "200":
+          description: Shared exam result details (privacy-safe)
+          headers:
+            Cache-Control:
+              description: Prevents caching of sensitive exam results
+              schema:
+                type: string
+                example: "no-store, no-cache, must-revalidate"
+            X-Robots-Tag:
+              description: Prevents search engine indexing of shared links
+              schema:
+                type: string
+                example: "noindex, nofollow"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimitHeader"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemainingHeader"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/PublicSharedExamResult"
+        "404":
+          description: Uniform 404 for invalid, expired, or revoked token
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: "no-store, no-cache, must-revalidate"
+            X-Robots-Tag:
+              schema:
+                type: string
+                example: "noindex, nofollow"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                data: null
+                pagination: null
+                error:
+                  code: NOT_FOUND
+                  message: لینک نتیجه آزمون معتبر نیست یا منقضی شده است
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   # ───────────────────── Dashboard ─────────────────────
   /api/v1/dashboard/stats:
     get:
@@ -3077,6 +3150,43 @@ paths:
                             items:
                               $ref: "#/components/schemas/ExamComment"
                         required: [comment, comments]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/exams/share-links:
+    post:
+      tags: [Exams]
+      summary: Generate a 14-day shareable parent link for a student's exam result (supporter/admin)
+      description: >
+        Generates a base64url token from `random_bytes(32)`, stores only its `SHA-256` hash
+        in PostgreSQL (`exam_result_links`) with a 14-day expiration (`expires_at`), and returns
+        the shareable link without sending an SMS. Accessible by `supporter` and `admin`.
+      operationId: examCreateShareLink
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExamShareLinkCreateRequest"
+      responses:
+        "201":
+          description: Shareable link created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/ExamShareLinkResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -7506,6 +7616,107 @@ components:
           maxLength: 2000
           description: متن نظر استاد یا پشتیبان
       required: [student_id, exam_date, body]
+
+    ExamShareLinkCreateRequest:
+      type: object
+      properties:
+        student_id:
+          type: integer
+          minimum: 1
+          description: شناسه دانش‌آموز
+        exam_date:
+          type: string
+          format: date
+          description: تاریخ آزمون (YYYY-MM-DD)
+      required: [student_id, exam_date]
+
+    ExamShareLinkResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        token:
+          type: string
+          description: توکن base64url تولیدشده با random_bytes(32)
+        url:
+          type: string
+          description: آدرس عمومی مشاهده کارنامه
+        share_url:
+          type: string
+          description: آدرس عمومی مشاهده کارنامه
+        student_id:
+          type: integer
+        exam_date:
+          type: string
+          format: date
+        expires_at:
+          type: string
+          format: date-time
+          description: تاریخ انقضای لینک (۱۴ روز پس از صدور)
+      required: [id, token, url, share_url, student_id, exam_date, expires_at]
+
+    PublicSharedExamResult:
+      type: object
+      description: خروجی عمومی کارنامه برای والدین (بدون کد ملی و بدون شماره تلفن)
+      properties:
+        student_name:
+          type: string
+        student:
+          type: object
+          properties:
+            name:
+              type: string
+            grade:
+              type: integer
+              nullable: true
+            field:
+              type: string
+              nullable: true
+          required: [name]
+        exam_date:
+          type: string
+          format: date
+        subjects:
+          type: array
+          items:
+            type: object
+            properties:
+              subject:
+                type: string
+              chapter:
+                type: string
+                nullable: true
+              total_q:
+                type: integer
+              correct:
+                type: integer
+              wrong:
+                type: integer
+              skipped:
+                type: integer
+              percentage:
+                type: number
+        avg_percentage:
+          type: number
+        comments:
+          type: array
+          items:
+            type: object
+            properties:
+              author_name:
+                type: string
+              author_role:
+                type: string
+                enum: [teacher, supporter, admin]
+              body:
+                type: string
+              created_at:
+                type: string
+                format: date-time
+              updated_at:
+                type: string
+                format: date-time
+      required: [student_name, student, exam_date, subjects, avg_percentage, comments]
 
   responses:
     BadRequest:

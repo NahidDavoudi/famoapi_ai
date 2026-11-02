@@ -188,4 +188,71 @@ class ExamController
         ], JSON_UNESCAPED_UNICODE));
         return $response->withHeader('Content-Type', 'application/json; charset=utf-8');
     }
+
+    public function createShareLink(Request $request, Response $response): Response
+    {
+        $decoded = $request->getAttribute('user');
+        $body = $request->getParsedBody() ?? [];
+
+        $validator = new \App\Core\Validator();
+        $validator
+            ->required('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null)
+            ->positiveInt('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null)
+            ->required('exam_date', 'تاریخ آزمون', $body['exam_date'] ?? null)
+            ->date('exam_date', 'تاریخ آزمون', $body['exam_date'] ?? null);
+
+        if (!$validator->passes()) {
+            $response->getBody()->write(json_encode([
+                'success' => false, 'data' => null, 'pagination' => null,
+                'error' => ['code' => 'VALIDATION_ERROR', 'message' => $validator->firstError()],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        try {
+            $result = $this->service->createShareLink(
+                (int) $body['student_id'],
+                (string) $body['exam_date'],
+                isset($decoded->sub) ? (int) $decoded->sub : null
+            );
+        } catch (\App\Core\ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success' => false, 'data' => null, 'pagination' => null,
+                'error' => ['code' => $e->getErrorCode(), 'message' => $e->getMessage()],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success' => true, 'data' => $result, 'pagination' => null, 'error' => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withStatus(201)->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+
+    public function getPublicSharedResult(Request $request, Response $response, array $args): Response
+    {
+        $token = (string) ($args['token'] ?? '');
+
+        try {
+            $result = $this->service->getPublicSharedResult($token);
+        } catch (\App\Core\ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success' => false, 'data' => null, 'pagination' => null,
+                'error' => ['code' => $e->getErrorCode(), 'message' => $e->getMessage()],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response
+                ->withStatus($e->getHttpStatus())
+                ->withHeader('Content-Type', 'application/json; charset=utf-8')
+                ->withHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+                ->withHeader('X-Robots-Tag', 'noindex, nofollow');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success' => true, 'data' => $result, 'pagination' => null, 'error' => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response
+            ->withHeader('Content-Type', 'application/json; charset=utf-8')
+            ->withHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+            ->withHeader('X-Robots-Tag', 'noindex, nofollow');
+    }
 }

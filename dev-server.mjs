@@ -982,6 +982,107 @@ export function handleExamEndpoint(ctx, method, urlObj, body = {}, authUser = nu
     };
   }
 
+  if (method === 'POST' && pathname === '/api/v1/exams/share-links') {
+    if (!['admin', 'supporter'].includes(user.role)) {
+      return {
+        status: 403,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'FORBIDDEN', message: 'دسترسی محدود به پشتیبانان و مدیران' },
+        },
+      };
+    }
+
+    const studentId = Number(body?.student_id);
+    const examDate = typeof body?.exam_date === 'string' ? body.exam_date.trim() : '';
+
+    if (!Number.isInteger(studentId) || studentId <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(examDate)) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'داده‌های ناقص یا نامعتبر است' },
+        },
+      };
+    }
+
+    const student = ctx.students.find((s) => s.id === studentId);
+    if (!student) {
+      return {
+        status: 404,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'NOT_FOUND', message: 'دانش‌آموز یافت نشد' },
+        },
+      };
+    }
+
+    const hasExam = ctx.examResults.some((r) => r.student_id === studentId && r.exam_date === examDate);
+    if (!hasExam) {
+      return {
+        status: 404,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'NOT_FOUND', message: 'نتیجه آزمونی برای این دانش‌آموز در این تاریخ ثبت نشده است' },
+        },
+      };
+    }
+
+    const rawToken = crypto
+      .randomBytes(32)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    const nowMs = Date.now();
+    const createdAt = new Date(nowMs).toISOString().replace('T', ' ').slice(0, 19);
+    const expiresAt = new Date(nowMs + 14 * 86400 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+
+    const record = {
+      id: ctx.examResultLinks.length + 1,
+      token_hash: tokenHash,
+      student_id: studentId,
+      exam_date: examDate,
+      expires_at: expiresAt,
+      revoked_at: null,
+      sms_sent_at: null,
+      created_by: user.id,
+      last_viewed_at: null,
+      created_at: createdAt,
+    };
+    ctx.examResultLinks.push(record);
+
+    const sharePath = `/api/v1/public/exam-results/${rawToken}`;
+    return {
+      status: 201,
+      body: {
+        success: true,
+        data: {
+          id: record.id,
+          student_id: studentId,
+          exam_date: examDate,
+          token: rawToken,
+          share_path: sharePath,
+          share_url: `http://localhost:3000${sharePath}`,
+          expires_at: expiresAt,
+          created_at: createdAt,
+        },
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
   return {
     status: 404,
     body: {
@@ -989,6 +1090,140 @@ export function handleExamEndpoint(ctx, method, urlObj, body = {}, authUser = nu
       data: null,
       pagination: null,
       error: { code: 'NOT_FOUND', message: 'مسیر یافت نشد' },
+    },
+  };
+}
+
+export function handlePublicExamResultEndpoint(ctx, token, clientIp = '127.0.0.1') {
+  const { rateLimiter } = ctx;
+  const maxAttempts = 20;
+  const windowSeconds = 60;
+  const rlKey = rateLimiter.key('public:exam_result:ip', clientIp);
+  const rlStatus = rateLimiter.attempt(rlKey, maxAttempts, windowSeconds, 60);
+  const remaining = Math.max(0, maxAttempts - rlStatus.attempts);
+
+  const securityHeaders = {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
+    'X-Robots-Tag': 'noindex, nofollow',
+    'X-RateLimit-Limit': String(maxAttempts),
+    'X-RateLimit-Remaining': String(remaining),
+    Vary: 'Origin',
+  };
+
+  if (!rlStatus.allowed) {
+    return {
+      status: 429,
+      headers: {
+        ...securityHeaders,
+        'Retry-After': String(Math.max(1, rlStatus.retry_after)),
+      },
+      body: {
+        success: false,
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Too many requests. Please try again later.',
+        },
+        retry_after: Math.max(1, rlStatus.retry_after),
+      },
+    };
+  }
+
+  const uniformNotFound = {
+    status: 404,
+    headers: securityHeaders,
+    body: {
+      success: false,
+      data: null,
+      pagination: null,
+      error: {
+        code: 'NOT_FOUND',
+        message: 'لینک نتیجه آزمون معتبر نیست یا منقضی شده است',
+      },
+    },
+  };
+
+  const rawToken = typeof token === 'string' ? token.trim() : '';
+  if (!/^[A-Za-z0-9_-]{40,64}$/.test(rawToken)) {
+    return uniformNotFound;
+  }
+
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  const link = ctx.examResultLinks.find((l) => l.token_hash === tokenHash);
+  if (!link || link.revoked_at !== null) {
+    return uniformNotFound;
+  }
+
+  const expiresMs = Date.parse(link.expires_at.replace(' ', 'T') + 'Z');
+  if (Number.isNaN(expiresMs) || expiresMs <= Date.now()) {
+    return uniformNotFound;
+  }
+
+  const student = ctx.students.find((s) => s.id === link.student_id);
+  const subjects = ctx.examResults
+    .filter((r) => r.student_id === link.student_id && r.exam_date === link.exam_date)
+    .map((r) => ({
+      subject: r.subject,
+      chapter: r.chapter,
+      total_q: r.total_q,
+      correct: r.correct,
+      wrong: r.wrong,
+      skipped: r.skipped,
+      percentage: r.percentage,
+    }));
+
+  if (!student || subjects.length === 0) {
+    return uniformNotFound;
+  }
+
+  link.last_viewed_at = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+  const avg = Number(
+    (subjects.reduce((acc, s) => acc + s.percentage, 0) / subjects.length).toFixed(1)
+  );
+
+  const comments = ctx.examComments
+    .filter((c) => c.student_id === link.student_id && c.exam_date === link.exam_date)
+    .sort((a, b) => b.id - a.id)
+    .map((c) => {
+      const author = ctx.users.find((u) => u.id === c.teacher_user_id);
+      let authorName = author?.full_name || author?.username || '';
+      if (author?.role === 'teacher' && author?.linked_id > 0) {
+        const inst = ctx.instructors.find((i) => i.id === author.linked_id);
+        if (inst?.name) authorName = inst.name;
+      }
+      return {
+        id: c.id,
+        student_id: c.student_id,
+        exam_date: c.exam_date,
+        teacher_user_id: c.teacher_user_id,
+        author_name: authorName,
+        author_role: author?.role || 'teacher',
+        body: c.body,
+        created_at: c.created_at,
+        updated_at: c.updated_at,
+      };
+    });
+
+  return {
+    status: 200,
+    headers: securityHeaders,
+    body: {
+      success: true,
+      data: {
+        student_name: student.name,
+        student: {
+          name: student.name,
+          grade: student.grade,
+          field: student.field,
+        },
+        exam_date: link.exam_date,
+        subjects,
+        avg_percentage: avg,
+        comments,
+      },
+      pagination: null,
+      error: null,
     },
   };
 }
