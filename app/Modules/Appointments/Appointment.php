@@ -139,4 +139,262 @@ class Appointment
         $result = $stmt->fetch();
         return $result ?: null;
     }
+
+    /**
+     * Fetch active students (plus any students who have appointments in the given week),
+     * optionally restricted to a specific list of student IDs.
+     */
+    public static function findTargetStudents(string $weekStart, string $weekEnd, ?array $studentIds = null): array
+    {
+        $db = Database::getConnection();
+
+        if ($studentIds !== null) {
+            if ($studentIds === []) {
+                return [];
+            }
+            $placeholders = implode(',', array_fill(0, count($studentIds), '?'));
+            $stmt = $db->prepare(
+                "SELECT id, name, grade, field, phone, is_active
+                 FROM students
+                 WHERE id IN ({$placeholders})
+                 ORDER BY id ASC"
+            );
+            $stmt->execute(array_values($studentIds));
+            return $stmt->fetchAll();
+        }
+
+        $stmt = $db->prepare(
+            "SELECT s.id, s.name, s.grade, s.field, s.phone, s.is_active
+             FROM students s
+             WHERE s.is_active = 1
+                OR EXISTS (
+                    SELECT 1 FROM appointments a
+                    WHERE a.student_id = s.id
+                      AND a.appointment_date BETWEEN :week_start AND :week_end
+                      AND a.status IN ('pending', 'confirmed', 'scheduled')
+                )
+             ORDER BY s.id ASC"
+        );
+        $stmt->execute([
+            'week_start' => $weekStart,
+            'week_end'   => $weekEnd,
+        ]);
+        return $stmt->fetchAll();
+    }
+
+    /**
+     * Fetch all active appointments (status IN pending, confirmed, scheduled) within [weekStart, weekEnd],
+     * ordered by appointment_date ASC, start_time ASC, id ASC so the first row per student is the nearest.
+     */
+    public static function findActiveInWeek(string $weekStart, string $weekEnd, ?array $studentIds = null): array
+    {
+        $db = Database::getConnection();
+        $sql = "SELECT a.id, a.student_id, a.appointment_date, a.start_time, a.end_time, a.status, a.type, a.description
+                FROM appointments a
+                WHERE a.appointment_date BETWEEN ? AND ?
+                  AND a.status IN ('pending', 'confirmed', 'scheduled')";
+        $params = [$weekStart, $weekEnd];
+
+        if ($studentIds !== null) {
+            if ($studentIds === []) {
+                return [];
+            }
+            $placeholders = implode(',', array_fill(0, count($studentIds), '?'));
+            $sql .= " AND a.student_id IN ({$placeholders})";
+            foreach ($studentIds as $id) {
+                $params[] = (int) $id;
+            }
+        }
+
+        $sql .= " ORDER BY a.student_id ASC, a.appointment_date ASC, a.start_time ASC NULLS LAST, a.id ASC";
+        $stmt = $db->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll();
+    }
+
+    /**
+     * Fetch primary parent contact per student (ordered by is_primary DESC, id ASC).
+     *
+     * @param int[] $studentIds
+     * @return array<int, array>
+     */
+    public static function findPrimaryParentsForStudents(array $studentIds): array
+    {
+        if ($studentIds === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($studentIds), '?'));
+        $stmt = Database::getConnection()->prepare(
+            "SELECT id, student_id, parent_name, relationship, phone, is_primary
+             FROM parent_contacts
+             WHERE student_id IN ({$placeholders})
+             ORDER BY student_id ASC, is_primary DESC, id ASC"
+        );
+        $stmt->execute(array_values($studentIds));
+
+        $byStudent = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $sid = (int) $row['student_id'];
+            if (!isset($byStudent[$sid])) {
+                $byStudent[$sid] = $row;
+            }
+        }
+
+        return $byStudent;
+    }
+
+    /**
+     * Fetch SMS log entries for a given week_date, keyed by student_id.
+     */
+    public static function findSmsLogsByWeek(string $weekDate, ?array $studentIds = null): array
+    {
+        $db = Database::getConnection();
+        $sql = "SELECT *
+                FROM appointment_sms_log
+                WHERE week_date = ?";
+        $params = [$weekDate];
+
+        if ($studentIds !== null) {
+            if ($studentIds === []) {
+                return [];
+            }
+            $placeholders = implode(',', array_fill(0, count($studentIds), '?'));
+            $sql .= " AND student_id IN ({$placeholders})";
+            foreach ($studentIds as $id) {
+                $params[] = (int) $id;
+            }
+        }
+
+        $sql .= " ORDER BY updated_at DESC, id DESC";
+        $stmt = $db->prepare($sql);
+        $stmt->execute($params);
+
+        $byStudent = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $sid = (int) $row['student_id'];
+            if (!isset($byStudent[$sid])) {
+                $byStudent[$sid] = $row;
+            }
+        }
+
+        return $byStudent;
+    }
+
+    /**
+     * Upsert a row in appointment_sms_log on (student_id, week_date, mobile).
+     */
+    public static function upsertSmsLog(array $data): array
+    {
+        $db = Database::getConnection();
+        $mobile = (string) ($data['mobile'] ?? '');
+        $studentId = (int) $data['student_id'];
+        $weekDate = (string) $data['week_date'];
+
+        if ($mobile !== '') {
+            $cleanup = $db->prepare(
+                "DELETE FROM appointment_sms_log
+                 WHERE student_id = :student_id AND week_date = :week_date AND mobile = ''"
+            );
+            $cleanup->execute([
+                'student_id' => $studentId,
+                'week_date'  => $weekDate,
+            ]);
+        }
+
+        $stmt = $db->prepare(
+            "INSERT INTO appointment_sms_log (
+                student_id, week_date, mobile, recipient_type, appointment_at,
+                status, error, attempts, sent_at, created_by, created_at, updated_at
+            ) VALUES (
+                :student_id, :week_date, :mobile, :recipient_type, :appointment_at,
+                :status, :error, 1, :sent_at, :created_by, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            ON CONFLICT (student_id, week_date, mobile) DO UPDATE SET
+                recipient_type = EXCLUDED.recipient_type,
+                appointment_at = EXCLUDED.appointment_at,
+                status         = EXCLUDED.status,
+                error          = EXCLUDED.error,
+                attempts       = appointment_sms_log.attempts + 1,
+                sent_at        = COALESCE(EXCLUDED.sent_at, appointment_sms_log.sent_at),
+                created_by     = EXCLUDED.created_by,
+                updated_at     = CURRENT_TIMESTAMP
+            RETURNING *"
+        );
+
+        $stmt->execute([
+            'student_id'     => $studentId,
+            'week_date'      => $weekDate,
+            'mobile'         => $mobile,
+            'recipient_type' => 'parent',
+            'appointment_at' => $data['appointment_at'] ?? null,
+            'status'         => (string) $data['status'],
+            'error'          => $data['error'] ?? null,
+            'sent_at'        => $data['sent_at'] ?? null,
+            'created_by'     => $data['created_by'] ?? null,
+        ]);
+
+        return $stmt->fetch() ?: [];
+    }
+
+    public static function countSmsLogs(array $filters): int
+    {
+        [$whereSql, $params] = self::buildSmsLogWhere($filters);
+        $stmt = Database::getConnection()->prepare(
+            "SELECT COUNT(*) FROM appointment_sms_log l {$whereSql}"
+        );
+        $stmt->execute($params);
+        return (int) $stmt->fetchColumn();
+    }
+
+    public static function findSmsLogs(array $filters, int $page, int $perPage): array
+    {
+        $perPage = max(1, min(100, $perPage));
+        $page = max(1, $page);
+        $offset = ($page - 1) * $perPage;
+
+        [$whereSql, $params] = self::buildSmsLogWhere($filters);
+
+        $sql = "SELECT l.*, s.name AS student_name, s.grade, s.field, u.username AS created_by_username
+                FROM appointment_sms_log l
+                JOIN students s ON s.id = l.student_id
+                LEFT JOIN users u ON u.id = l.created_by
+                {$whereSql}
+                ORDER BY l.updated_at DESC, l.id DESC
+                LIMIT :limit OFFSET :offset";
+
+        $stmt = Database::getConnection()->prepare($sql);
+        foreach ($params as $k => $v) {
+            $stmt->bindValue(':' . $k, $v);
+        }
+        $stmt->bindValue(':limit', $perPage, \PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $offset, \PDO::PARAM_INT);
+        $stmt->execute();
+
+        return $stmt->fetchAll();
+    }
+
+    private static function buildSmsLogWhere(array $filters): array
+    {
+        $conditions = [];
+        $params = [];
+
+        if (!empty($filters['week_date'])) {
+            $conditions[] = 'l.week_date = :week_date';
+            $params['week_date'] = (string) $filters['week_date'];
+        }
+
+        if (!empty($filters['student_id'])) {
+            $conditions[] = 'l.student_id = :student_id';
+            $params['student_id'] = (int) $filters['student_id'];
+        }
+
+        if (!empty($filters['status'])) {
+            $conditions[] = 'l.status = :status';
+            $params['status'] = (string) $filters['status'];
+        }
+
+        $whereSql = $conditions !== [] ? 'WHERE ' . implode(' AND ', $conditions) : '';
+        return [$whereSql, $params];
+    }
 }

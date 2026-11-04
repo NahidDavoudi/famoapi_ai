@@ -9,6 +9,8 @@ class SmsService
     private string $melipayamakUsername;
     private string $melipayamakPassword;
     private string $melipayamakBodyId;
+    private string $melipayamakExamBodyId;
+    private string $melipayamakAppointmentBodyId;
 
     public function __construct()
     {
@@ -17,6 +19,8 @@ class SmsService
         $this->melipayamakUsername = $_ENV['MELIPAYAMAK_USERNAME'] ?? '';
         $this->melipayamakPassword = $_ENV['MELIPAYAMAK_PASSWORD'] ?? '';
         $this->melipayamakBodyId = $_ENV['MELIPAYAMAK_PATTERN_BODY_ID'] ?? '';
+        $this->melipayamakExamBodyId = $_ENV['MELIPAYAMAK_EXAM_BODY_ID'] ?? $this->melipayamakBodyId;
+        $this->melipayamakAppointmentBodyId = $_ENV['MELIPAYAMAK_APPOINTMENT_BODY_ID'] ?? $this->melipayamakBodyId;
     }
 
     public function send(string $phone, string $message): bool
@@ -59,10 +63,33 @@ class SmsService
         return true;
     }
 
-    public function sendAppointmentReminder(string $phone, string $studentName, string $date, string $time): bool
+    /**
+     * Dispatches a weekly appointment reminder to the primary parent via Melipayamak pattern API.
+     * Pattern variables are semicolon-delimited: "{studentName};{dayAndDate};{time}".
+     */
+    public function sendAppointmentReminder(string $mobile, string $studentName, string $dayAndDate, string $time): bool
     {
-        $message = "سلام {$studentName} عزیز، نوبت شما در تاریخ {$date} ساعت {$time} در آموزشگاه فامو می‌باشد.";
-        return $this->send($phone, $message);
+        $logPath = __DIR__ . '/../../storage/logs/app.log';
+        $bodyId = $this->melipayamakAppointmentBodyId !== '' ? $this->melipayamakAppointmentBodyId : $this->melipayamakBodyId;
+
+        if (empty($this->melipayamakUsername) || empty($this->melipayamakPassword) || empty($bodyId)) {
+            error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Melipayamak not configured for appointment reminder.' . PHP_EOL, 3, $logPath);
+            return false;
+        }
+
+        $normalized = PhoneNumber::normalize($mobile);
+        if ($normalized === null || !preg_match('/^09[0-9]{9}$/', $normalized)) {
+            error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Invalid parent mobile format for appointment reminder.' . PHP_EOL, 3, $logPath);
+            return false;
+        }
+
+        // Sanitize semicolon delimiters in parameters to prevent pattern parameter injection
+        $safeName       = str_replace([';', "\r", "\n"], ' ', trim($studentName));
+        $safeDayAndDate = str_replace([';', "\r", "\n"], ' ', trim($dayAndDate));
+        $safeTime       = str_replace([';', "\r", "\n"], '', trim($time));
+        $patternText    = "{$safeName};{$safeDayAndDate};{$safeTime}";
+
+        return $this->sendMelipayamakPattern($normalized, (int) $bodyId, $patternText, 'Appointment reminder');
     }
 
     public function sendAbsenceReminder(string $phone, string $studentName, string $parentName): bool
@@ -84,14 +111,48 @@ class SmsService
             return false;
         }
 
+        return $this->sendMelipayamakPattern($mobile, (int) $this->melipayamakBodyId, $code, '2FA code');
+    }
+
+    /**
+     * Dispatches a parent shareable exam result link via Melipayamak pattern API.
+     * Pattern variables are semicolon-delimited: "{studentName};{examDate};{shareUrl}".
+     */
+    public function sendExamResultLink(string $mobile, string $studentName, string $examDate, string $shareUrl): bool
+    {
+        $logPath = __DIR__ . '/../../storage/logs/app.log';
+        $bodyId = $this->melipayamakExamBodyId !== '' ? $this->melipayamakExamBodyId : $this->melipayamakBodyId;
+
+        if (empty($this->melipayamakUsername) || empty($this->melipayamakPassword) || empty($bodyId)) {
+            error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Melipayamak not configured for exam result link.' . PHP_EOL, 3, $logPath);
+            return false;
+        }
+
+        $normalized = PhoneNumber::normalize($mobile);
+        if ($normalized === null || !preg_match('/^09[0-9]{9}$/', $normalized)) {
+            error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Invalid parent mobile format for exam result link.' . PHP_EOL, 3, $logPath);
+            return false;
+        }
+
+        // Sanitize semicolon delimiters in parameters to prevent pattern parameter injection
+        $safeName = str_replace([';', "\r", "\n"], ' ', trim($studentName));
+        $safeDate = str_replace([';', "\r", "\n"], '', trim($examDate));
+        $safeUrl  = str_replace([';', "\r", "\n"], '', trim($shareUrl));
+        $patternText = "{$safeName};{$safeDate};{$safeUrl}";
+
+        return $this->sendMelipayamakPattern($normalized, (int) $bodyId, $patternText, 'Exam result link');
+    }
+
+    private function sendMelipayamakPattern(string $mobile, int $bodyId, string $text, string $contextLabel): bool
+    {
         $url = 'https://rest.payamak-panel.com/api/SendSMS/BaseServiceNumber';
         $jsonData = json_encode([
             'username' => $this->melipayamakUsername,
             'password' => $this->melipayamakPassword,
             'to'       => $mobile,
-            'bodyId'   => (int) $this->melipayamakBodyId,
-            'text'     => $code,
-        ]);
+            'bodyId'   => $bodyId,
+            'text'     => $text,
+        ], JSON_UNESCAPED_UNICODE);
 
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -111,23 +172,23 @@ class SmsService
         $logPath = __DIR__ . '/../../storage/logs/app.log';
 
         if ($curlError) {
-            error_log('[' . date('Y-m-d H:i:s') . '] SmsService cURL error: ' . $curlError . PHP_EOL, 3, $logPath);
+            error_log('[' . date('Y-m-d H:i:s') . '] SmsService cURL error (' . $contextLabel . '): ' . $curlError . PHP_EOL, 3, $logPath);
             return false;
         }
 
         if ($httpCode !== 200) {
-            error_log('[' . date('Y-m-d H:i:s') . '] SmsService HTTP ' . $httpCode . PHP_EOL, 3, $logPath);
+            error_log('[' . date('Y-m-d H:i:s') . '] SmsService HTTP ' . $httpCode . ' (' . $contextLabel . ')' . PHP_EOL, 3, $logPath);
             return false;
         }
 
-        $decoded = json_decode($response, true);
+        $decoded = json_decode((string) $response, true);
         if (!is_array($decoded) || !isset($decoded['RetStatus']) || (int) $decoded['RetStatus'] !== 1) {
-            $errMsg = is_array($decoded) ? ($decoded['StrRetStatus'] ?? 'unknown') : $response;
-            error_log('[' . date('Y-m-d H:i:s') . '] SmsService Melipayamak rejected: ' . $errMsg . PHP_EOL, 3, $logPath);
+            $errMsg = is_array($decoded) ? ($decoded['StrRetStatus'] ?? 'unknown') : (string) $response;
+            error_log('[' . date('Y-m-d H:i:s') . '] SmsService Melipayamak rejected (' . $contextLabel . '): ' . $errMsg . PHP_EOL, 3, $logPath);
             return false;
         }
 
-        error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Code sent to ' . substr($mobile, 0, 4) . '***' . PHP_EOL, 3, $logPath);
+        error_log('[' . date('Y-m-d H:i:s') . '] SmsService: ' . $contextLabel . ' sent to ' . substr($mobile, 0, 4) . '***' . PHP_EOL, 3, $logPath);
         return true;
     }
 }

@@ -273,6 +273,116 @@ class AuthController
         return AuthCookie::clear($response->withHeader('Content-Type', 'application/json; charset=utf-8'), $request);
     }
 
+    public function changePassword(Request $request, Response $response): Response
+    {
+        $decoded = $request->getAttribute('user');
+        $body = $request->getParsedBody() ?? [];
+
+        $validator = new Validator();
+        $validator
+            ->required('current_password', 'رمز عبور فعلی', $body['current_password'] ?? null)
+            ->string('current_password', 'رمز عبور فعلی', $body['current_password'] ?? null)
+            ->required('new_password', 'رمز عبور جدید', $body['new_password'] ?? null)
+            ->string('new_password', 'رمز عبور جدید', $body['new_password'] ?? null)
+            ->minLength('new_password', 'رمز عبور جدید', $body['new_password'] ?? null, 4);
+
+        if (!$validator->passes()) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => 'VALIDATION_ERROR',
+                    'message' => $validator->firstError(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        try {
+            $this->service->changePassword(
+                (int) $decoded->sub,
+                (string) $body['current_password'],
+                (string) $body['new_password']
+            );
+        } catch (\App\Core\ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => $e->getErrorCode(),
+                    'message' => $e->getMessage(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success'    => true,
+            'data'       => ['message' => 'رمز عبور با موفقیت تغییر یافت'],
+            'pagination' => null,
+            'error'      => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+
+    public function updateProfile(Request $request, Response $response): Response
+    {
+        $decoded = $request->getAttribute('user');
+        $body = $request->getParsedBody() ?? [];
+        $fullName = $body['full_name'] ?? $body['name'] ?? null;
+
+        $validator = new Validator();
+        $validator
+            ->required('full_name', 'نام و نام خانوادگی', $fullName)
+            ->string('full_name', 'نام و نام خانوادگی', $fullName)
+            ->minLength('full_name', 'نام و نام خانوادگی', $fullName, 2)
+            ->maxLength('full_name', 'نام و نام خانوادگی', $fullName, 150)
+            ->required('phone', 'شماره تلفن', $body['phone'] ?? null)
+            ->phone('phone', 'شماره تلفن', $body['phone'] ?? null);
+
+        if (isset($body['current_password']) && $body['current_password'] !== null) {
+            $validator->string('current_password', 'رمز عبور فعلی', $body['current_password']);
+        }
+
+        if (!$validator->passes()) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => 'VALIDATION_ERROR',
+                    'message' => $validator->firstError(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        try {
+            $profile = $this->service->updateProfile((int) $decoded->sub, $body);
+        } catch (\App\Core\ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => $e->getErrorCode(),
+                    'message' => $e->getMessage(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success'    => true,
+            'data'       => $profile,
+            'pagination' => null,
+            'error'      => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+
     private function assertLoginAllowed(?string $userIpKey, ?string $ipKey, string $userKey, int $window): void
     {
         $checks = [];

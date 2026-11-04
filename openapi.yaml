@@ -355,25 +355,119 @@ paths:
                   - $ref: "#/components/schemas/SuccessResponse"
                   - properties:
                       data:
-                        type: object
-                        properties:
-                          id:
-                            type: integer
-                          username:
-                            type: string
-                          full_name:
-                            type: string
-                            nullable: true
-                          role:
-                            type: string
-                          student_id:
-                            type: integer
-                            nullable: true
-                            description: شناسه دانش‌آموز متصل (null برای admin/supporter)
+                        $ref: "#/components/schemas/AuthUserProfile"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/v1/auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Change current user's password
+      operationId: authChangePassword
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthChangePasswordRequest"
+      responses:
+        "200":
+          description: Password changed successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          message:
+                            type: string
+                            example: رمز عبور با موفقیت تغییر یافت
+                        required: [message]
+        "401":
+          description: Unauthorized or wrong current password (INVALID_PASSWORD)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                data: null
+                pagination: null
+                error:
+                  code: INVALID_PASSWORD
+                  message: رمز عبور فعلی اشتباه است
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/auth/profile:
+    put:
+      tags: [Auth]
+      summary: Update current user's profile (full_name and phone, synced with role table)
+      description: >
+        Updates `full_name` (or `name`) and `phone` (normalized via `PhoneNumber::normalizeOrFail`)
+        in `users` and the linked role table (`admins`, `supporters`, `students`, `instructors`)
+        within a transaction. If the previous `username` matched the previous `phone`, `username`
+        is also synced to the new `phone`. For 2FA roles (`admin`, `supporter`, `teacher`),
+        changing `phone` requires `current_password`.
+      operationId: authUpdateProfile
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthProfileUpdateRequest"
+      responses:
+        "200":
+          description: Updated profile data (same structure as /api/v1/auth/me)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/AuthUserProfile"
+        "401":
+          description: Unauthorized or wrong current password when changing 2FA phone (INVALID_PASSWORD)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                data: null
+                pagination: null
+                error:
+                  code: INVALID_PASSWORD
+                  message: رمز عبور فعلی اشتباه است
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Phone number already registered to another user (DUPLICATE_PHONE)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                data: null
+                pagination: null
+                error:
+                  code: DUPLICATE_PHONE
+                  message: این شماره تلفن قبلاً برای کاربر دیگری ثبت شده است
+        "422":
+          $ref: "#/components/responses/ValidationError"
 
   /api/v1/auth/logout:
     post:
@@ -877,6 +971,79 @@ paths:
                   - $ref: "#/components/schemas/WithPagination"
         "422":
           $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/public/exam-results/{token}:
+    get:
+      tags: [Public, Exams]
+      summary: View shared exam result by token (unauthenticated parent view)
+      description: |
+        Returns a student's exam result breakdown, average percentage, and teacher/staff comments
+        for a valid, unrevoked, non-expired share token.
+        - **Security & Privacy**:
+          - Only SHA-256 (`token_hash`) is stored in PostgreSQL (`exam_result_links`), with a 14-day TTL.
+          - Response excludes `national_id` and `phone`.
+          - Exempt from `PublicCacheMiddleware`; emits `Cache-Control: no-store, no-cache, must-revalidate` and `X-Robots-Tag: noindex, nofollow`.
+          - Stricter IP rate limit (`20` requests per `60` seconds).
+          - Invalid, expired, or revoked tokens always return an identical `404 NOT_FOUND` response.
+      operationId: publicGetSharedExamResult
+      parameters:
+        - name: token
+          in: path
+          required: true
+          description: 43-character base64url token generated from `random_bytes(32)`
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{32,64}$"
+      responses:
+        "200":
+          description: Shared exam result details (privacy-safe)
+          headers:
+            Cache-Control:
+              description: Prevents caching of sensitive exam results
+              schema:
+                type: string
+                example: "no-store, no-cache, must-revalidate"
+            X-Robots-Tag:
+              description: Prevents search engine indexing of shared links
+              schema:
+                type: string
+                example: "noindex, nofollow"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimitHeader"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemainingHeader"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/PublicSharedExamResult"
+        "404":
+          description: Uniform 404 for invalid, expired, or revoked token
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: "no-store, no-cache, must-revalidate"
+            X-Robots-Tag:
+              schema:
+                type: string
+                example: "noindex, nofollow"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                data: null
+                pagination: null
+                error:
+                  code: NOT_FOUND
+                  message: لینک نتیجه آزمون معتبر نیست یا منقضی شده است
         "429":
           $ref: "#/components/responses/RateLimited"
 
@@ -2935,10 +3102,256 @@ paths:
                                   type: number
                           avg_percentage:
                             type: number
+                          comments:
+                            type: array
+                            description: نظرات ثبت‌شده توسط اساتید/کادر آموزشی برای این دانش‌آموز در این آزمون
+                            items:
+                              $ref: "#/components/schemas/ExamComment"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/exams/comments:
+    put:
+      tags: [Exams]
+      summary: Upsert a teacher/staff comment on a student's exam result
+      description: >
+        Creates or updates a comment for `(student_id, exam_date, teacher_user_id)`
+        using PostgreSQL `ON CONFLICT (student_id, exam_date, teacher_user_id) DO UPDATE`.
+        Accessible by `teacher`, `supporter`, and `admin` roles.
+      operationId: examUpsertComment
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExamCommentUpsertRequest"
+      responses:
+        "200":
+          description: Comment upserted successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          comment:
+                            $ref: "#/components/schemas/ExamComment"
+                          comments:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/ExamComment"
+                        required: [comment, comments]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/exams/share-links:
+    get:
+      tags: [Exams]
+      summary: List shareable exam result links for panel management (supporter/admin)
+      description: >
+        Returns shareable exam result links (filtered by optional `student_id` and `exam_date`)
+        including `status` (`active`, `expired`, `revoked`), `sms_sent_at`, and `last_viewed_at`.
+        Never exposes `token_hash`.
+      operationId: examListShareLinks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: student_id
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: exam_date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: List of exam result share links
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          links:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/ExamShareLinkItem"
+                        required: [links]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    post:
+      tags: [Exams]
+      summary: Generate a 14-day shareable parent link for a student's exam result with optional Melipayamak SMS dispatch (supporter/admin)
+      description: >
+        Generates a base64url token from `random_bytes(32)`, stores only its `SHA-256` hash
+        in PostgreSQL (`exam_result_links`) with a 14-day expiration (`expires_at`), and optionally
+        dispatches the link via Melipayamak pattern SMS when `send_sms: true` is passed (enforcing
+        per-phone, per-IP, and cooldown rate limits). Accessible by `supporter` and `admin`.
+      operationId: examCreateShareLink
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExamShareLinkCreateRequest"
+      responses:
+        "201":
+          description: Shareable link created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/ExamShareLinkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/exams/share-links/send-sms:
+    post:
+      tags: [Exams]
+      summary: Generate a 14-day share link and dispatch it to parent via Melipayamak SMS (supporter/admin)
+      description: >
+        Generates a fresh 14-day shareable exam result link, resolves the parent mobile number
+        (from explicit `phone`, `parent_contact_id`, or primary `parent_contacts` record), enforces
+        rate limits (`exam_sms:cooldown`, `exam_sms:phone`, `exam_sms:ip`), dispatches the link
+        through Melipayamak (`BaseServiceNumber`), and records `sms_sent_at`.
+      operationId: examSendShareLinkSms
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExamShareLinkCreateRequest"
+      responses:
+        "201":
+          description: Shareable link created and SMS dispatched
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/ExamShareLinkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/exams/share-links/{id}:
+    delete:
+      tags: [Exams]
+      summary: Revoke an exam result share link (supporter/admin)
+      description: Sets `revoked_at = CURRENT_TIMESTAMP` so the public token immediately returns 404.
+      operationId: examRevokeShareLink
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Share link revoked
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          link:
+                            $ref: "#/components/schemas/ExamShareLinkItem"
+                        required: [link]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/exams/share-links/{id}/revoke:
+    post:
+      tags: [Exams]
+      summary: Revoke an exam result share link via POST (supporter/admin)
+      operationId: examRevokeShareLinkPost
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Share link revoked
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          link:
+                            $ref: "#/components/schemas/ExamShareLinkItem"
+                        required: [link]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -3741,6 +4154,139 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /api/v1/appointments/sms/preview:
+    get:
+      tags: [Appointments]
+      summary: Preview weekly appointment reminder SMS status per student (admin only)
+      description: |
+        Evaluates all active students for the Saturday–Friday week (`IranDay::weekStart(week_date)`) without sending any SMS.
+        - Selects active appointments (`status IN ('pending', 'confirmed', 'scheduled')`).
+        - If a student has more than one active appointment in the week, selects the nearest (`appointment_date ASC, start_time ASC, id ASC`) and sets `multiple_appointments: true`.
+        - Resolves recipient strictly from the student's primary parent contact (`parent_contacts` ordered by `is_primary DESC, id ASC LIMIT 1`), never falling back to the student's own phone.
+        - Status per student: `will_send`, `already_sent`, `changed_since_sent`, `failed`, `no_phone`, `no_appointment`.
+      operationId: appointmentSmsPreview
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: week_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          description: Any date within the target Saturday–Friday week (YYYY-MM-DD)
+      responses:
+        "200":
+          description: Weekly appointment SMS preview
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/AppointmentSmsPreviewResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/appointments/sms/send:
+    post:
+      tags: [Appointments]
+      summary: Bulk-send weekly appointment reminder SMS to primary parents via Melipayamak (admin only)
+      description: |
+        Dispatches weekly appointment reminder SMS via Melipayamak (`MELIPAYAMAK_APPOINTMENT_BODY_ID`) to each eligible student's primary parent (`recipient_type = 'parent'`).
+        - Supports `mode`: `unsent` (not yet sent for this week), `failed` (retry failed logs), `changed` (send updated time when `appointment_at` changed after `status=sent`).
+        - Each student is processed in an isolated `try/catch` block so one failure does not abort the batch.
+        - Protected by a concurrent/double-click lock per `week_date` (`409 CONCURRENT_SEND_LOCKED`) and dedicated rate limits (`appointment_sms:phone` default 3/hr, `appointment_sms:user` default 200/hr).
+      operationId: appointmentSmsSend
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppointmentSmsSendRequest"
+      responses:
+        "200":
+          description: Batch SMS dispatch summary and per-student results
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/AppointmentSmsSendResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/appointments/sms/log:
+    get:
+      tags: [Appointments]
+      summary: List weekly appointment reminder SMS logs (admin only)
+      operationId: appointmentSmsLog
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: week_date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Filter by week (normalized via IranDay::weekStart)
+        - name: student_id
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Filter by student ID
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [sent, failed, skipped_no_phone]
+          description: Filter by SMS log status
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: Paginated appointment SMS logs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/AppointmentSmsLogItem"
+                  - $ref: "#/components/schemas/WithPagination"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
 
   # ───────────────────── Daily Attendance ─────────────────────
   /api/v1/attendance:
@@ -7253,6 +7799,537 @@ components:
           type: string
           description: Masked destination phone, e.g. 0912***89
       required: [requires_2fa, challenge_id, phone_mask]
+
+    AuthUserProfile:
+      type: object
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        phone:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum: [admin, supporter, student, teacher]
+        full_name:
+          type: string
+          nullable: true
+        student_id:
+          type: integer
+          nullable: true
+          description: شناسه دانش‌آموز متصل (فقط برای نقش student)
+        instructor_id:
+          type: integer
+          nullable: true
+          description: شناسه مدرس متصل (فقط برای نقش teacher)
+      required: [id, username, role]
+
+    AuthChangePasswordRequest:
+      type: object
+      properties:
+        current_password:
+          type: string
+          format: password
+          description: رمز عبور فعلی کاربر
+        new_password:
+          type: string
+          format: password
+          minLength: 4
+          description: رمز عبور جدید (حداقل ۴ کاراکتر)
+      required: [current_password, new_password]
+
+    AuthProfileUpdateRequest:
+      type: object
+      properties:
+        full_name:
+          type: string
+          minLength: 2
+          maxLength: 150
+          description: نام و نام خانوادگی (کلید `name` نیز پذیرفته می‌شود)
+        name:
+          type: string
+          minLength: 2
+          maxLength: 150
+          description: نام جایگزین برای `full_name`
+        phone:
+          type: string
+          description: شماره تلفن همراه ایرانی (نرمال‌سازی شده به 09XXXXXXXXX)
+        current_password:
+          type: string
+          format: password
+          description: رمز عبور فعلی (الزامی هنگام تغییر شماره تلفن برای نقش‌های دارای 2FA یعنی admin/supporter/teacher)
+      required: [phone]
+
+    ExamComment:
+      type: object
+      properties:
+        id:
+          type: integer
+        student_id:
+          type: integer
+        exam_date:
+          type: string
+          format: date
+        teacher_user_id:
+          type: integer
+        author_name:
+          type: string
+          description: نام نویسنده نظر (استاد، پشتیبان یا ادمین)
+        author_role:
+          type: string
+          enum: [teacher, supporter, admin]
+        body:
+          type: string
+          description: متن نظر ثبت‌شده روی نتیجه آزمون
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, student_id, exam_date, teacher_user_id, body, created_at, updated_at]
+
+    ExamCommentUpsertRequest:
+      type: object
+      properties:
+        student_id:
+          type: integer
+          minimum: 1
+          description: شناسه دانش‌آموز
+        exam_date:
+          type: string
+          format: date
+          description: تاریخ آزمون (YYYY-MM-DD)
+        body:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: متن نظر استاد یا پشتیبان
+      required: [student_id, exam_date, body]
+
+    ExamShareLinkCreateRequest:
+      type: object
+      properties:
+        student_id:
+          type: integer
+          minimum: 1
+          description: شناسه دانش‌آموز
+        exam_date:
+          type: string
+          format: date
+          description: تاریخ آزمون (YYYY-MM-DD)
+        send_sms:
+          type: boolean
+          default: false
+          description: در صورت true بودن، لینک کارنامه از طریق ملی‌پیامک برای والد ارسال می‌شود
+        parent_contact_id:
+          type: integer
+          nullable: true
+          description: شناسه مخاطب والد در parent_contacts (در صورت عدم ارسال، والد اصلی انتخاب می‌شود)
+        phone:
+          type: string
+          nullable: true
+          description: شماره تلفن همراه والد (اختیاری؛ نرمال‌سازی شده با PhoneNumber::normalizeOrFail)
+      required: [student_id, exam_date]
+
+    ExamShareLinkResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        token:
+          type: string
+          description: توکن base64url تولیدشده با random_bytes(32)
+        url:
+          type: string
+          description: آدرس عمومی مشاهده کارنامه
+        share_path:
+          type: string
+          description: مسیر نسبی مشاهده عمومی کارنامه
+        share_url:
+          type: string
+          description: آدرس عمومی مشاهده کارنامه
+        student_id:
+          type: integer
+        exam_date:
+          type: string
+          format: date
+        expires_at:
+          type: string
+          format: date-time
+          description: تاریخ انقضای لینک (۱۴ روز پس از صدور)
+        sms_sent:
+          type: boolean
+          description: وضعیت ارسال پیامک به والد
+        sms_sent_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: زمان ارسال پیامک از طریق ملی‌پیامک
+        recipient_phone_mask:
+          type: string
+          nullable: true
+          description: شماره ماسک‌شده والد گیرنده پیامک (مثلاً 0912***89)
+      required: [id, token, url, share_url, student_id, exam_date, expires_at]
+
+    ExamShareLinkItem:
+      type: object
+      description: اطلاعات مدیریتی لینک اشتراک کارنامه در پنل (بدون token_hash)
+      properties:
+        id:
+          type: integer
+        student_id:
+          type: integer
+        student_name:
+          type: string
+        exam_date:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [active, expired, revoked]
+        expires_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+        sms_sent_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_viewed_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_by:
+          type: integer
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+      required: [id, student_id, exam_date, status, expires_at]
+
+    PublicSharedExamResult:
+      type: object
+      description: خروجی عمومی کارنامه برای والدین (بدون کد ملی و بدون شماره تلفن)
+      properties:
+        student_name:
+          type: string
+        student:
+          type: object
+          properties:
+            name:
+              type: string
+            grade:
+              type: integer
+              nullable: true
+            field:
+              type: string
+              nullable: true
+          required: [name]
+        exam_date:
+          type: string
+          format: date
+        subjects:
+          type: array
+          items:
+            type: object
+            properties:
+              subject:
+                type: string
+              chapter:
+                type: string
+                nullable: true
+              total_q:
+                type: integer
+              correct:
+                type: integer
+              wrong:
+                type: integer
+              skipped:
+                type: integer
+              percentage:
+                type: number
+        avg_percentage:
+          type: number
+        comments:
+          type: array
+          items:
+            type: object
+            properties:
+              author_name:
+                type: string
+              author_role:
+                type: string
+                enum: [teacher, supporter, admin]
+              body:
+                type: string
+              created_at:
+                type: string
+                format: date-time
+              updated_at:
+                type: string
+                format: date-time
+      required: [student_name, student, exam_date, subjects, avg_percentage, comments]
+
+    AppointmentSmsPreviewItem:
+      type: object
+      properties:
+        student_id:
+          type: integer
+        student_name:
+          type: string
+        grade:
+          type: integer
+          nullable: true
+        field:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [will_send, already_sent, changed_since_sent, failed, no_phone, no_appointment]
+        recipient_type:
+          type: string
+          enum: [parent]
+        parent_name:
+          type: string
+          nullable: true
+        mobile_mask:
+          type: string
+          nullable: true
+        appointment_id:
+          type: integer
+          nullable: true
+        appointment_date:
+          type: string
+          format: date
+          nullable: true
+        appointment_jalali:
+          type: string
+          nullable: true
+        weekday:
+          type: string
+          nullable: true
+        start_time:
+          type: string
+          nullable: true
+        end_time:
+          type: string
+          nullable: true
+        appointment_status:
+          type: string
+          nullable: true
+        appointment_at:
+          type: string
+          nullable: true
+          description: Snapshot of appointment_date + start_time (YYYY-MM-DD HH:MM:SS)
+        multiple_appointments:
+          type: boolean
+          description: True when the student has more than one active appointment in the week
+        active_appointments_count:
+          type: integer
+        last_sent_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_appointment_at:
+          type: string
+          nullable: true
+        attempts:
+          type: integer
+        last_error:
+          type: string
+          nullable: true
+      required: [student_id, student_name, status, multiple_appointments]
+
+    AppointmentSmsPreviewResponse:
+      type: object
+      properties:
+        week_date:
+          type: string
+          format: date
+          description: Normalized Saturday week start (IranDay::weekStart)
+        week_end:
+          type: string
+          format: date
+          description: Friday week end
+        summary:
+          type: object
+          properties:
+            total:
+              type: integer
+            will_send:
+              type: integer
+            already_sent:
+              type: integer
+            changed_since_sent:
+              type: integer
+            failed:
+              type: integer
+            no_phone:
+              type: integer
+            no_appointment:
+              type: integer
+            multiple_appointments:
+              type: integer
+          required: [total, will_send, already_sent, changed_since_sent, failed, no_phone, no_appointment]
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppointmentSmsPreviewItem"
+        students:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppointmentSmsPreviewItem"
+      required: [week_date, week_end, summary, items]
+
+    AppointmentSmsSendRequest:
+      type: object
+      properties:
+        week_date:
+          type: string
+          format: date
+          description: Target week date (normalized to Saturday via IranDay::weekStart)
+        mode:
+          type: string
+          enum: [unsent, failed, changed]
+          default: unsent
+          description: |
+            - `unsent`: Send only to students with an active appointment who have not yet been sent an SMS for this week.
+            - `failed`: Retry only students whose last SMS attempt for this week failed.
+            - `changed`: Send updated appointment time only to students whose `appointment_at` changed after `status=sent`.
+        student_ids:
+          type: array
+          nullable: true
+          items:
+            type: integer
+            minimum: 1
+          description: Optional subset of student IDs to process; omit to process all eligible students
+        operation_id:
+          type: string
+          nullable: true
+          description: Optional client operation/idempotency token to guard against double-click submissions
+      required: [week_date, mode]
+
+    AppointmentSmsSendResponse:
+      type: object
+      properties:
+        week_date:
+          type: string
+          format: date
+        week_end:
+          type: string
+          format: date
+        mode:
+          type: string
+          enum: [unsent, failed, changed]
+        sent:
+          type: integer
+        failed:
+          type: integer
+        skipped:
+          type: integer
+        skipped_no_phone:
+          type: integer
+        summary:
+          type: object
+          properties:
+            sent:
+              type: integer
+            failed:
+              type: integer
+            skipped:
+              type: integer
+            skipped_no_phone:
+              type: integer
+            already_sent:
+              type: integer
+            no_appointment:
+              type: integer
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              student_id:
+                type: integer
+              student_name:
+                type: string
+              recipient_type:
+                type: string
+                enum: [parent]
+              mobile_mask:
+                type: string
+                nullable: true
+              appointment_at:
+                type: string
+                nullable: true
+              multiple_appointments:
+                type: boolean
+              status:
+                type: string
+                enum: [sent, failed, skipped_no_phone, already_sent, changed_since_sent, no_appointment, skipped]
+              error:
+                type: string
+                nullable: true
+      required: [week_date, mode, sent, failed, skipped, items]
+
+    AppointmentSmsLogItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        student_id:
+          type: integer
+        student_name:
+          type: string
+        grade:
+          type: integer
+          nullable: true
+        field:
+          type: string
+          nullable: true
+        week_date:
+          type: string
+          format: date
+        mobile_mask:
+          type: string
+          nullable: true
+        recipient_type:
+          type: string
+          enum: [parent, student]
+        appointment_at:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [sent, failed, skipped_no_phone]
+        error:
+          type: string
+          nullable: true
+        attempts:
+          type: integer
+        sent_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_by:
+          type: integer
+          nullable: true
+        created_by_username:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, student_id, week_date, recipient_type, status, attempts]
 
   responses:
     BadRequest:

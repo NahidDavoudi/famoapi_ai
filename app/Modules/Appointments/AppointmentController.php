@@ -2,6 +2,8 @@
 
 namespace App\Modules\Appointments;
 
+use App\Core\ApiException;
+use App\Core\RateLimitedException;
 use App\Core\Validator;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -70,7 +72,7 @@ class AppointmentController
                 'type'             => (string) ($body['type'] ?? ''),
                 'description'      => (string) ($body['description'] ?? ''),
             ]);
-        } catch (\App\Core\ApiException $e) {
+        } catch (ApiException $e) {
             $response->getBody()->write(json_encode([
                 'success'    => false,
                 'data'       => null,
@@ -119,7 +121,7 @@ class AppointmentController
 
         try {
             $result = $this->service->updateStatus((int) $args['id'], (string) $body['status']);
-        } catch (\App\Core\ApiException $e) {
+        } catch (ApiException $e) {
             $response->getBody()->write(json_encode([
                 'success'    => false,
                 'data'       => null,
@@ -145,7 +147,7 @@ class AppointmentController
     {
         try {
             $this->service->delete((int) $args['id']);
-        } catch (\App\Core\ApiException $e) {
+        } catch (ApiException $e) {
             $response->getBody()->write(json_encode([
                 'success'    => false,
                 'data'       => null,
@@ -162,6 +164,181 @@ class AppointmentController
             'success'    => true,
             'data'       => null,
             'pagination' => null,
+            'error'      => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+
+    /**
+     * GET /api/v1/appointments/sms/preview?week_date=YYYY-MM-DD (admin only)
+     */
+    public function previewSms(Request $request, Response $response): Response
+    {
+        $params = $request->getQueryParams();
+        $weekDate = (string) ($params['week_date'] ?? '');
+
+        $validator = new Validator();
+        $validator
+            ->required('week_date', 'تاریخ هفته', $weekDate !== '' ? $weekDate : null)
+            ->date('week_date', 'تاریخ هفته', $weekDate !== '' ? $weekDate : null);
+
+        if (!$validator->passes()) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => 'VALIDATION_ERROR',
+                    'message' => $validator->firstError(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        try {
+            $result = $this->service->previewSms($weekDate);
+        } catch (ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => $e->getErrorCode(),
+                    'message' => $e->getMessage(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success'    => true,
+            'data'       => $result,
+            'pagination' => null,
+            'error'      => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+
+    /**
+     * POST /api/v1/appointments/sms/send (admin only)
+     * Body: { week_date, mode, student_ids?, operation_id? }
+     */
+    public function sendSms(Request $request, Response $response): Response
+    {
+        $decoded = $request->getAttribute('user');
+        $body = $request->getParsedBody() ?? [];
+
+        $weekDate = $body['week_date'] ?? null;
+        $mode     = $body['mode'] ?? 'unsent';
+
+        $validator = new Validator();
+        $validator
+            ->required('week_date', 'تاریخ هفته', $weekDate)
+            ->date('week_date', 'تاریخ هفته', $weekDate)
+            ->required('mode', 'حالت ارسال', $mode)
+            ->string('mode', 'حالت ارسال', $mode)
+            ->inArray('mode', 'حالت ارسال', $mode, AppointmentService::VALID_SMS_MODES);
+
+        if (array_key_exists('student_ids', $body) && $body['student_ids'] !== null) {
+            $validator->arrayList('student_ids', 'لیست شناسه دانش‌آموزان', $body['student_ids'], true);
+        }
+
+        if (!$validator->passes()) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => 'VALIDATION_ERROR',
+                    'message' => $validator->firstError(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $studentIds = isset($body['student_ids']) && is_array($body['student_ids'])
+            ? $body['student_ids']
+            : null;
+        $operationId = isset($body['operation_id']) && is_string($body['operation_id'])
+            ? $body['operation_id']
+            : (isset($body['idempotency_key']) && is_string($body['idempotency_key']) ? $body['idempotency_key'] : null);
+
+        try {
+            $result = $this->service->sendSms(
+                (string) $weekDate,
+                (string) $mode,
+                $studentIds,
+                isset($decoded->sub) ? (int) $decoded->sub : null,
+                $operationId
+            );
+        } catch (RateLimitedException $e) {
+            $response->getBody()->write(json_encode([
+                'success'     => false,
+                'data'        => null,
+                'pagination'  => null,
+                'error'       => ['code' => 'RATE_LIMITED', 'message' => $e->getMessage()],
+                'retry_after' => $e->getRetryAfter(),
+            ], JSON_UNESCAPED_UNICODE));
+            return $response
+                ->withStatus(429)
+                ->withHeader('Retry-After', (string) $e->getRetryAfter())
+                ->withHeader('Content-Type', 'application/json; charset=utf-8');
+        } catch (ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => $e->getErrorCode(),
+                    'message' => $e->getMessage(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success'    => true,
+            'data'       => $result,
+            'pagination' => null,
+            'error'      => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+
+    /**
+     * GET /api/v1/appointments/sms/log?week_date=&student_id=&status=&page=&per_page= (admin only)
+     */
+    public function smsLog(Request $request, Response $response): Response
+    {
+        $params  = $request->getQueryParams();
+        $page    = (int) ($params['page'] ?? 1);
+        $perPage = (int) ($params['per_page'] ?? $params['perPage'] ?? 50);
+
+        $filters = [
+            'week_date'  => $params['week_date'] ?? null,
+            'student_id' => $params['student_id'] ?? null,
+            'status'     => $params['status'] ?? null,
+        ];
+
+        try {
+            $result = $this->service->getSmsLogs($filters, $page, $perPage);
+        } catch (ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => $e->getErrorCode(),
+                    'message' => $e->getMessage(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success'    => true,
+            'data'       => ['items' => $result['items']],
+            'pagination' => $result['pagination'],
             'error'      => null,
         ], JSON_UNESCAPED_UNICODE));
         return $response->withHeader('Content-Type', 'application/json; charset=utf-8');

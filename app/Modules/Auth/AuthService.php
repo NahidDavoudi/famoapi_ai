@@ -282,4 +282,129 @@ class AuthService
             'instructor_id' => $this->instructorIdFor($user),
         ];
     }
+
+    public function changePassword(int $userId, string $currentPassword, string $newPassword): void
+    {
+        $user = User::findById($userId);
+        if (!$user) {
+            throw new \App\Core\ApiException('کاربر یافت نشد', 404, 'NOT_FOUND');
+        }
+
+        if (!password_verify($currentPassword, (string) ($user['password_hash'] ?? ''))) {
+            throw new \App\Core\ApiException('رمز عبور فعلی اشتباه است', 401, 'INVALID_PASSWORD');
+        }
+
+        if (mb_strlen($newPassword) < 4) {
+            throw new \App\Core\ApiException('رمز عبور جدید باید حداقل ۴ کاراکتر باشد', 422, 'VALIDATION_ERROR');
+        }
+
+        User::update($userId, ['password' => $newPassword]);
+    }
+
+    public function updateProfile(int $userId, array $data): array
+    {
+        $user = User::findById($userId);
+        if (!$user) {
+            throw new \App\Core\ApiException('کاربر یافت نشد', 404, 'NOT_FOUND');
+        }
+
+        $fullName = trim((string) ($data['full_name'] ?? $data['name'] ?? ''));
+        if ($fullName === '' || mb_strlen($fullName) < 2) {
+            throw new \App\Core\ApiException('نام و نام خانوادگی معتبر نیست', 422, 'VALIDATION_ERROR');
+        }
+
+        $normalizedPhone = PhoneNumber::normalizeOrFail($data['phone'] ?? null, 'شماره تلفن همراه معتبر نیست');
+
+        $oldPhoneRaw = !empty($user['phone']) ? (string) $user['phone'] : '';
+        $oldPhone = $oldPhoneRaw !== '' ? (PhoneNumber::normalize($oldPhoneRaw) ?? $oldPhoneRaw) : '';
+        $currentUsername = (string) ($user['username'] ?? '');
+        $normalizedUsername = PhoneNumber::normalize($currentUsername) ?? $currentUsername;
+
+        $effectiveOldPhone = $oldPhone !== '' ? $oldPhone : (PhoneNumber::isValid($currentUsername) ? $normalizedUsername : '');
+        $phoneChanged = ($normalizedPhone !== $effectiveOldPhone);
+
+        $role = (string) ($user['role'] ?? '');
+        $twoFaRoles = ['admin', 'supporter', 'teacher'];
+
+        if ($phoneChanged && in_array($role, $twoFaRoles, true)) {
+            $currentPassword = isset($data['current_password']) && is_string($data['current_password'])
+                ? $data['current_password']
+                : '';
+
+            if ($currentPassword === '') {
+                throw new \App\Core\ApiException(
+                    'برای تغییر شماره تلفن، وارد کردن رمز عبور فعلی الزامی است',
+                    422,
+                    'VALIDATION_ERROR'
+                );
+            }
+
+            if (!password_verify($currentPassword, (string) ($user['password_hash'] ?? ''))) {
+                throw new \App\Core\ApiException('رمز عبور فعلی اشتباه است', 401, 'INVALID_PASSWORD');
+            }
+        }
+
+        $db = Database::getConnection();
+
+        $dupPhoneStmt = $db->prepare('SELECT id FROM users WHERE phone = :phone AND id != :id LIMIT 1');
+        $dupPhoneStmt->execute(['phone' => $normalizedPhone, 'id' => $userId]);
+        if ($dupPhoneStmt->fetch()) {
+            throw new \App\Core\ApiException('این شماره تلفن قبلاً برای کاربر دیگری ثبت شده است', 409, 'DUPLICATE_PHONE');
+        }
+
+        $syncUsername = ($oldPhoneRaw !== '' && $currentUsername === $oldPhoneRaw)
+            || ($effectiveOldPhone !== '' && $normalizedUsername === $effectiveOldPhone);
+
+        if ($syncUsername && $normalizedPhone !== $currentUsername) {
+            $dupUserStmt = $db->prepare('SELECT id FROM users WHERE username = :username AND id != :id LIMIT 1');
+            $dupUserStmt->execute(['username' => $normalizedPhone, 'id' => $userId]);
+            if ($dupUserStmt->fetch()) {
+                throw new \App\Core\ApiException('این شماره تلفن قبلاً برای کاربر دیگری ثبت شده است', 409, 'DUPLICATE_PHONE');
+            }
+        }
+
+        $startedTransaction = !$db->inTransaction();
+        if ($startedTransaction) {
+            $db->beginTransaction();
+        }
+
+        try {
+            $userUpdate = [
+                'full_name' => $fullName,
+                'phone'     => $normalizedPhone,
+            ];
+            if ($syncUsername) {
+                $userUpdate['username'] = $normalizedPhone;
+            }
+            User::update($userId, $userUpdate);
+
+            $linkedId = (int) ($user['linked_id'] ?? 0);
+            if ($linkedId > 0) {
+                if ($role === 'admin') {
+                    $stmt = $db->prepare('UPDATE admins SET name = :name, phone = :phone WHERE id = :id');
+                    $stmt->execute(['name' => $fullName, 'phone' => $normalizedPhone, 'id' => $linkedId]);
+                } elseif ($role === 'supporter') {
+                    $stmt = $db->prepare('UPDATE supporters SET name = :name, phone = :phone WHERE id = :id');
+                    $stmt->execute(['name' => $fullName, 'phone' => $normalizedPhone, 'id' => $linkedId]);
+                } elseif ($role === 'student') {
+                    $stmt = $db->prepare('UPDATE students SET name = :name, phone = :phone WHERE id = :id');
+                    $stmt->execute(['name' => $fullName, 'phone' => $normalizedPhone, 'id' => $linkedId]);
+                } elseif ($role === 'teacher') {
+                    $stmt = $db->prepare('UPDATE instructors SET name = :name WHERE id = :id');
+                    $stmt->execute(['name' => $fullName, 'id' => $linkedId]);
+                }
+            }
+
+            if ($startedTransaction) {
+                $db->commit();
+            }
+        } catch (\Throwable $e) {
+            if ($startedTransaction && $db->inTransaction()) {
+                $db->rollBack();
+            }
+            throw $e;
+        }
+
+        return $this->me($userId);
+    }
 }
