@@ -6,19 +6,8 @@ WORKDIR /app
 COPY composer.json composer.lock* ./
 RUN composer install --no-dev --no-interaction --no-scripts --prefer-dist --optimize-autoloader
 
-FROM php:8.4-apache AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    libpq-dev \
-    libpng-dev libjpeg-dev libwebp-dev libfreetype6-dev libzip-dev libicu-dev \
-    && docker-php-ext-configure gd --with-jpeg --with-webp --with-freetype \
-    && docker-php-ext-install -j"$(nproc)" gd pdo_pgsql pgsql zip intl opcache bcmath \
-    && pecl install redis \
-    && docker-php-ext-enable redis \
-    && a2enmod rewrite headers remoteip \
-    && rm -rf /var/lib/apt/lists/*
+FROM famo-php-base:8.4 AS runtime
 
-RUN mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
 COPY docker/custom.ini "$PHP_INI_DIR/conf.d/zz-custom.ini"
 COPY docker/remoteip.conf /etc/apache2/conf-available/remoteip.conf
 COPY docker/apache-tune.conf /etc/apache2/conf-available/apache-tune.conf
