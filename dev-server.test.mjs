@@ -8,6 +8,7 @@ import {
   handleAuthEndpoint,
   handleExamEndpoint,
   handlePublicExamResultEndpoint,
+  handleAppointmentSmsEndpoint,
 } from './dev-server.mjs';
 
 test('Health endpoint (/health) returns current database and Redis connection status', () => {
@@ -140,6 +141,7 @@ test('PostgreSQL schema, migrations, and database configuration are properly nor
     './database/migrations/004_attendance_and_tutoring.sql',
     './database/migrations/005_telegram_bot_threads_and_outbox.sql',
     './database/migrations/006_exam_comments_and_share_links.sql',
+    './database/migrations/007_appointment_sms_log.sql',
   ];
   const combinedMigrationsSql = migrationFiles
     .map((rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8'))
@@ -661,5 +663,535 @@ test('Exam Comments & Share Links Stage 2 — POST /api/v1/exams/share-links and
   assert.equal(rateLimitedRes.status, 429);
   assert.equal(rateLimitedRes.body.error.code, 'RATE_LIMITED');
 });
+
+test('Exam Comments & Share Links Stage 3 — Melipayamak SMS dispatch, SMS rate limiting, and share link panel management', () => {
+  const envExample = fs.readFileSync(new URL('./.env.example', import.meta.url), 'utf8');
+  const smsPhp = fs.readFileSync(new URL('./app/Core/SmsService.php', import.meta.url), 'utf8');
+  const examResPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamResult.php', import.meta.url), 'utf8');
+  const examSvcPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamService.php', import.meta.url), 'utf8');
+  const examCtrlPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamController.php', import.meta.url), 'utf8');
+  const routesPhp = fs.readFileSync(new URL('./routes/api.php', import.meta.url), 'utf8');
+  const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
+  const readmeMd = fs.readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+
+  // 1. Verify .env.example & PHP Melipayamak SmsService implementation
+  assert.match(envExample, /MELIPAYAMAK_EXAM_BODY_ID=/);
+  assert.match(envExample, /EXAM_SMS_PHONE_HOURLY_MAX=/);
+  assert.match(envExample, /EXAM_SMS_IP_HOURLY_MAX=/);
+  assert.match(
+    smsPhp,
+    /public function sendExamResultLink\(string \$mobile,\s*string \$studentName,\s*string \$examDate,\s*string \$shareUrl\): bool/
+  );
+  assert.match(smsPhp, /https:\/\/rest\.payamak-panel\.com\/api\/SendSMS\/BaseServiceNumber/);
+  assert.match(smsPhp, /MELIPAYAMAK_EXAM_BODY_ID/);
+
+  // 2. Verify ExamResult, ExamService, ExamController, and Routes
+  assert.match(examResPhp, /public static function markShareLinkSmsSent\(int \$linkId/);
+  assert.match(examResPhp, /public static function listShareLinks\(/);
+  assert.match(examResPhp, /public static function revokeShareLink\(int \$linkId\): bool/);
+  assert.match(examSvcPhp, /public function sendShareLinkSms\(/);
+  assert.match(examSvcPhp, /private function resolveParentMobile\(/);
+  assert.match(examSvcPhp, /private function enforceSmsRateLimits\(/);
+  assert.match(examSvcPhp, /exam_sms:cooldown/);
+  assert.match(examSvcPhp, /exam_sms:phone/);
+  assert.match(examSvcPhp, /exam_sms:ip/);
+  assert.match(examCtrlPhp, /public function sendShareLinkSms\(/);
+  assert.match(examCtrlPhp, /public function listShareLinks\(/);
+  assert.match(examCtrlPhp, /public function revokeShareLink\(/);
+  assert.match(routesPhp, /\/api\/v1\/exams\/share-links\/send-sms/);
+  assert.match(routesPhp, /\/api\/v1\/exams\/share-links\/\{id:\[0-9\]\+\}/);
+
+  // 3. Verify OpenAPI & README
+  assert.match(rootSpec, /\/api\/v1\/exams\/share-links\/send-sms:/);
+  assert.match(rootSpec, /operationId:\s*examSendShareLinkSms/);
+  assert.match(rootSpec, /operationId:\s*examListShareLinks/);
+  assert.match(rootSpec, /operationId:\s*examRevokeShareLink/);
+  assert.match(rootSpec, /ExamShareLinkItem:/);
+  assert.match(readmeMd, /\/api\/v1\/exams\/share-links\/send-sms/);
+
+  // 4. Behavioral verification via simulator
+  const ctx = createAppContext();
+  const sendSmsUrl = new URL('http://localhost:3000/api/v1/exams/share-links/send-sms');
+  const shareUrl = new URL('http://localhost:3000/api/v1/exams/share-links');
+
+  // 4a. Role enforcement on SMS endpoint -> 403 for student/teacher
+  const teacherSms = handleExamEndpoint(ctx, 'POST', sendSmsUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+  }, { sub: 4, role: 'teacher' });
+  assert.equal(teacherSms.status, 403);
+
+  // 4b. Dispatch SMS using primary parent contact (09121112233) via Melipayamak
+  const smsRes1 = handleExamEndpoint(ctx, 'POST', sendSmsUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+    ip: '198.51.100.80',
+  }, { sub: 2, role: 'supporter' });
+  assert.equal(smsRes1.status, 201);
+  assert.equal(smsRes1.body.data.sms_sent, true);
+  assert.notEqual(smsRes1.body.data.sms_sent_at, null);
+  assert.equal(smsRes1.body.data.recipient_phone_mask, '0912***33');
+  assert.equal(ctx.smsDispatches.length, 1);
+  assert.equal(ctx.smsDispatches[0].provider, 'melipayamak');
+  assert.equal(ctx.smsDispatches[0].to, '09121112233');
+  assert.match(ctx.smsDispatches[0].text, /^دانش‌آموز نمونه;2026-10-25;http:\/\/localhost:3000\/api\/v1\/public\/exam-results\//);
+
+  // 4c. Cooldown protection: immediate duplicate SMS to same (student_id, exam_date, mobile) -> 429 RATE_LIMITED
+  const duplicateSms = handleExamEndpoint(ctx, 'POST', sendSmsUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+    ip: '198.51.100.80',
+  }, { sub: 2, role: 'supporter' });
+  assert.equal(duplicateSms.status, 429);
+  assert.equal(duplicateSms.body.error.code, 'RATE_LIMITED');
+
+  // 4d. Dispatch SMS to secondary parent_contact_id (id: 2 -> mother 09124445566) via POST /api/v1/exams/share-links with send_sms: true
+  const smsRes2 = handleExamEndpoint(ctx, 'POST', shareUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+    send_sms: true,
+    parent_contact_id: 2,
+    ip: '198.51.100.80',
+  }, { sub: 1, role: 'admin' });
+  assert.equal(smsRes2.status, 201);
+  assert.equal(smsRes2.body.data.sms_sent, true);
+  assert.equal(smsRes2.body.data.recipient_phone_mask, '0912***66');
+  assert.equal(ctx.smsDispatches.length, 2);
+  assert.equal(ctx.smsDispatches[1].to, '09124445566');
+
+  // 4e. Invalid explicit phone -> 422 VALIDATION_ERROR
+  const badPhoneSms = handleExamEndpoint(ctx, 'POST', sendSmsUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+    phone: '12345',
+  }, { sub: 2, role: 'supporter' });
+  assert.equal(badPhoneSms.status, 422);
+  assert.equal(badPhoneSms.body.error.code, 'VALIDATION_ERROR');
+
+  // 4f. Hourly phone rate limit (smsPhoneHourlyMax = 1 -> 1st succeeds, 2nd within hour returns 429 RATE_LIMITED)
+  ctx.smsPhoneHourlyMax = 1;
+  const customPhone = '+98 ۹۱۲ ۷۷۷ ۸۸۹۹'; // normalizes to 09127778899
+  const customSms1 = handleExamEndpoint(ctx, 'POST', sendSmsUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+    phone: customPhone,
+    ip: '198.51.100.81',
+  }, { sub: 2, role: 'supporter' });
+  assert.equal(customSms1.status, 201);
+  assert.equal(customSms1.body.data.recipient_phone_mask, '0912***99');
+
+  // Clear cooldown to test hourly phone cap on the 2nd attempt
+  ctx.rateLimiter.clear(ctx.rateLimiter.key('exam_sms:cooldown', '20:2026-10-25:09127778899'));
+  const customSms2 = handleExamEndpoint(ctx, 'POST', sendSmsUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+    phone: customPhone,
+    ip: '198.51.100.81',
+  }, { sub: 2, role: 'supporter' });
+  assert.equal(customSms2.status, 429);
+  assert.equal(customSms2.body.error.code, 'RATE_LIMITED');
+
+  // 4g. Panel GET /api/v1/exams/share-links lists links with status and sms_sent_at (without token_hash)
+  const listUrl = new URL('http://localhost:3000/api/v1/exams/share-links?student_id=20');
+  const listRes = handleExamEndpoint(ctx, 'GET', listUrl, {}, { sub: 2, role: 'supporter' });
+  assert.equal(listRes.status, 200);
+  assert.equal(listRes.body.data.links.length, 3);
+  assert.equal(listRes.body.data.links[0].status, 'active');
+  assert.equal(listRes.body.data.links[0].token_hash, undefined);
+  assert.notEqual(listRes.body.data.links[0].sms_sent_at, null);
+
+  // 4h. Panel DELETE /api/v1/exams/share-links/{id} revokes link and blocks public access immediately
+  const linkToRevokeId = smsRes1.body.data.id;
+  const linkToRevokeToken = smsRes1.body.data.token;
+  const revokeUrl = new URL(`http://localhost:3000/api/v1/exams/share-links/${linkToRevokeId}`);
+  const revokeRes = handleExamEndpoint(ctx, 'DELETE', revokeUrl, {}, { sub: 2, role: 'supporter' });
+  assert.equal(revokeRes.status, 200);
+  assert.equal(revokeRes.body.data.link.status, 'revoked');
+  assert.notEqual(revokeRes.body.data.link.revoked_at, null);
+
+  const pubAfterRevoke = handlePublicExamResultEndpoint(ctx, linkToRevokeToken, '198.51.100.99');
+  assert.equal(pubAfterRevoke.status, 404);
+});
+
+test('Weekly Appointment SMS Reminders — Migration 007, preview, bulk send modes (unsent/failed/changed), parent-only recipient, rate limits, double-click lock, and log', () => {
+  const mig007 = fs.readFileSync(
+    new URL('./database/migrations/007_appointment_sms_log.sql', import.meta.url),
+    'utf8'
+  );
+  const schemaSql = fs.readFileSync(new URL('./database/schema.postgres.sql', import.meta.url), 'utf8');
+  const envExample = fs.readFileSync(new URL('./.env.example', import.meta.url), 'utf8');
+  const authPhp = fs.readFileSync(new URL('./app/Core/Authorization.php', import.meta.url), 'utf8');
+  const smsPhp = fs.readFileSync(new URL('./app/Core/SmsService.php', import.meta.url), 'utf8');
+  const apptModelPhp = fs.readFileSync(
+    new URL('./app/Modules/Appointments/Appointment.php', import.meta.url),
+    'utf8'
+  );
+  const apptSvcPhp = fs.readFileSync(
+    new URL('./app/Modules/Appointments/AppointmentService.php', import.meta.url),
+    'utf8'
+  );
+  const apptCtrlPhp = fs.readFileSync(
+    new URL('./app/Modules/Appointments/AppointmentController.php', import.meta.url),
+    'utf8'
+  );
+  const routesPhp = fs.readFileSync(new URL('./routes/api.php', import.meta.url), 'utf8');
+  const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
+  const publicSpec = fs.readFileSync(new URL('./public/openapi.yaml', import.meta.url), 'utf8');
+  const readmeMd = fs.readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+
+  // 1. Verify Migration 007 & Schema
+  assert.match(mig007, /CREATE TABLE IF NOT EXISTS appointment_sms_log/);
+  assert.match(
+    mig007,
+    /CONSTRAINT uk_appointment_sms_log_student_week_mobile UNIQUE \(student_id,\s*week_date,\s*mobile\)/
+  );
+  assert.match(mig007, /recipient_type\s+VARCHAR\(20\)\s+NOT NULL DEFAULT 'parent'/);
+  assert.match(mig007, /appointment_at\s+TIMESTAMP/);
+  assert.match(mig007, /CHECK \(status IN \('sent',\s*'failed',\s*'skipped_no_phone'\)\)/);
+  assert.match(schemaSql, /007_appointment_sms_log\.sql/);
+
+  // 2. Verify .env.example & Melipayamak SmsService
+  assert.match(envExample, /MELIPAYAMAK_APPOINTMENT_BODY_ID=/);
+  assert.match(envExample, /APPOINTMENT_SMS_PHONE_HOURLY_MAX=/);
+  assert.match(envExample, /APPOINTMENT_SMS_USER_HOURLY_MAX=/);
+  assert.match(
+    smsPhp,
+    /public function sendAppointmentReminder\(string \$mobile,\s*string \$studentName,\s*string \$dayAndDate,\s*string \$time\): bool/
+  );
+  assert.match(smsPhp, /MELIPAYAMAK_APPOINTMENT_BODY_ID/);
+  assert.doesNotMatch(smsPhp, /KAVENEGAR_REMINDER_TEMPLATE/);
+
+  // 3. Verify no secretary role added, automatic SMS removed from createOrUpdate, and routes strictly admin-only
+  assert.doesNotMatch(authPhp, /secretary/);
+  assert.doesNotMatch(apptSvcPhp, /\$this->sms->sendAppointmentReminder\(\$student\['phone'\]/);
+  assert.match(apptModelPhp, /public static function findPrimaryParentsForStudents\(/);
+  assert.match(apptModelPhp, /ORDER BY student_id ASC, is_primary DESC, id ASC/);
+  assert.match(apptModelPhp, /public static function upsertSmsLog\(/);
+  assert.match(apptSvcPhp, /IranDay::weekStart\(/);
+  assert.match(apptSvcPhp, /appointment_sms:user/);
+  assert.match(apptSvcPhp, /appointment_sms:phone/);
+  assert.match(apptSvcPhp, /CONCURRENT_SEND_LOCKED/);
+  assert.match(apptCtrlPhp, /public function previewSms\(/);
+  assert.match(apptCtrlPhp, /public function sendSms\(/);
+  assert.match(apptCtrlPhp, /public function smsLog\(/);
+  assert.match(
+    routesPhp,
+    /\$app->get\('\/api\/v1\/appointments\/sms\/preview',\s*\[\$appointmentController,\s*'previewSms'\]\)->add\(\$requireAdmin\)->add\(\$authMiddleware\)/
+  );
+  assert.match(
+    routesPhp,
+    /\$app->post\('\/api\/v1\/appointments\/sms\/send',\s*\[\$appointmentController,\s*'sendSms'\]\)->add\(\$requireAdmin\)->add\(\$authMiddleware\)/
+  );
+  assert.match(
+    routesPhp,
+    /\$app->get\('\/api\/v1\/appointments\/sms\/log',\s*\[\$appointmentController,\s*'smsLog'\]\)->add\(\$requireAdmin\)->add\(\$authMiddleware\)/
+  );
+
+  // 4. Verify OpenAPI & README synchronization
+  assert.equal(rootSpec, publicSpec);
+  assert.match(rootSpec, /\/api\/v1\/appointments\/sms\/preview:/);
+  assert.match(rootSpec, /\/api\/v1\/appointments\/sms\/send:/);
+  assert.match(rootSpec, /\/api\/v1\/appointments\/sms\/log:/);
+  assert.match(rootSpec, /AppointmentSmsPreviewResponse:/);
+  assert.match(rootSpec, /AppointmentSmsSendRequest:/);
+  assert.match(rootSpec, /AppointmentSmsSendResponse:/);
+  assert.match(rootSpec, /AppointmentSmsLogItem:/);
+  assert.match(readmeMd, /Weekly Appointment SMS Reminders \(`Appointments`\)/);
+  assert.match(readmeMd, /\/api\/v1\/appointments\/sms\/preview/);
+
+  // 5. Behavioral verification via simulator
+  const ctx = createAppContext();
+
+  // Seed additional students & appointments for comprehensive testing:
+  // Student 20 (already in ctx): has primary parent (09121112233) & secondary mother (09124445566).
+  // Add a second active appointment in the same week for Student 20 to verify nearest selection & multiple_appointments=true.
+  ctx.appointments.push({
+    id: 2,
+    student_id: 20,
+    supporter_id: 10,
+    appointment_date: '2026-10-27',
+    start_time: '19:00:00',
+    end_time: '19:30:00',
+    status: 'confirmed',
+    notes: 'جلسه دوم در همان هفته',
+  });
+
+  // Student 21: has primary parent (09125556677) and 1 active appointment
+  ctx.students.push({
+    id: 21,
+    name: 'سارا احمدی',
+    phone: '09120000021',
+    national_id: '0012345621',
+    grade: 12,
+    field: 'تجربی',
+    is_active: 1,
+  });
+  ctx.parentContacts.push({
+    id: 3,
+    student_id: 21,
+    parent_name: 'مادر سارا',
+    relationship: 'mother',
+    phone: '09125556677',
+    is_primary: 1,
+  });
+  ctx.appointments.push({
+    id: 3,
+    student_id: 21,
+    supporter_id: 10,
+    appointment_date: '2026-10-25',
+    start_time: '17:15:00',
+    end_time: '17:45:00',
+    status: 'confirmed',
+    notes: 'مشاوره تجربی',
+  });
+
+  // Student 22: has student phone (09120000022) and active appointment, but NO parent contact -> must be skipped_no_phone without falling back to student phone
+  ctx.students.push({
+    id: 22,
+    name: 'علی رضایی',
+    phone: '09120000022',
+    national_id: '0012345622',
+    grade: 11,
+    field: 'ریاضی',
+    is_active: 1,
+  });
+  ctx.appointments.push({
+    id: 4,
+    student_id: 22,
+    supporter_id: 10,
+    appointment_date: '2026-10-26',
+    start_time: '15:00:00',
+    end_time: '15:30:00',
+    status: 'pending',
+    notes: 'جلسه بدون شماره والد',
+  });
+
+  // Student 23: only has a cancelled appointment in this week -> no_appointment
+  ctx.students.push({
+    id: 23,
+    name: 'مریم کاظمی',
+    phone: '09120000023',
+    national_id: '0012345623',
+    grade: 12,
+    field: 'تجربی',
+    is_active: 1,
+  });
+  ctx.parentContacts.push({
+    id: 4,
+    student_id: 23,
+    parent_name: 'پدر مریم',
+    relationship: 'father',
+    phone: '09128889900',
+    is_primary: 1,
+  });
+  ctx.appointments.push({
+    id: 5,
+    student_id: 23,
+    supporter_id: 10,
+    appointment_date: '2026-10-26',
+    start_time: '14:00:00',
+    end_time: '14:30:00',
+    status: 'cancelled',
+    notes: 'نوبت لغوشده',
+  });
+
+  const previewUrl = new URL('http://localhost:3000/api/v1/appointments/sms/preview?week_date=2026-10-25');
+  const sendUrl = new URL('http://localhost:3000/api/v1/appointments/sms/send');
+  const logUrl = new URL('http://localhost:3000/api/v1/appointments/sms/log?week_date=2026-10-24');
+
+  // 5a. Role enforcement: supporter (sub: 2), student (sub: 3), teacher (sub: 4) -> 403 FORBIDDEN
+  const suppRes = handleAppointmentSmsEndpoint(ctx, 'GET', previewUrl, {}, { sub: 2, role: 'supporter' });
+  assert.equal(suppRes.status, 403);
+  assert.equal(suppRes.body.error.code, 'FORBIDDEN');
+
+  const studRes = handleAppointmentSmsEndpoint(ctx, 'POST', sendUrl, { week_date: '2026-10-24', mode: 'unsent' }, { sub: 3, role: 'student' });
+  assert.equal(studRes.status, 403);
+  assert.equal(studRes.body.error.code, 'FORBIDDEN');
+
+  const teachRes = handleAppointmentSmsEndpoint(ctx, 'GET', logUrl, {}, { sub: 4, role: 'teacher' });
+  assert.equal(teachRes.status, 403);
+  assert.equal(teachRes.body.error.code, 'FORBIDDEN');
+
+  // 5b. Admin preview: normalizes 2026-10-25 (Sunday) to week_date 2026-10-24 (Saturday) -> 2026-10-30 (Friday)
+  const prev1 = handleAppointmentSmsEndpoint(ctx, 'GET', previewUrl, {}, { sub: 1, role: 'admin' });
+  assert.equal(prev1.status, 200);
+  assert.equal(prev1.body.data.week_date, '2026-10-24');
+  assert.equal(prev1.body.data.week_end, '2026-10-30');
+  assert.equal(prev1.body.data.recipient_type, 'parent');
+  assert.equal(prev1.body.data.summary.total_students, 4);
+  assert.equal(prev1.body.data.summary.will_send, 2);
+  assert.equal(prev1.body.data.summary.no_phone, 1);
+  assert.equal(prev1.body.data.summary.no_appointment, 1);
+  assert.equal(prev1.body.data.summary.multiple_appointments, 1);
+  assert.equal(ctx.smsDispatches.length, 0); // Preview never sends SMS
+
+  const item20 = prev1.body.data.items.find((i) => i.student_id === 20);
+  assert.equal(item20.status, 'will_send');
+  assert.equal(item20.mobile, '09121112233'); // Primary parent (father), not mother or student
+  assert.equal(item20.appointment_at, '2026-10-24 16:30:00'); // Nearest of the 2 active appointments
+  assert.equal(item20.multiple_appointments, true);
+  assert.equal(item20.active_appointments_count, 2);
+  assert.equal(item20.day_and_date_fa, 'شنبه 1405/08/02');
+  assert.equal(item20.time_fa, '16:30');
+
+  const item22 = prev1.body.data.items.find((i) => i.student_id === 22);
+  assert.equal(item22.status, 'no_phone');
+  assert.equal(item22.mobile, null); // No fallback to student phone 09120000022
+
+  const item23 = prev1.body.data.items.find((i) => i.student_id === 23);
+  assert.equal(item23.status, 'no_appointment'); // Cancelled appointment ignored
+
+  // 5c. Bulk send (mode='unsent') with Melipayamak failing for Student 21's parent (09125556677):
+  // Student 20 succeeds, Student 21 fails (isolated via try/catch), Student 22 is skipped_no_phone.
+  ctx.smsFailPhones = ['09125556677'];
+  const send1 = handleAppointmentSmsEndpoint(
+    ctx,
+    'POST',
+    sendUrl,
+    { week_date: '2026-10-25', mode: 'unsent', operation_id: 'op-week1-initial' },
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(send1.status, 200);
+  assert.equal(send1.body.data.summary.sent, 1);
+  assert.equal(send1.body.data.summary.failed, 1);
+  assert.equal(send1.body.data.summary.skipped_no_phone, 1);
+  assert.equal(send1.body.data.summary.skipped, 1);
+
+  // Verify Melipayamak payload for Student 20's parent
+  assert.equal(ctx.smsDispatches.length, 1);
+  assert.equal(ctx.smsDispatches[0].to, '09121112233');
+  assert.equal(ctx.smsDispatches[0].body_id_env, 'MELIPAYAMAK_APPOINTMENT_BODY_ID');
+  assert.equal(ctx.smsDispatches[0].text, 'دانش‌آموز نمونه;شنبه 1405/08/02;16:30');
+
+  // 5d. Double-click protection: repeating same operation_id or active week lock -> 409 CONCURRENT_SEND_LOCKED
+  const doubleClickRes = handleAppointmentSmsEndpoint(
+    ctx,
+    'POST',
+    sendUrl,
+    { week_date: '2026-10-25', mode: 'unsent', operation_id: 'op-week1-initial' },
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(doubleClickRes.status, 409);
+  assert.equal(doubleClickRes.body.error.code, 'CONCURRENT_SEND_LOCKED');
+
+  ctx.redis.setex('lock:appointment_sms:2026-10-24', 60, '1');
+  const activeWeekLockRes = handleAppointmentSmsEndpoint(
+    ctx,
+    'POST',
+    sendUrl,
+    { week_date: '2026-10-24', mode: 'unsent' },
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(activeWeekLockRes.status, 409);
+  assert.equal(activeWeekLockRes.body.error.code, 'CONCURRENT_SEND_LOCKED');
+  ctx.redis.del('lock:appointment_sms:2026-10-24');
+
+  // 5e. Duplicate send protection: calling mode='unsent' again skips Student 20 (already_sent) and skips Student 21 (failed requires mode='failed')
+  ctx.smsFailPhones = [];
+  const sendDuplicate = handleAppointmentSmsEndpoint(
+    ctx,
+    'POST',
+    sendUrl,
+    { week_date: '2026-10-24', mode: 'unsent' },
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(sendDuplicate.status, 200);
+  assert.equal(sendDuplicate.body.data.summary.sent, 0);
+  const d20 = sendDuplicate.body.data.details.find((d) => d.student_id === 20);
+  assert.equal(d20.action, 'skipped_already_sent');
+  const d21 = sendDuplicate.body.data.details.find((d) => d.student_id === 21);
+  assert.equal(d21.action, 'skipped_failed_requires_failed_mode');
+
+  // 5f. Retry failed (mode='failed'): sends only to Student 21 and updates status to 'sent' with attempts = 2
+  const sendFailedRetry = handleAppointmentSmsEndpoint(
+    ctx,
+    'POST',
+    sendUrl,
+    { week_date: '2026-10-24', mode: 'failed' },
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(sendFailedRetry.status, 200);
+  assert.equal(sendFailedRetry.body.data.summary.sent, 1);
+  assert.equal(sendFailedRetry.body.data.summary.failed, 0);
+  assert.equal(ctx.smsDispatches.length, 2);
+  assert.equal(ctx.smsDispatches[1].to, '09125556677');
+  assert.equal(ctx.smsDispatches[1].text, 'سارا احمدی;یکشنبه 1405/08/03;17:15');
+
+  const log21 = ctx.appointmentSmsLogs.find((l) => l.student_id === 21);
+  assert.equal(log21.status, 'sent');
+  assert.equal(log21.attempts, 2);
+
+  // 5g. Appointment time changed after send -> preview shows changed_since_sent, mode='unsent' skips, mode='changed' sends update
+  ctx.appointments.find((a) => a.id === 1).start_time = '18:00:00';
+
+  const prevAfterChange = handleAppointmentSmsEndpoint(ctx, 'GET', previewUrl, {}, { sub: 1, role: 'admin' });
+  const item20Changed = prevAfterChange.body.data.items.find((i) => i.student_id === 20);
+  assert.equal(item20Changed.status, 'changed_since_sent');
+  assert.equal(item20Changed.last_sent_appointment_at, '2026-10-24 16:30:00');
+  assert.equal(item20Changed.appointment_at, '2026-10-24 18:00:00');
+
+  const unsentAfterChange = handleAppointmentSmsEndpoint(
+    ctx,
+    'POST',
+    sendUrl,
+    { week_date: '2026-10-24', mode: 'unsent' },
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(unsentAfterChange.body.data.summary.sent, 0);
+  assert.equal(
+    unsentAfterChange.body.data.details.find((d) => d.student_id === 20).action,
+    'skipped_changed_requires_changed_mode'
+  );
+
+  const sendChanged = handleAppointmentSmsEndpoint(
+    ctx,
+    'POST',
+    sendUrl,
+    { week_date: '2026-10-24', mode: 'changed' },
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(sendChanged.status, 200);
+  assert.equal(sendChanged.body.data.summary.sent, 1);
+  assert.equal(ctx.smsDispatches.length, 3);
+  assert.equal(ctx.smsDispatches[2].to, '09121112233');
+  assert.equal(ctx.smsDispatches[2].text, 'دانش‌آموز نمونه;شنبه 1405/08/02;18:00');
+
+  const log20 = ctx.appointmentSmsLogs.find((l) => l.student_id === 20);
+  assert.equal(log20.appointment_at, '2026-10-24 18:00:00');
+  assert.equal(log20.attempts, 2);
+
+  // 5h. Separate per-phone hourly rate limit (default 3/hour; Student 20's parent has received 2 SMS so far; set max=2 and change time again -> fails with rate limit)
+  ctx.appointmentSmsPhoneHourlyMax = 2;
+  ctx.appointments.find((a) => a.id === 1).start_time = '18:30:00';
+  const sendRateLimited = handleAppointmentSmsEndpoint(
+    ctx,
+    'POST',
+    sendUrl,
+    { week_date: '2026-10-24', mode: 'changed' },
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(sendRateLimited.status, 200);
+  assert.equal(sendRateLimited.body.data.summary.failed, 1);
+  assert.match(
+    sendRateLimited.body.data.details.find((d) => d.student_id === 20).error,
+    /سقف ارسال ساعتی برای این شماره تلفن تکمیل شده است/
+  );
+
+  // 5i. GET /api/v1/appointments/sms/log returns logs with filters
+  const allLogsRes = handleAppointmentSmsEndpoint(ctx, 'GET', logUrl, {}, { sub: 1, role: 'admin' });
+  assert.equal(allLogsRes.status, 200);
+  assert.equal(allLogsRes.body.data.logs.length, 3); // students 20, 21, 22 (unique per student+week+mobile)
+
+  const skippedLogsUrl = new URL(
+    'http://localhost:3000/api/v1/appointments/sms/log?week_date=2026-10-24&status=skipped_no_phone'
+  );
+  const skippedLogsRes = handleAppointmentSmsEndpoint(ctx, 'GET', skippedLogsUrl, {}, { sub: 1, role: 'admin' });
+  assert.equal(skippedLogsRes.status, 200);
+  assert.equal(skippedLogsRes.body.data.logs.length, 1);
+  assert.equal(skippedLogsRes.body.data.logs[0].student_id, 22);
+  assert.equal(skippedLogsRes.body.data.logs[0].recipient_type, 'parent');
+});
+
+
 
 

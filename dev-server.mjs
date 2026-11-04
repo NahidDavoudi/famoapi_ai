@@ -505,6 +505,38 @@ export function createAppContext() {
   ];
   const examComments = [];
   const examResultLinks = [];
+  const parentContacts = [
+    {
+      id: 1,
+      student_id: 20,
+      parent_name: 'پدر دانش‌آموز نمونه',
+      relationship: 'father',
+      phone: '09121112233',
+      is_primary: 1,
+    },
+    {
+      id: 2,
+      student_id: 20,
+      parent_name: 'مادر دانش‌آموز نمونه',
+      relationship: 'mother',
+      phone: '09124445566',
+      is_primary: 0,
+    },
+  ];
+  const smsDispatches = [];
+  const appointments = [
+    {
+      id: 1,
+      student_id: 20,
+      supporter_id: 10,
+      appointment_date: '2026-10-24',
+      start_time: '16:30:00',
+      end_time: '17:00:00',
+      status: 'scheduled',
+      notes: 'جلسه مشاوره هفتگی',
+    },
+  ];
+  const appointmentSmsLogs = [];
 
   return {
     redis,
@@ -519,6 +551,16 @@ export function createAppContext() {
     examResults,
     examComments,
     examResultLinks,
+    parentContacts,
+    smsDispatches,
+    appointments,
+    appointmentSmsLogs,
+    smsGatewayAvailable: true,
+    smsFailPhones: [],
+    smsPhoneHourlyMax: 5,
+    smsIpHourlyMax: 20,
+    appointmentSmsPhoneHourlyMax: 3,
+    appointmentSmsUserHourlyMax: 200,
   };
 }
 
@@ -982,7 +1024,146 @@ export function handleExamEndpoint(ctx, method, urlObj, body = {}, authUser = nu
     };
   }
 
-  if (method === 'POST' && pathname === '/api/v1/exams/share-links') {
+  const maskPhone = (phone) => {
+    if (!phone || phone.length < 7) return '***';
+    return `${phone.slice(0, 4)}***${phone.slice(-2)}`;
+  };
+
+  if (method === 'GET' && pathname === '/api/v1/exams/share-links') {
+    if (!['admin', 'supporter'].includes(user.role)) {
+      return {
+        status: 403,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'FORBIDDEN', message: 'دسترسی محدود به پشتیبانان و مدیران' },
+        },
+      };
+    }
+
+    const filterStudentId = urlObj.searchParams.get('student_id')
+      ? Number(urlObj.searchParams.get('student_id'))
+      : null;
+    const filterExamDate = urlObj.searchParams.get('exam_date') || null;
+
+    if (filterExamDate && !/^\d{4}-\d{2}-\d{2}$/.test(filterExamDate)) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'فرمت تاریخ آزمون نامعتبر است' },
+        },
+      };
+    }
+
+    const nowMs = Date.now();
+    const links = ctx.examResultLinks
+      .filter((l) => {
+        if (filterStudentId && l.student_id !== filterStudentId) return false;
+        if (filterExamDate && l.exam_date !== filterExamDate) return false;
+        return true;
+      })
+      .sort((a, b) => b.id - a.id)
+      .map((l) => {
+        const student = ctx.students.find((s) => s.id === l.student_id);
+        const expMs = Date.parse(l.expires_at.replace(' ', 'T') + 'Z');
+        let status = 'active';
+        if (l.revoked_at !== null) {
+          status = 'revoked';
+        } else if (!Number.isNaN(expMs) && expMs <= nowMs) {
+          status = 'expired';
+        }
+        return {
+          id: l.id,
+          student_id: l.student_id,
+          student_name: student?.name || '',
+          exam_date: l.exam_date,
+          status,
+          expires_at: l.expires_at,
+          revoked_at: l.revoked_at,
+          sms_sent_at: l.sms_sent_at,
+          last_viewed_at: l.last_viewed_at,
+          created_by: l.created_by,
+          created_at: l.created_at,
+        };
+      });
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: { links },
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  const revokeMatch = pathname.match(/^\/api\/v1\/exams\/share-links\/(\d+)(?:\/revoke)?$/);
+  if (revokeMatch && (method === 'DELETE' || (method === 'POST' && pathname.endsWith('/revoke')))) {
+    if (!['admin', 'supporter'].includes(user.role)) {
+      return {
+        status: 403,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'FORBIDDEN', message: 'دسترسی محدود به پشتیبانان و مدیران' },
+        },
+      };
+    }
+
+    const linkId = Number(revokeMatch[1]);
+    const link = ctx.examResultLinks.find((l) => l.id === linkId);
+    if (!link) {
+      return {
+        status: 404,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'NOT_FOUND', message: 'لینک نتیجه آزمون یافت نشد' },
+        },
+      };
+    }
+
+    if (!link.revoked_at) {
+      link.revoked_at = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    }
+
+    const student = ctx.students.find((s) => s.id === link.student_id);
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: {
+          link: {
+            id: link.id,
+            student_id: link.student_id,
+            student_name: student?.name || '',
+            exam_date: link.exam_date,
+            status: 'revoked',
+            expires_at: link.expires_at,
+            revoked_at: link.revoked_at,
+            sms_sent_at: link.sms_sent_at,
+            last_viewed_at: link.last_viewed_at,
+            created_by: link.created_by,
+            created_at: link.created_at,
+          },
+        },
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  if (
+    method === 'POST' &&
+    (pathname === '/api/v1/exams/share-links' || pathname === '/api/v1/exams/share-links/send-sms')
+  ) {
     if (!['admin', 'supporter'].includes(user.role)) {
       return {
         status: 403,
@@ -1036,6 +1217,115 @@ export function handleExamEndpoint(ctx, method, urlObj, body = {}, authUser = nu
       };
     }
 
+    const sendSms = pathname === '/api/v1/exams/share-links/send-sms' || Boolean(body?.send_sms);
+    let recipientMobile = null;
+
+    if (sendSms) {
+      if (typeof body?.phone === 'string' && body.phone.trim() !== '') {
+        recipientMobile = normalizeIranianPhone(body.phone);
+        if (!recipientMobile) {
+          return {
+            status: 422,
+            body: {
+              success: false,
+              data: null,
+              pagination: null,
+              error: { code: 'VALIDATION_ERROR', message: 'شماره تماس والد معتبر نیست' },
+            },
+          };
+        }
+      } else if (body?.parent_contact_id) {
+        const contact = (ctx.parentContacts || []).find(
+          (c) => c.student_id === studentId && c.id === Number(body.parent_contact_id)
+        );
+        if (!contact) {
+          return {
+            status: 404,
+            body: {
+              success: false,
+              data: null,
+              pagination: null,
+              error: { code: 'NOT_FOUND', message: 'مخاطب والد یافت نشد' },
+            },
+          };
+        }
+        recipientMobile = normalizeIranianPhone(contact.phone);
+      } else {
+        const contacts = (ctx.parentContacts || [])
+          .filter((c) => c.student_id === studentId)
+          .sort((a, b) => b.is_primary - a.is_primary || a.id - b.id);
+        if (contacts.length === 0) {
+          return {
+            status: 422,
+            body: {
+              success: false,
+              data: null,
+              pagination: null,
+              error: { code: 'VALIDATION_ERROR', message: 'شماره تماس والد برای این دانش‌آموز ثبت نشده است' },
+            },
+          };
+        }
+        recipientMobile = normalizeIranianPhone(contacts[0].phone);
+      }
+
+      const clientIp = body?.ip || '127.0.0.1';
+      const cooldownKey = ctx.rateLimiter.key('exam_sms:cooldown', `${studentId}:${examDate}:${recipientMobile}`);
+      const phoneKey = ctx.rateLimiter.key('exam_sms:phone', recipientMobile);
+      const ipKey = ctx.rateLimiter.key('exam_sms:ip', clientIp);
+
+      const phoneMax = ctx.smsPhoneHourlyMax || 5;
+      const ipMax = ctx.smsIpHourlyMax || 20;
+
+      const cooldownStatus = ctx.rateLimiter.status(cooldownKey, 1);
+      if (!cooldownStatus.allowed) {
+        return {
+          status: 429,
+          headers: { 'Retry-After': String(Math.max(1, cooldownStatus.retry_after || 120)) },
+          body: {
+            success: false,
+            data: null,
+            pagination: null,
+            error: { code: 'RATE_LIMITED', message: 'تعداد درخواست‌ها بیش از حد مجاز است' },
+            retry_after: Math.max(1, cooldownStatus.retry_after || 120),
+          },
+        };
+      }
+
+      const phoneStatus = ctx.rateLimiter.status(phoneKey, phoneMax);
+      if (!phoneStatus.allowed) {
+        return {
+          status: 429,
+          headers: { 'Retry-After': String(Math.max(1, phoneStatus.retry_after || 3600)) },
+          body: {
+            success: false,
+            data: null,
+            pagination: null,
+            error: { code: 'RATE_LIMITED', message: 'تعداد درخواست‌ها بیش از حد مجاز است' },
+            retry_after: Math.max(1, phoneStatus.retry_after || 3600),
+          },
+        };
+      }
+
+      const ipStatus = ctx.rateLimiter.status(ipKey, ipMax);
+      if (!ipStatus.allowed) {
+        return {
+          status: 429,
+          headers: { 'Retry-After': String(Math.max(1, ipStatus.retry_after || 3600)) },
+          body: {
+            success: false,
+            data: null,
+            pagination: null,
+            error: { code: 'RATE_LIMITED', message: 'تعداد درخواست‌ها بیش از حد مجاز است' },
+            retry_after: Math.max(1, ipStatus.retry_after || 3600),
+          },
+        };
+      }
+
+      ctx.rateLimiter.attempt(cooldownKey, 1, 120, 120);
+      ctx.rateLimiter.attempt(phoneKey, phoneMax, 3600, 3600);
+      ctx.rateLimiter.attempt(ipKey, ipMax, 3600, 3600);
+    }
+
     const rawToken = crypto
       .randomBytes(32)
       .toString('base64')
@@ -1063,6 +1353,43 @@ export function handleExamEndpoint(ctx, method, urlObj, body = {}, authUser = nu
     ctx.examResultLinks.push(record);
 
     const sharePath = `/api/v1/public/exam-results/${rawToken}`;
+    const shareUrl = `http://localhost:3000${sharePath}`;
+
+    let smsSent = false;
+    let smsSentAt = null;
+    let recipientPhoneMask = null;
+
+    if (sendSms && recipientMobile) {
+      if (ctx.smsGatewayAvailable === false) {
+        return {
+          status: 502,
+          body: {
+            success: false,
+            data: null,
+            pagination: null,
+            error: {
+              code: 'SMS_SEND_FAILED',
+              message: 'ارسال پیامک نتیجه آزمون با مشکل مواجه شد. لطفاً دقایقی بعد تلاش کنید.',
+            },
+          },
+        };
+      }
+
+      smsSent = true;
+      smsSentAt = createdAt;
+      record.sms_sent_at = smsSentAt;
+      recipientPhoneMask = maskPhone(recipientMobile);
+
+      const safeName = student.name.replace(/[;\r\n]/g, ' ').trim();
+      ctx.smsDispatches.push({
+        provider: 'melipayamak',
+        endpoint: 'https://rest.payamak-panel.com/api/SendSMS/BaseServiceNumber',
+        to: recipientMobile,
+        text: `${safeName};${examDate};${shareUrl}`,
+        sent_at: smsSentAt,
+      });
+    }
+
     return {
       status: 201,
       body: {
@@ -1072,10 +1399,14 @@ export function handleExamEndpoint(ctx, method, urlObj, body = {}, authUser = nu
           student_id: studentId,
           exam_date: examDate,
           token: rawToken,
+          url: shareUrl,
           share_path: sharePath,
-          share_url: `http://localhost:3000${sharePath}`,
+          share_url: shareUrl,
           expires_at: expiresAt,
           created_at: createdAt,
+          sms_sent: smsSent,
+          sms_sent_at: smsSentAt,
+          recipient_phone_mask: recipientPhoneMask,
         },
         pagination: null,
         error: null,
@@ -1224,6 +1555,751 @@ export function handlePublicExamResultEndpoint(ctx, token, clientIp = '127.0.0.1
       },
       pagination: null,
       error: null,
+    },
+  };
+}
+
+function getIranWeekStart(dateYmd) {
+  const [y, m, d] = dateYmd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const dow = dt.getUTCDay(); // 0=Sun..6=Sat
+  const offset = (dow + 1) % 7; // Sat=0, Sun=1, ..., Fri=6
+  dt.setUTCDate(dt.getUTCDate() - offset);
+  return dt.toISOString().slice(0, 10);
+}
+
+function addDaysYmd(dateYmd, days) {
+  const [y, m, d] = dateYmd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return dt.toISOString().slice(0, 10);
+}
+
+function gregorianToJalaliStr(dateYmd) {
+  const [gy, gm, gd] = dateYmd.split('-').map(Number);
+  const g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+  const gy2 = gm > 2 ? gy + 1 : gy;
+  let days =
+    355666 +
+    365 * gy +
+    Math.floor((gy2 + 3) / 4) -
+    Math.floor((gy2 + 99) / 100) +
+    Math.floor((gy2 + 399) / 400) +
+    gd +
+    g_d_m[gm - 1];
+  let jy = -1595 + 33 * Math.floor(days / 12053);
+  days %= 12053;
+  jy += 4 * Math.floor(days / 1461);
+  days %= 1461;
+  if (days > 365) {
+    jy += Math.floor((days - 1) / 365);
+    days = (days - 1) % 365;
+  }
+  const jm = days < 186 ? 1 + Math.floor(days / 31) : 7 + Math.floor((days - 186) / 30);
+  const jd = 1 + (days < 186 ? days % 31 : (days - 186) % 30);
+  return `${String(jy).padStart(4, '0')}/${String(jm).padStart(2, '0')}/${String(jd).padStart(2, '0')}`;
+}
+
+function formatPersianDayAndDate(dateYmd) {
+  const [y, m, d] = dateYmd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const names = {
+    6: 'شنبه',
+    0: 'یکشنبه',
+    1: 'دوشنبه',
+    2: 'سه‌شنبه',
+    3: 'چهارشنبه',
+    4: 'پنجشنبه',
+    5: 'جمعه',
+  };
+  const dayName = names[dt.getUTCDay()] || '';
+  const jalali = gregorianToJalaliStr(dateYmd);
+  return `${dayName} ${jalali}`.trim();
+}
+
+export function handleAppointmentSmsEndpoint(ctx, method, urlObj, body = {}, authUser = null) {
+  if (!authUser || !authUser.sub) {
+    return {
+      status: 401,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'AUTH_ERROR', message: 'توکن احراز هویت ارسال نشده است' },
+      },
+    };
+  }
+
+  const user = ctx.users.find((u) => u.id === Number(authUser.sub));
+  if (!user) {
+    return {
+      status: 404,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'NOT_FOUND', message: 'کاربر یافت نشد' },
+      },
+    };
+  }
+
+  // Strictly admin-only (no secretary role added; supporter/student/teacher forbidden)
+  if (user.role !== 'admin') {
+    return {
+      status: 403,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'FORBIDDEN', message: 'دسترسی محدود به مدیران سیستم' },
+      },
+    };
+  }
+
+  const pathname = urlObj.pathname;
+  const activeStatuses = ['pending', 'confirmed', 'scheduled'];
+
+  const normalizeAppointmentAt = (dateStr, startTime) => {
+    const t = String(startTime || '').trim();
+    const normTime = /^\d{2}:\d{2}$/.test(t) ? `${t}:00` : t;
+    return `${dateStr} ${normTime}`;
+  };
+
+  const formatTimeHhMm = (startTime) => {
+    const t = String(startTime || '').trim();
+    return t.length >= 5 ? t.slice(0, 5) : t;
+  };
+
+  const findPrimaryParent = (studentId) => {
+    const contacts = (ctx.parentContacts || [])
+      .filter((c) => c.student_id === studentId)
+      .sort((a, b) => b.is_primary - a.is_primary || a.id - b.id);
+    if (contacts.length === 0) return null;
+    const primary = contacts[0];
+    return {
+      parent_name: primary.parent_name || '',
+      mobile: normalizeIranianPhone(primary.phone),
+    };
+  };
+
+  const findLatestLogForStudentWeek = (studentId, weekStart, mobile) => {
+    const logs = (ctx.appointmentSmsLogs || []).filter(
+      (l) => l.student_id === studentId && l.week_date === weekStart
+    );
+    if (logs.length === 0) return null;
+    if (mobile) {
+      const exact = logs.find((l) => l.mobile === mobile);
+      if (exact) return exact;
+    }
+    return logs.sort((a, b) => b.id - a.id)[0];
+  };
+
+  const upsertLog = (data) => {
+    const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    let existing = ctx.appointmentSmsLogs.find(
+      (l) =>
+        l.student_id === data.student_id &&
+        l.week_date === data.week_date &&
+        l.mobile === data.mobile
+    );
+    if (existing) {
+      existing.recipient_type = 'parent';
+      existing.appointment_at = data.appointment_at;
+      existing.status = data.status;
+      existing.error = data.error ?? null;
+      if (data.increment_attempts) {
+        existing.attempts = (existing.attempts || 0) + 1;
+      }
+      if (data.sent_at) {
+        existing.sent_at = data.sent_at;
+      }
+      existing.created_by = data.created_by ?? existing.created_by;
+      existing.updated_at = now;
+      return existing;
+    }
+    const created = {
+      id: ctx.appointmentSmsLogs.length + 1,
+      student_id: data.student_id,
+      week_date: data.week_date,
+      mobile: data.mobile,
+      recipient_type: 'parent',
+      appointment_at: data.appointment_at,
+      status: data.status,
+      error: data.error ?? null,
+      attempts: data.increment_attempts ? 1 : 0,
+      sent_at: data.sent_at ?? null,
+      created_by: data.created_by ?? null,
+      created_at: now,
+      updated_at: now,
+    };
+    ctx.appointmentSmsLogs.push(created);
+    return created;
+  };
+
+  const evaluateStudentWeek = (student, weekStart, weekEnd) => {
+    const sid = student.id;
+    const studentAppts = (ctx.appointments || [])
+      .filter(
+        (a) =>
+          a.student_id === sid &&
+          a.appointment_date >= weekStart &&
+          a.appointment_date <= weekEnd &&
+          activeStatuses.includes(String(a.status || '').toLowerCase())
+      )
+      .sort(
+        (a, b) =>
+          a.appointment_date.localeCompare(b.appointment_date) ||
+          a.start_time.localeCompare(b.start_time) ||
+          a.id - b.id
+      );
+
+    const multipleAppointments = studentAppts.length > 1;
+    const selectedAppt = studentAppts[0] || null;
+    const parentInfo = findPrimaryParent(sid);
+    const parentMobile = parentInfo?.mobile || null;
+    const parentName = parentInfo?.parent_name || null;
+
+    if (!selectedAppt) {
+      return {
+        student_id: sid,
+        student_name: student.name,
+        grade: student.grade,
+        field: student.field,
+        recipient_type: 'parent',
+        parent_name: parentName,
+        mobile: parentMobile,
+        has_valid_phone: parentMobile !== null,
+        appointment_id: null,
+        appointment_date: null,
+        start_time: null,
+        end_time: null,
+        appointment_status: null,
+        appointment_at: null,
+        day_and_date_fa: null,
+        time_fa: null,
+        multiple_appointments: false,
+        active_appointments_count: 0,
+        status: 'no_appointment',
+        last_sent_appointment_at: null,
+        last_sent_at: null,
+        attempts: 0,
+        last_error: null,
+      };
+    }
+
+    const appointmentAt = normalizeAppointmentAt(
+      selectedAppt.appointment_date,
+      selectedAppt.start_time
+    );
+    const dayAndDateFa = formatPersianDayAndDate(selectedAppt.appointment_date);
+    const timeFa = formatTimeHhMm(selectedAppt.start_time);
+    const existingLog = findLatestLogForStudentWeek(sid, weekStart, parentMobile);
+
+    let status = 'will_send';
+    if (!parentMobile) {
+      status = 'no_phone';
+    } else if (existingLog) {
+      if (existingLog.status === 'sent') {
+        status =
+          existingLog.appointment_at === appointmentAt ? 'already_sent' : 'changed_since_sent';
+      } else if (existingLog.status === 'failed') {
+        status = 'failed';
+      }
+    }
+
+    return {
+      student_id: sid,
+      student_name: student.name,
+      grade: student.grade,
+      field: student.field,
+      recipient_type: 'parent',
+      parent_name: parentName,
+      mobile: parentMobile,
+      has_valid_phone: parentMobile !== null,
+      appointment_id: selectedAppt.id,
+      appointment_date: selectedAppt.appointment_date,
+      start_time: selectedAppt.start_time,
+      end_time: selectedAppt.end_time,
+      appointment_status: selectedAppt.status,
+      appointment_at: appointmentAt,
+      day_and_date_fa: dayAndDateFa,
+      time_fa: timeFa,
+      multiple_appointments: multipleAppointments,
+      active_appointments_count: studentAppts.length,
+      status,
+      last_sent_appointment_at: existingLog?.appointment_at ?? null,
+      last_sent_at: existingLog?.sent_at ?? null,
+      attempts: existingLog?.attempts ?? 0,
+      last_error: existingLog?.error ?? null,
+    };
+  };
+
+  if (method === 'GET' && pathname === '/api/v1/appointments/sms/preview') {
+    const rawWeekDate = urlObj.searchParams.get('week_date') || '2026-10-24';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(rawWeekDate)) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'فرمت تاریخ هفته نامعتبر است (YYYY-MM-DD)' },
+        },
+      };
+    }
+
+    const weekStart = getIranWeekStart(rawWeekDate);
+    const weekEnd = addDaysYmd(weekStart, 6);
+    const activeStudents = ctx.students.filter((s) => s.is_active === 1);
+
+    const summary = {
+      total_students: activeStudents.length,
+      will_send: 0,
+      already_sent: 0,
+      changed_since_sent: 0,
+      failed: 0,
+      no_phone: 0,
+      no_appointment: 0,
+      multiple_appointments: 0,
+    };
+
+    const items = activeStudents.map((st) => {
+      const item = evaluateStudentWeek(st, weekStart, weekEnd);
+      if (summary[item.status] !== undefined) {
+        summary[item.status]++;
+      }
+      if (item.multiple_appointments) {
+        summary.multiple_appointments++;
+      }
+      return item;
+    });
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: {
+          week_date: weekStart,
+          week_end: weekEnd,
+          recipient_type: 'parent',
+          summary,
+          items,
+        },
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  if (method === 'POST' && pathname === '/api/v1/appointments/sms/send') {
+    const rawWeekDate = typeof body?.week_date === 'string' ? body.week_date.trim() : '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(rawWeekDate)) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'فیلد week_date با فرمت YYYY-MM-DD الزامی است' },
+        },
+      };
+    }
+
+    const mode = typeof body?.mode === 'string' ? body.mode.trim().toLowerCase() : 'unsent';
+    if (!['unsent', 'failed', 'changed'].includes(mode)) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'فیلد mode باید یکی از مقادیر unsent، failed یا changed باشد' },
+        },
+      };
+    }
+
+    let studentIdsFilter = null;
+    if (body?.student_ids !== undefined && body?.student_ids !== null) {
+      if (!Array.isArray(body.student_ids)) {
+        return {
+          status: 422,
+          body: {
+            success: false,
+            data: null,
+            pagination: null,
+            error: { code: 'VALIDATION_ERROR', message: 'فیلد student_ids باید آرایه‌ای از شناسه‌های دانش‌آموز باشد' },
+          },
+        };
+      }
+      studentIdsFilter = [...new Set(body.student_ids.map(Number).filter((n) => n > 0))];
+    }
+
+    const weekStart = getIranWeekStart(rawWeekDate);
+    const weekEnd = addDaysYmd(weekStart, 6);
+    const operationId = typeof body?.operation_id === 'string' ? body.operation_id.trim() : '';
+
+    const lockKey = `lock:appointment_sms:${weekStart}`;
+    if (ctx.redis.get(lockKey) !== null) {
+      return {
+        status: 409,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: {
+            code: 'CONCURRENT_SEND_LOCKED',
+            message: 'عملیات ارسال پیامک نوبت برای این هفته در حال انجام است. لطفاً چند لحظه صبر کنید.',
+          },
+        },
+      };
+    }
+
+    if (operationId) {
+      const opKey = `lock:appointment_sms:op:${crypto.createHash('sha256').update(operationId).digest('hex')}`;
+      if (ctx.redis.get(opKey) !== null) {
+        return {
+          status: 409,
+          body: {
+            success: false,
+            data: null,
+            pagination: null,
+            error: {
+              code: 'CONCURRENT_SEND_LOCKED',
+              message: 'این درخواست ارسال قبلاً ثبت شده و در حال پردازش است.',
+            },
+          },
+        };
+      }
+      ctx.redis.setex(opKey, 60, '1');
+    }
+
+    ctx.redis.setex(lockKey, 120, String(user.id));
+
+    try {
+      const targetStudents = ctx.students.filter(
+        (s) =>
+          s.is_active === 1 &&
+          (studentIdsFilter === null || studentIdsFilter.includes(s.id))
+      );
+
+      const summary = {
+        sent: 0,
+        failed: 0,
+        skipped: 0,
+        skipped_no_phone: 0,
+      };
+      const details = [];
+
+      const userMax = ctx.appointmentSmsUserHourlyMax || 200;
+      const phoneMax = ctx.appointmentSmsPhoneHourlyMax || 3;
+      const userRlKey = ctx.rateLimiter.key('appointment_sms:user', String(user.id));
+
+      for (const st of targetStudents) {
+        const evalItem = evaluateStudentWeek(st, weekStart, weekEnd);
+        const sid = evalItem.student_id;
+
+        if (evalItem.status === 'no_appointment') {
+          if (studentIdsFilter !== null) {
+            summary.skipped++;
+            details.push({
+              student_id: sid,
+              student_name: evalItem.student_name,
+              mobile: evalItem.mobile,
+              appointment_at: null,
+              multiple_appointments: false,
+              action: 'skipped_no_appointment',
+              status: 'no_appointment',
+              error: null,
+            });
+          }
+          continue;
+        }
+
+        const appointmentAt = evalItem.appointment_at;
+        const parentMobile = evalItem.mobile;
+        const existingLog = findLatestLogForStudentWeek(sid, weekStart, parentMobile);
+
+        // No primary parent phone -> skipped_no_phone (never fallback to student phone)
+        if (!parentMobile) {
+          if (mode === 'unsent' || studentIdsFilter !== null) {
+            upsertLog({
+              student_id: sid,
+              week_date: weekStart,
+              mobile: '',
+              appointment_at: appointmentAt,
+              status: 'skipped_no_phone',
+              error: 'شماره تماس والد اصلی ثبت نشده یا نامعتبر است',
+              increment_attempts: false,
+              sent_at: null,
+              created_by: user.id,
+            });
+            summary.skipped_no_phone++;
+            summary.skipped++;
+            details.push({
+              student_id: sid,
+              student_name: evalItem.student_name,
+              mobile: null,
+              appointment_at: appointmentAt,
+              multiple_appointments: evalItem.multiple_appointments,
+              action: 'skipped_no_phone',
+              status: 'skipped_no_phone',
+              error: 'شماره تماس والد اصلی ثبت نشده یا نامعتبر است',
+            });
+          }
+          continue;
+        }
+
+        // Deduplication: if already sent and appointment_at unchanged -> skip
+        if (
+          existingLog &&
+          existingLog.status === 'sent' &&
+          existingLog.appointment_at === appointmentAt
+        ) {
+          summary.skipped++;
+          details.push({
+            student_id: sid,
+            student_name: evalItem.student_name,
+            mobile: parentMobile,
+            appointment_at: appointmentAt,
+            multiple_appointments: evalItem.multiple_appointments,
+            action: 'skipped_already_sent',
+            status: 'sent',
+            error: null,
+          });
+          continue;
+        }
+
+        let eligible = false;
+        let skipReason = 'skipped_mode_mismatch';
+
+        if (mode === 'unsent') {
+          if (!existingLog || existingLog.status === 'skipped_no_phone') {
+            eligible = true;
+          } else if (
+            existingLog.status === 'sent' &&
+            existingLog.appointment_at !== appointmentAt
+          ) {
+            skipReason = 'skipped_changed_requires_changed_mode';
+          } else if (existingLog.status === 'failed') {
+            skipReason = 'skipped_failed_requires_failed_mode';
+          }
+        } else if (mode === 'failed') {
+          if (existingLog && existingLog.status === 'failed') {
+            eligible = true;
+          }
+        } else if (mode === 'changed') {
+          if (
+            existingLog &&
+            existingLog.status === 'sent' &&
+            existingLog.appointment_at !== appointmentAt
+          ) {
+            eligible = true;
+          }
+        }
+
+        if (!eligible) {
+          summary.skipped++;
+          details.push({
+            student_id: sid,
+            student_name: evalItem.student_name,
+            mobile: parentMobile,
+            appointment_at: appointmentAt,
+            multiple_appointments: evalItem.multiple_appointments,
+            action: skipReason,
+            status: evalItem.status,
+            error: null,
+          });
+          continue;
+        }
+
+        // Send wrapped in per-student try/catch so one error never aborts others
+        try {
+          const userRlStatus = ctx.rateLimiter.status(userRlKey, userMax);
+          if (!userRlStatus.allowed) {
+            throw new Error('سقف ارسال ساعتی کاربر تکمیل شده است');
+          }
+
+          const phoneRlKey = ctx.rateLimiter.key('appointment_sms:phone', parentMobile);
+          const phoneRlStatus = ctx.rateLimiter.status(phoneRlKey, phoneMax);
+          if (!phoneRlStatus.allowed) {
+            throw new Error('سقف ارسال ساعتی برای این شماره تلفن تکمیل شده است');
+          }
+
+          ctx.rateLimiter.attempt(userRlKey, userMax, 3600, 3600);
+          ctx.rateLimiter.attempt(phoneRlKey, phoneMax, 3600, 3600);
+
+          if (
+            ctx.smsGatewayAvailable === false ||
+            (Array.isArray(ctx.smsFailPhones) && ctx.smsFailPhones.includes(parentMobile))
+          ) {
+            throw new Error('خطا در ارسال پیامک از درگاه ملی‌پیامک');
+          }
+
+          const sentAt = new Date().toISOString().replace('T', ' ').slice(0, 19);
+          const safeName = evalItem.student_name.replace(/[;\r\n]/g, ' ').trim();
+          const safeDayAndDate = evalItem.day_and_date_fa.replace(/[;\r\n]/g, ' ').trim();
+          const safeTime = evalItem.time_fa.replace(/[;\r\n]/g, ' ').trim();
+
+          ctx.smsDispatches.push({
+            provider: 'melipayamak',
+            endpoint: 'https://rest.payamak-panel.com/api/SendSMS/BaseServiceNumber',
+            body_id_env: 'MELIPAYAMAK_APPOINTMENT_BODY_ID',
+            to: parentMobile,
+            text: `${safeName};${safeDayAndDate};${safeTime}`,
+            sent_at: sentAt,
+          });
+
+          upsertLog({
+            student_id: sid,
+            week_date: weekStart,
+            mobile: parentMobile,
+            appointment_at: appointmentAt,
+            status: 'sent',
+            error: null,
+            increment_attempts: true,
+            sent_at: sentAt,
+            created_by: user.id,
+          });
+
+          summary.sent++;
+          details.push({
+            student_id: sid,
+            student_name: evalItem.student_name,
+            mobile: parentMobile,
+            appointment_at: appointmentAt,
+            multiple_appointments: evalItem.multiple_appointments,
+            action: 'sent',
+            status: 'sent',
+            error: null,
+          });
+        } catch (err) {
+          const errMsg = err?.message || 'خطای ناشناخته در ارسال پیامک';
+          upsertLog({
+            student_id: sid,
+            week_date: weekStart,
+            mobile: parentMobile,
+            appointment_at: appointmentAt,
+            status: 'failed',
+            error: errMsg,
+            increment_attempts: true,
+            sent_at: null,
+            created_by: user.id,
+          });
+
+          summary.failed++;
+          details.push({
+            student_id: sid,
+            student_name: evalItem.student_name,
+            mobile: parentMobile,
+            appointment_at: appointmentAt,
+            multiple_appointments: evalItem.multiple_appointments,
+            action: 'failed',
+            status: 'failed',
+            error: errMsg,
+          });
+        }
+      }
+
+      return {
+        status: 200,
+        body: {
+          success: true,
+          data: {
+            week_date: weekStart,
+            week_end: weekEnd,
+            mode,
+            recipient_type: 'parent',
+            summary,
+            details,
+          },
+          pagination: null,
+          error: null,
+        },
+      };
+    } finally {
+      ctx.redis.del(lockKey);
+    }
+  }
+
+  if (method === 'GET' && pathname === '/api/v1/appointments/sms/log') {
+    const rawWeekDate = urlObj.searchParams.get('week_date') || '';
+    const filterStudentId = urlObj.searchParams.get('student_id')
+      ? Number(urlObj.searchParams.get('student_id'))
+      : null;
+    const filterStatus = urlObj.searchParams.get('status') || '';
+
+    let filterWeekStart = null;
+    if (rawWeekDate) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(rawWeekDate)) {
+        return {
+          status: 422,
+          body: {
+            success: false,
+            data: null,
+            pagination: null,
+            error: { code: 'VALIDATION_ERROR', message: 'فرمت تاریخ هفته نامعتبر است (YYYY-MM-DD)' },
+          },
+        };
+      }
+      filterWeekStart = getIranWeekStart(rawWeekDate);
+    }
+
+    if (filterStatus && !['sent', 'failed', 'skipped_no_phone'].includes(filterStatus)) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'وضعیت فیلتر نامعتبر است (مجاز: sent, failed, skipped_no_phone)',
+          },
+        },
+      };
+    }
+
+    const logs = (ctx.appointmentSmsLogs || [])
+      .filter((l) => {
+        if (filterWeekStart && l.week_date !== filterWeekStart) return false;
+        if (filterStudentId && l.student_id !== filterStudentId) return false;
+        if (filterStatus && l.status !== filterStatus) return false;
+        return true;
+      })
+      .sort((a, b) => b.id - a.id)
+      .map((l) => {
+        const st = ctx.students.find((s) => s.id === l.student_id);
+        const cr = ctx.users.find((u) => u.id === l.created_by);
+        return {
+          ...l,
+          student_name: st?.name || '',
+          created_by_name: cr?.full_name || null,
+        };
+      });
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: { logs },
+        pagination: {
+          page: 1,
+          per_page: 20,
+          total: logs.length,
+          total_pages: Math.max(1, Math.ceil(logs.length / 20)),
+        },
+        error: null,
+      },
+    };
+  }
+
+  return {
+    status: 404,
+    body: {
+      success: false,
+      data: null,
+      pagination: null,
+      error: { code: 'NOT_FOUND', message: 'مسیر یافت نشد' },
     },
   };
 }

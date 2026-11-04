@@ -393,8 +393,19 @@ The repository maintains two OpenAPI 3.1.0 specifications:
 | :---: | :--- | :--- | :--- |
 | `GET` | `/api/v1/exams/details` | Authenticated (`StudentScope`) | Per-subject exam breakdown + `avg_percentage` + teacher/staff `comments` array |
 | `PUT` | `/api/v1/exams/comments` | Teacher / Supporter / Admin | Upsert comment (`student_id`, `exam_date`, `body`) on `(student_id, exam_date, teacher_user_id)` |
-| `POST` | `/api/v1/exams/share-links` | Supporter / Admin | Generate 14-day base64url share link (`random_bytes(32)`, SHA-256 hash stored in PostgreSQL) |
+| `GET` | `/api/v1/exams/share-links` | Supporter / Admin | List generated share links (`student_id`, `exam_date`) with `status`, `sms_sent_at`, and `last_viewed_at` |
+| `POST` | `/api/v1/exams/share-links` | Supporter / Admin | Generate 14-day base64url share link (`random_bytes(32)`, SHA-256 hash stored in PostgreSQL) with optional `send_sms` |
+| `POST` | `/api/v1/exams/share-links/send-sms` | Supporter / Admin | Generate 14-day share link and dispatch to parent via Melipayamak SMS (`exam_sms` rate limits & `sms_sent_at` tracking) |
+| `DELETE` / `POST` | `/api/v1/exams/share-links/{id}` (`/revoke`) | Supporter / Admin | Revoke an active share link (`revoked_at = CURRENT_TIMESTAMP`) |
 | `GET` | `/api/v1/public/exam-results/{token}` | Public (20 req/min IP limit) | Parent view of exam result & comments (no `national_id`/`phone`, `Cache-Control: no-store`, `X-Robots-Tag: noindex`, uniform `404`) |
+
+### Weekly Appointment SMS Reminders (`Appointments`)
+
+| Method | Endpoint | Access / Role | Description |
+| :---: | :--- | :--- | :--- |
+| `GET` | `/api/v1/appointments/sms/preview` | Admin | Preview weekly appointment reminder SMS status per student (`will_send`, `already_sent`, `changed_since_sent`, `failed`, `no_phone`, `no_appointment`, `multiple_appointments`) |
+| `POST` | `/api/v1/appointments/sms/send` | Admin | Bulk-send weekly appointment reminder SMS to primary parents via Melipayamak (`MELIPAYAMAK_APPOINTMENT_BODY_ID`) with `mode` (`unsent`, `failed`, `changed`), per-student `try/catch`, double-click lock, and separate rate limits (`appointment_sms:phone`, `appointment_sms:user`) |
+| `GET` | `/api/v1/appointments/sms/log` | Admin | Paginated `appointment_sms_log` audit history filterable by `week_date`, `student_id`, and `status` |
 
 ### Standard JSON Response Envelope
 

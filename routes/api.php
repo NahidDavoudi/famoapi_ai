@@ -304,7 +304,11 @@ return function (App $app) {
     $app->get('/api/v1/exams/students', [$examController, 'getStudents'])->add($requireSupporter)->add($authMiddleware);
     $app->get('/api/v1/exams/details', [$examController, 'getDetails'])->add($authMiddleware);
     $app->put('/api/v1/exams/comments', [$examController, 'upsertComment'])->add($requireStaff)->add($authMiddleware);
+    $app->get('/api/v1/exams/share-links', [$examController, 'listShareLinks'])->add($requireSupporter)->add($authMiddleware);
     $app->post('/api/v1/exams/share-links', [$examController, 'createShareLink'])->add($requireSupporter)->add($authMiddleware);
+    $app->post('/api/v1/exams/share-links/send-sms', [$examController, 'sendShareLinkSms'])->add($requireSupporter)->add($authMiddleware);
+    $app->delete('/api/v1/exams/share-links/{id:[0-9]+}', [$examController, 'revokeShareLink'])->add($requireSupporter)->add($authMiddleware);
+    $app->post('/api/v1/exams/share-links/{id:[0-9]+}/revoke', [$examController, 'revokeShareLink'])->add($requireSupporter)->add($authMiddleware);
     $app->post('/api/v1/exams', [$examController, 'save'])->add($requireAdmin)->add($authMiddleware);
 
     // Weekly Plans (temporary: admin-only while the planner is being migrated)
@@ -342,6 +346,11 @@ return function (App $app) {
     $app->post('/api/v1/appointments', [$appointmentController, 'create'])->add($requireSupporter)->add($authMiddleware);
     $app->put('/api/v1/appointments/{id:[0-9]+}/status', [$appointmentController, 'updateStatus'])->add($requireSupporter)->add($authMiddleware);
     $app->delete('/api/v1/appointments/{id:[0-9]+}', [$appointmentController, 'delete'])->add($requireSupporter)->add($authMiddleware);
+
+    // Appointment Weekly SMS Reminders (admin only)
+    $app->get('/api/v1/appointments/sms/preview', [$appointmentController, 'previewSms'])->add($requireAdmin)->add($authMiddleware);
+    $app->post('/api/v1/appointments/sms/send', [$appointmentController, 'sendSms'])->add($requireAdmin)->add($authMiddleware);
+    $app->get('/api/v1/appointments/sms/log', [$appointmentController, 'smsLog'])->add($requireAdmin)->add($authMiddleware);
 
     // Attendance (protected)
     $app->get('/api/v1/attendance', [$attendanceController, 'list'])->add($requireSupporter)->add($authMiddleware);

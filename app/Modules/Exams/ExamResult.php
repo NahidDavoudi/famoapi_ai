@@ -172,6 +172,14 @@ class ExamResult
         return $fetch->fetch() ?: [];
     }
 
+    public static function getStudentBasicInfo(int $studentId): ?array
+    {
+        $stmt = Database::getConnection()->prepare('SELECT id, name, grade, field FROM students WHERE id = ? LIMIT 1');
+        $stmt->execute([$studentId]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
     public static function createShareLink(
         int $studentId,
         string $examDate,
@@ -193,6 +201,74 @@ class ExamResult
             'created_by' => $createdBy,
         ]);
         return (int) $stmt->fetchColumn();
+    }
+
+    public static function markShareLinkSmsSent(int $linkId, ?string $sentAt = null): string
+    {
+        $timestamp = $sentAt ?? gmdate('Y-m-d H:i:s');
+        $stmt = Database::getConnection()->prepare(
+            'UPDATE exam_result_links SET sms_sent_at = :sms_sent_at WHERE id = :id'
+        );
+        $stmt->execute([
+            'sms_sent_at' => $timestamp,
+            'id'          => $linkId,
+        ]);
+        return $timestamp;
+    }
+
+    public static function findShareLinkById(int $linkId): ?array
+    {
+        $stmt = Database::getConnection()->prepare(
+            'SELECT l.id, l.student_id, s.name AS student_name, l.exam_date,
+                    l.expires_at, l.revoked_at, l.sms_sent_at, l.created_by,
+                    l.last_viewed_at, l.created_at
+             FROM exam_result_links l
+             JOIN students s ON l.student_id = s.id
+             WHERE l.id = :id
+             LIMIT 1'
+        );
+        $stmt->execute(['id' => $linkId]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
+    public static function listShareLinks(?int $studentId = null, ?string $examDate = null): array
+    {
+        $conditions = ['1=1'];
+        $params = [];
+
+        if ($studentId !== null && $studentId > 0) {
+            $conditions[] = 'l.student_id = :student_id';
+            $params['student_id'] = $studentId;
+        }
+        if ($examDate !== null && $examDate !== '') {
+            $conditions[] = 'l.exam_date = :exam_date';
+            $params['exam_date'] = $examDate;
+        }
+
+        $sql = 'SELECT l.id, l.student_id, s.name AS student_name, l.exam_date,
+                       l.expires_at, l.revoked_at, l.sms_sent_at, l.created_by,
+                       l.last_viewed_at, l.created_at
+                FROM exam_result_links l
+                JOIN students s ON l.student_id = s.id
+                WHERE ' . implode(' AND ', $conditions) . '
+                ORDER BY l.created_at DESC, l.id DESC
+                LIMIT 100';
+
+        $stmt = Database::getConnection()->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll();
+    }
+
+    public static function revokeShareLink(int $linkId): bool
+    {
+        $stmt = Database::getConnection()->prepare(
+            'UPDATE exam_result_links
+             SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP)
+             WHERE id = :id'
+        );
+        $stmt->execute(['id' => $linkId]);
+        return $stmt->rowCount() > 0;
     }
 
     public static function findActiveShareLinkByHash(string $tokenHash): ?array
