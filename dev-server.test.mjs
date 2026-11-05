@@ -1192,6 +1192,32 @@ test('Weekly Appointment SMS Reminders — Migration 007, preview, bulk send mod
   assert.equal(skippedLogsRes.body.data.logs[0].recipient_type, 'parent');
 });
 
+test('CORS middleware, AuthCookie, and Slim bootstrap inject CORS_ORIGINS for all requests including OPTIONS preflight', () => {
+  const authCookiePhp = fs.readFileSync('app/Core/AuthCookie.php', 'utf8');
+  const corsMiddlewarePhp = fs.readFileSync('app/Core/CorsMiddleware.php', 'utf8');
+  const bootstrapPhp = fs.readFileSync('bootstrap/app.php', 'utf8');
+  const routesPhp = fs.readFileSync('routes/api.php', 'utf8');
+  const exceptionHandlerPhp = fs.readFileSync('app/Core/ExceptionHandler.php', 'utf8');
+  const envExample = fs.readFileSync('.env.example', 'utf8');
+
+  assert.match(authCookiePhp, /public static function rawCorsOrigins\(\): string/);
+  assert.match(authCookiePhp, /\$_ENV\['CORS_ORIGINS'\]/);
+  assert.match(authCookiePhp, /getenv\('CORS_ORIGINS'\)/);
+  assert.match(authCookiePhp, /'https:\/\/auth\.famoacademy\.ir'/);
+  assert.match(authCookiePhp, /foreach \(self::allowedOrigins\(\) as \$allowedItem\)/);
+
+  assert.match(corsMiddlewarePhp, /public static function applyHeaders\(ServerRequestInterface \$request, ResponseInterface \$response\): ResponseInterface/);
+  assert.match(corsMiddlewarePhp, /->withHeader\('Access-Control-Allow-Origin', \$origin\)/);
+  assert.match(corsMiddlewarePhp, /->withHeader\('Access-Control-Allow-Credentials', 'true'\)/);
+  assert.match(corsMiddlewarePhp, /if \(\$method === 'OPTIONS'\)/);
+
+  assert.match(bootstrapPhp, /\$app->add\(new App\\Core\\CorsMiddleware\(\)\);/);
+  assert.match(bootstrapPhp, /App\\Core\\CorsMiddleware::applyHeaders/);
+  assert.match(exceptionHandlerPhp, /CorsMiddleware::applyHeaders\(\$request, \$response\)/);
+  assert.match(routesPhp, /\$app->options\('\/\{routes:\.\+\}'/);
+  assert.match(envExample, /CORS_ORIGINS=https:\/\/famoacademy\.ir.*https:\/\/auth\.famoacademy\.ir/);
+});
+
 
 
 

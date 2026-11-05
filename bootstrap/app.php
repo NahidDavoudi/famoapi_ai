@@ -84,9 +84,12 @@ $errorMiddleware->setErrorHandler(HttpNotFoundException::class, function (
         ],
     ], JSON_UNESCAPED_UNICODE));
 
-    return $response
-        ->withStatus(404)
-        ->withHeader('Content-Type', 'application/json; charset=utf-8');
+    return App\Core\CorsMiddleware::applyHeaders(
+        $request,
+        $response
+            ->withStatus(404)
+            ->withHeader('Content-Type', 'application/json; charset=utf-8')
+    );
 });
 
 $errorMiddleware->setErrorHandler(HttpMethodNotAllowedException::class, function (
@@ -96,6 +99,15 @@ $errorMiddleware->setErrorHandler(HttpMethodNotAllowedException::class, function
     bool $logErrors,
     bool $logErrorDetails
 ) {
+    if (strtoupper($request->getMethod()) === 'OPTIONS') {
+        return App\Core\CorsMiddleware::applyHeaders(
+            $request,
+            (new Response())
+                ->withStatus(204)
+                ->withHeader('Access-Control-Max-Age', '86400')
+        );
+    }
+
     $response = new Response();
     $response->getBody()->write(json_encode([
         'success'    => false,
@@ -107,22 +119,26 @@ $errorMiddleware->setErrorHandler(HttpMethodNotAllowedException::class, function
         ],
     ], JSON_UNESCAPED_UNICODE));
 
-    return $response
-        ->withStatus(405)
-        ->withHeader('Content-Type', 'application/json; charset=utf-8');
+    return App\Core\CorsMiddleware::applyHeaders(
+        $request,
+        $response
+            ->withStatus(405)
+            ->withHeader('Content-Type', 'application/json; charset=utf-8')
+    );
 });
 
 $errorMiddleware->setDefaultErrorHandler(new App\Core\ExceptionHandler());
 
-$app->add(new App\Core\CorsMiddleware());
-
 $app->add(function (ServerRequestInterface $request, $handler) {
     $response = $handler->handle($request);
-    if (!$response->hasHeader('Content-Type')) {
+    if ($response->getStatusCode() !== 204 && !$response->hasHeader('Content-Type')) {
         return $response->withHeader('Content-Type', 'application/json; charset=utf-8');
     }
     return $response;
 });
+
+// Add CorsMiddleware last so it executes FIRST (outermost) on all incoming requests, including OPTIONS preflight.
+$app->add(new App\Core\CorsMiddleware());
 
 \App\Core\RedisClient::configure();
 

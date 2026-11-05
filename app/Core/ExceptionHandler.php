@@ -79,7 +79,7 @@ class ExceptionHandler
             $response = $response->withHeader('Retry-After', (string) $retryAfter);
         }
 
-        return $response;
+        return CorsMiddleware::applyHeaders($request, $response);
     }
 
     private function findDatabaseException(\Throwable $exception): ?\PDOException

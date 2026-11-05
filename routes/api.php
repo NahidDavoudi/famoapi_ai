@@ -378,6 +378,14 @@ return function (App $app) {
         $group->get('/students/{id:[0-9]+}/thread', [$statsController, 'thread'])->add($requireContentAccess);
     })->add($requireAdmin)->add($authMiddleware);
 
+    // Preflight OPTIONS catch-all
+    $app->options('/{routes:.+}', function (Request $request, Response $response) {
+        return \App\Core\CorsMiddleware::applyHeaders(
+            $request,
+            $response->withStatus(204)->withHeader('Access-Control-Max-Age', '86400')
+        );
+    });
+
     // Catch-all 404
     $app->map(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], '/api/v1/{routes:.+}', function (Request $request, Response $response) {
         throw new HttpNotFoundException($request);

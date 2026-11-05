@@ -44,10 +44,13 @@ class Database
                 $dsn = "pgsql:host={$host};port={$portInt};dbname={$name}";
             }
 
+            $timeout = max(1, (int) ($_ENV['DB_TIMEOUT'] ?? 5));
+
             self::$instance = new \PDO($dsn, $user, $pass, [
                 \PDO::ATTR_ERRMODE            => \PDO::ERRMODE_EXCEPTION,
                 \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
                 \PDO::ATTR_EMULATE_PREPARES   => false,
+                \PDO::ATTR_TIMEOUT            => $timeout,
             ]);
 
             if ($driver === 'mysql') {

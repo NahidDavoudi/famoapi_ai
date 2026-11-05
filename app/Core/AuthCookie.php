@@ -29,19 +29,45 @@ final class AuthCookie
         return self::isOriginAllowed($origin);
     }
 
+    public static function rawCorsOrigins(): string
+    {
+        $candidates = [
+            $_ENV['CORS_ORIGINS'] ?? null,
+            $_SERVER['CORS_ORIGINS'] ?? null,
+            getenv('CORS_ORIGINS') ?: null,
+            $_ENV['CORS_ALLOWED_ORIGINS'] ?? null,
+            $_SERVER['CORS_ALLOWED_ORIGINS'] ?? null,
+            getenv('CORS_ALLOWED_ORIGINS') ?: null,
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && trim($candidate) !== '') {
+                return trim($candidate);
+            }
+        }
+
+        return '';
+    }
+
     public static function allowedOrigins(): array
     {
         $origins = array_values(array_filter(array_map(
             static fn (string $item): string => rtrim(trim($item), '/'),
-            explode(',', $_ENV['CORS_ORIGINS'] ?? '')
+            explode(',', self::rawCorsOrigins())
         )));
         if ($origins === []) {
             $origins = [
                 'https://famoacademy.ir',
+                'https://www.famoacademy.ir',
                 'https://admin.famoacademy.ir',
                 'https://dash.famoacademy.ir',
                 'https://auth.famoacademy.ir',
                 'http://localhost',
+                'http://localhost:3000',
+                'http://localhost:5173',
+                'http://127.0.0.1',
+                'http://127.0.0.1:3000',
+                'http://127.0.0.1:5173',
             ];
         }
 
@@ -50,8 +76,8 @@ final class AuthCookie
 
     public static function isOriginAllowed(string $origin): bool
     {
-        $origin = trim($origin);
-        if ($origin === '') {
+        $origin = rtrim(trim($origin), '/');
+        if ($origin === '' || preg_match('/\s/', $origin) === 1) {
             return false;
         }
 
@@ -68,7 +94,8 @@ final class AuthCookie
             return false;
         }
 
-        $host = (string) $parts['host'];
+        $scheme = strtolower((string) $parts['scheme']);
+        $host = strtolower((string) $parts['host']);
         $validHost = filter_var($host, FILTER_VALIDATE_IP) !== false
             || (strlen($host) <= 253 && preg_match('/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/i', $host) === 1);
         if (!$validHost) {
@@ -79,7 +106,42 @@ final class AuthCookie
             return false;
         }
 
-        return preg_match('/\s/', $origin) !== 1;
+        $normalizedOrigin = $scheme . '://' . $host . (isset($parts['port']) ? ':' . (int) $parts['port'] : '');
+        $originWithoutPort = $scheme . '://' . $host;
+
+        foreach (self::allowedOrigins() as $allowedItem) {
+            $allowed = strtolower(rtrim(trim($allowedItem), '/'));
+            if ($allowed === '') {
+                continue;
+            }
+            if ($allowed === '*') {
+                return !($scheme === 'http' && ($host === 'famoacademy.ir' || str_ends_with($host, '.famoacademy.ir')));
+            }
+            if ($allowed === $normalizedOrigin) {
+                return true;
+            }
+            if (($allowed === 'http://localhost' || $allowed === 'http://127.0.0.1') && $allowed === $originWithoutPort) {
+                return true;
+            }
+            if (str_contains($allowed, '*.')) {
+                $pattern = '#^' . str_replace('\*\.', '([a-z0-9-]+\.)+', preg_quote($allowed, '#')) . '$#i';
+                if (preg_match($pattern, $normalizedOrigin) === 1) {
+                    return true;
+                }
+            }
+        }
+
+        // Always allow HTTPS on famoacademy.ir and its subdomains
+        if ($scheme === 'https' && ($host === 'famoacademy.ir' || str_ends_with($host, '.famoacademy.ir'))) {
+            return true;
+        }
+
+        // Allow localhost development origins
+        if (in_array($host, ['localhost', '127.0.0.1'], true) || str_ends_with($host, '.localhost')) {
+            return true;
+        }
+
+        return false;
     }
 
     public static function issue(Response $response, Request $request, string $token): Response
