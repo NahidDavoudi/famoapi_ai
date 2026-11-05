@@ -43,7 +43,7 @@ class TutoringController
     public function me(Request $request, Response $response): Response
     {
         try {
-            return $this->ok($response, $this->service->me($this->caller($request)));
+            return $this->ok($response, $this->service->me($this->caller($request), $request->getQueryParams()));
         } catch (ApiException $e) {
             return $this->fail($response, $e);
         }
@@ -56,14 +56,16 @@ class TutoringController
         $validator = new Validator();
         $validator
             ->required('status', 'وضعیت', $body['status'] ?? null)
-            ->inArray('status', 'وضعیت', $body['status'] ?? null, TutoringService::STATUSES);
+            ->inArray('status', 'وضعیت', $body['status'] ?? null, TutoringService::STATUSES)
+            ->positiveInt('instructor_id', 'شناسه مدرس', $body['instructor_id'] ?? null)
+            ->positiveInt('classroom_id', 'شناسه کلاس', $body['classroom_id'] ?? null);
 
         if (!$validator->passes()) {
             return $this->fail($response, new ApiException($validator->firstError(), 422, 'VALIDATION_ERROR'));
         }
 
         try {
-            return $this->ok($response, $this->service->setStatus($this->caller($request), $body['status']));
+            return $this->ok($response, $this->service->setStatus($this->caller($request), $body['status'], $body));
         } catch (ApiException $e) {
             return $this->fail($response, $e);
         }
@@ -87,10 +89,15 @@ class TutoringController
         $validator = new Validator();
         $validator
             ->required('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null)
-            ->positiveInt('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null);
+            ->positiveInt('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null)
+            ->positiveInt('classroom_id', 'شناسه کلاس', $body['classroom_id'] ?? null)
+            ->positiveInt('instructor_id', 'شناسه مدرس', $body['instructor_id'] ?? null);
 
         if (isset($body['started_at']) && $body['started_at'] !== null) {
             $validator->string('started_at', 'زمان شروع', $body['started_at']);
+        }
+        if (isset($body['entered_at']) && $body['entered_at'] !== null) {
+            $validator->string('entered_at', 'زمان ورود', $body['entered_at']);
         }
 
         if (!$validator->passes()) {

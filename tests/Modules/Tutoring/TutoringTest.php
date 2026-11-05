@@ -519,10 +519,33 @@ class TutoringTest extends TestCase
         );
         $this->assertJsonResponse($status, 403, null, 'FORBIDDEN');
 
-        $board = $this->handleRequest(
-            $this->adminRequest('POST', '/api/v1/tutoring/sessions', ['student_id' => 1], ['Origin' => 'http://localhost'])
+        $start = $this->handleRequest(
+            $this->supporterRequest('POST', '/api/v1/tutoring/sessions', ['student_id' => 1], ['Origin' => 'http://localhost'])
         );
-        $this->assertJsonResponse($board, 403, null, 'FORBIDDEN');
+        $this->assertJsonResponse($start, 403, null, 'FORBIDDEN');
+    }
+
+    public function testAdminCanStartAndEndClassroomSession(): void
+    {
+        $teacher = $this->seedTeacher();
+        $classroomId = $this->seedClassroom($teacher['instructor_id']);
+        $studentId = $this->seedStudent(['field' => self::FIELD, 'name' => 'TUT_TST_AdminSession']);
+
+        $started = $this->handleRequest(
+            $this->adminRequest('POST', '/api/v1/tutoring/sessions', [
+                'classroom_id' => $classroomId,
+                'student_id'   => $studentId,
+            ], ['Origin' => 'http://localhost'])
+        );
+        $startedData = $this->assertJsonResponse($started, 201);
+        $sessionId = (int) $startedData['data']['id'];
+        $this->assertSame($classroomId, $startedData['data']['classroom_id']);
+
+        $ended = $this->handleRequest(
+            $this->adminRequest('POST', "/api/v1/tutoring/sessions/{$sessionId}/end", [], ['Origin' => 'http://localhost'])
+        );
+        $endedData = $this->assertJsonResponse($ended, 200);
+        $this->assertNotNull($endedData['data']['ended_at']);
     }
 
     /**

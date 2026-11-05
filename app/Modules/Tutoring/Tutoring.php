@@ -32,10 +32,66 @@ class Tutoring
         }
 
         return [
-            'id'         => (int) $row['id'],
-            'name'       => $row['name'],
-            'sort_order' => (int) $row['sort_order'],
-            'is_active'  => (bool) $row['is_active'],
+            'id'            => (int) $row['id'],
+            'name'          => $row['name'],
+            'instructor_id' => isset($row['instructor_id']) ? (int) $row['instructor_id'] : $instructorId,
+            'sort_order'    => (int) $row['sort_order'],
+            'is_active'     => (bool) $row['is_active'],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public static function classroomById(int $classroomId): ?array
+    {
+        $stmt = Database::getConnection()->prepare(
+            'SELECT id, name, instructor_id, sort_order, is_active
+               FROM tutoring_classrooms
+              WHERE id = :id
+              LIMIT 1'
+        );
+        $stmt->execute(['id' => $classroomId]);
+        $row = $stmt->fetch();
+
+        if ($row === false) {
+            return null;
+        }
+
+        return [
+            'id'            => (int) $row['id'],
+            'name'          => $row['name'],
+            'instructor_id' => (int) $row['instructor_id'],
+            'sort_order'    => (int) $row['sort_order'],
+            'is_active'     => (bool) $row['is_active'],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public static function firstActiveClassroom(): ?array
+    {
+        $stmt = Database::getConnection()->prepare(
+            'SELECT id, name, instructor_id, sort_order, is_active
+               FROM tutoring_classrooms
+              WHERE is_active = 1
+              ORDER BY sort_order ASC, id ASC
+              LIMIT 1'
+        );
+        $stmt->execute();
+        $row = $stmt->fetch();
+
+        if ($row === false) {
+            return null;
+        }
+
+        return [
+            'id'            => (int) $row['id'],
+            'name'          => $row['name'],
+            'instructor_id' => (int) $row['instructor_id'],
+            'sort_order'    => (int) $row['sort_order'],
+            'is_active'     => (bool) $row['is_active'],
         ];
     }
 
@@ -231,29 +287,44 @@ class Tutoring
     }
 
     /**
-     * Close an open session that belongs to the instructor's classroom.
+     * Close an open session. When $instructorId is provided, restricts to that
+     * instructor's classroom; when null (admin), closes any open session by ID.
      *
      * @return array<string, mixed>
      */
-    public static function endSession(int $instructorId, int $sessionId, string $endedAtUtc): array
+    public static function endSession(?int $instructorId, int $sessionId, string $endedAtUtc): array
     {
         $db = Database::getConnection();
 
-        $stmt = $db->prepare(
-            'UPDATE tutoring_sessions
-                SET ended_at = :ended_at, updated_at = :updated_at
-              WHERE id = :id
-                AND ended_at IS NULL
-                AND classroom_id IN (
-                    SELECT id FROM tutoring_classrooms WHERE instructor_id = :instructor_id
-                )'
-        );
-        $stmt->execute([
-            'ended_at'      => $endedAtUtc,
-            'updated_at'    => IranDay::nowUtc(),
-            'id'            => $sessionId,
-            'instructor_id' => $instructorId,
-        ]);
+        if ($instructorId === null) {
+            $stmt = $db->prepare(
+                'UPDATE tutoring_sessions
+                    SET ended_at = :ended_at, updated_at = :updated_at
+                  WHERE id = :id
+                    AND ended_at IS NULL'
+            );
+            $stmt->execute([
+                'ended_at'   => $endedAtUtc,
+                'updated_at' => IranDay::nowUtc(),
+                'id'         => $sessionId,
+            ]);
+        } else {
+            $stmt = $db->prepare(
+                'UPDATE tutoring_sessions
+                    SET ended_at = :ended_at, updated_at = :updated_at
+                  WHERE id = :id
+                    AND ended_at IS NULL
+                    AND classroom_id IN (
+                        SELECT id FROM tutoring_classrooms WHERE instructor_id = :instructor_id
+                    )'
+            );
+            $stmt->execute([
+                'ended_at'      => $endedAtUtc,
+                'updated_at'    => IranDay::nowUtc(),
+                'id'            => $sessionId,
+                'instructor_id' => $instructorId,
+            ]);
+        }
 
         if ($stmt->rowCount() === 0) {
             throw new ApiException('جلسه یافت نشد', 404, 'NOT_FOUND');
@@ -321,6 +392,7 @@ class Tutoring
                 'teacher_name'   => $row['teacher_name'],
                 'status'         => $row['status'],
                 'status_since'   => $row['status_since'],
+                'session_id'     => $row['session_id'] !== null ? (int) $row['session_id'] : null,
                 'student'        => $row['student_id'] === null ? null : [
                     'id'    => (int) $row['student_id'],
                     'name'  => $row['student_name'],

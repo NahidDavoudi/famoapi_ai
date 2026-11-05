@@ -20,8 +20,8 @@ class Authorization implements MiddlewareInterface
             'message' => 'دسترسی محدود به پشتیبانان',
         ],
         'teacher' => [
-            'roles'   => ['teacher'],
-            'message' => 'دسترسی محدود به مدرسان',
+            'roles'   => ['admin', 'teacher'],
+            'message' => 'دسترسی محدود به مدرسان و مدیران',
         ],
         'staff' => [
             'roles'   => ['admin', 'supporter', 'teacher'],
