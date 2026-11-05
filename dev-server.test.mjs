@@ -1218,6 +1218,30 @@ test('CORS middleware, AuthCookie, and Slim bootstrap inject CORS_ORIGINS for al
   assert.match(envExample, /CORS_ORIGINS=https:\/\/famoacademy\.ir.*https:\/\/auth\.famoacademy\.ir/);
 });
 
+test('Tutoring classrooms endpoints (POST/DELETE /api/v1/tutoring/classrooms) and admin session control are implemented and documented', () => {
+  const tutoringPhp = fs.readFileSync('app/Modules/Tutoring/Tutoring.php', 'utf8');
+  const tutoringSvcPhp = fs.readFileSync('app/Modules/Tutoring/TutoringService.php', 'utf8');
+  const tutoringCtrlPhp = fs.readFileSync('app/Modules/Tutoring/TutoringController.php', 'utf8');
+  const routesPhp = fs.readFileSync('routes/api.php', 'utf8');
+  const rootSpec = fs.readFileSync('openapi.yaml', 'utf8');
+  const publicSpec = fs.readFileSync('public/openapi.yaml', 'utf8');
+
+  assert.equal(rootSpec, publicSpec);
+  assert.match(tutoringPhp, /public static function createClassroom\(array \$data\): array/);
+  assert.match(tutoringPhp, /public static function deleteClassroom\(int \$classroomId\): void/);
+  assert.match(tutoringPhp, /LEFT JOIN instructors i ON i\.id = c\.instructor_id/);
+  assert.match(tutoringSvcPhp, /public function createClassroom\(array \$data\): array/);
+  assert.match(tutoringSvcPhp, /public function deleteClassroom\(int \$classroomId\): void/);
+  assert.match(tutoringCtrlPhp, /public function createClassroom\(Request \$request, Response \$response\): Response/);
+  assert.match(tutoringCtrlPhp, /public function deleteClassroom\(Request \$request, Response \$response, array \$args\): Response/);
+  assert.match(routesPhp, /\$app->post\('\/api\/v1\/tutoring\/classrooms',\s*\[\$tutoringController,\s*'createClassroom'\]\)->add\(\$requireStaff\)->add\(\$authMiddleware\)/);
+  assert.match(routesPhp, /\$app->delete\('\/api\/v1\/tutoring\/classrooms\/\{id:\[0-9\]\+\}',\s*\[\$tutoringController,\s*'deleteClassroom'\]\)->add\(\$requireStaff\)->add\(\$authMiddleware\)/);
+  assert.match(rootSpec, /\/api\/v1\/tutoring\/classrooms:/);
+  assert.match(rootSpec, /\/api\/v1\/tutoring\/classrooms\/\{id\}:/);
+  assert.match(rootSpec, /operationId:\s*tutoringCreateClassroom/);
+  assert.match(rootSpec, /operationId:\s*tutoringDeleteClassroom/);
+});
+
 
 
 

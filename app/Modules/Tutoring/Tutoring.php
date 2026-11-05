@@ -68,6 +68,253 @@ class Tutoring
     }
 
     /**
+     * @return array<int, array<string, mixed>>
+     */
+    public static function listClassrooms(): array
+    {
+        $stmt = Database::getConnection()->prepare(
+            'SELECT c.id, c.name, c.instructor_id, c.sort_order, c.is_active,
+                    COALESCE(i.name, \'\') AS teacher_name,
+                    COALESCE(i.title, \'\') AS teacher_title
+               FROM tutoring_classrooms c
+               LEFT JOIN instructors i ON i.id = c.instructor_id
+              WHERE c.is_active = 1
+              ORDER BY c.sort_order ASC, c.id ASC'
+        );
+        $stmt->execute();
+
+        $items = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $items[] = self::shapeClassroom($row);
+        }
+
+        return $items;
+    }
+
+    /**
+     * Create or reactivate a tutoring classroom column.
+     * If instructor_id is not provided, resolves or creates an instructor record
+     * so uq_classroom_instructor and board joins work without schema changes.
+     *
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    public static function createClassroom(array $data): array
+    {
+        $db = Database::getConnection();
+        $name = trim((string) ($data['name'] ?? $data['class_name'] ?? $data['classroom_name'] ?? ''));
+        $teacherName = trim((string) ($data['teacher_name'] ?? ''));
+        $field = trim((string) ($data['field'] ?? ''));
+        $instructorId = isset($data['instructor_id']) && (int) $data['instructor_id'] > 0
+            ? (int) $data['instructor_id']
+            : 0;
+
+        if ($name === '' && $teacherName !== '') {
+            $name = $teacherName;
+        }
+
+        $sortOrder = isset($data['sort_order']) && is_numeric($data['sort_order'])
+            ? (int) $data['sort_order']
+            : null;
+
+        $db->beginTransaction();
+        try {
+            if ($sortOrder === null) {
+                $maxSort = (int) $db->query('SELECT COALESCE(MAX(sort_order), 0) FROM tutoring_classrooms')->fetchColumn();
+                $sortOrder = $maxSort + 1;
+            }
+
+            if ($instructorId > 0) {
+                $existingInstructor = $db->prepare('SELECT id FROM instructors WHERE id = :id LIMIT 1');
+                $existingInstructor->execute(['id' => $instructorId]);
+                if ($existingInstructor->fetchColumn() === false) {
+                    throw new ApiException('مدرس مورد نظر یافت نشد', 404, 'NOT_FOUND');
+                }
+            } else {
+                $instructorId = self::resolveOrCreateInstructorForClassroom($db, $teacherName, $name, $field);
+            }
+
+            $existingStmt = $db->prepare(
+                'SELECT id, is_active FROM tutoring_classrooms WHERE instructor_id = :instructor_id LIMIT 1'
+            );
+            $existingStmt->execute(['instructor_id' => $instructorId]);
+            $existingRoom = $existingStmt->fetch();
+
+            if ($existingRoom !== false) {
+                if ((int) $existingRoom['is_active'] === 0) {
+                    $roomId = (int) $existingRoom['id'];
+                    $upd = $db->prepare(
+                        'UPDATE tutoring_classrooms
+                            SET name = :name, sort_order = :sort_order, is_active = 1
+                          WHERE id = :id'
+                    );
+                    $upd->execute([
+                        'name'       => $name,
+                        'sort_order' => $sortOrder,
+                        'id'         => $roomId,
+                    ]);
+                    if ($teacherName !== '' || $field !== '') {
+                        self::updateInstructorMetadata($db, $instructorId, $teacherName, $field);
+                    }
+                    $db->commit();
+                    return self::classroomDetailById($roomId);
+                }
+
+                // Active classroom already exists for this instructor_id: create a dedicated instructor entry
+                // so a new classroom column can always be added without hitting uq_classroom_instructor.
+                $instructorId = self::createDedicatedInstructor($db, $teacherName !== '' ? $teacherName : $name, $field);
+            }
+
+            $ins = $db->prepare(
+                'INSERT INTO tutoring_classrooms (name, instructor_id, sort_order, is_active, created_at)
+                 VALUES (:name, :instructor_id, :sort_order, 1, :created_at)'
+            );
+            $ins->execute([
+                'name'          => $name,
+                'instructor_id' => $instructorId,
+                'sort_order'    => $sortOrder,
+                'created_at'    => IranDay::nowUtc(),
+            ]);
+            $roomId = (int) $db->lastInsertId();
+            $db->commit();
+        } catch (\Throwable $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            throw $e;
+        }
+
+        return self::classroomDetailById($roomId);
+    }
+
+    /**
+     * Update an existing tutoring classroom column.
+     *
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    public static function updateClassroom(int $classroomId, array $data): array
+    {
+        $db = Database::getConnection();
+        $existing = self::classroomDetailById($classroomId);
+
+        $name = array_key_exists('name', $data) || array_key_exists('class_name', $data) || array_key_exists('classroom_name', $data)
+            ? trim((string) ($data['name'] ?? $data['class_name'] ?? $data['classroom_name'] ?? ''))
+            : $existing['name'];
+
+        if ($name === '') {
+            throw new ApiException('نام کلاس الزامی است', 422, 'VALIDATION_ERROR');
+        }
+
+        $sortOrder = isset($data['sort_order']) && is_numeric($data['sort_order'])
+            ? (int) $data['sort_order']
+            : (int) $existing['sort_order'];
+
+        $teacherName = array_key_exists('teacher_name', $data) ? trim((string) $data['teacher_name']) : null;
+        $field = array_key_exists('field', $data) ? trim((string) $data['field']) : null;
+
+        $db->beginTransaction();
+        try {
+            $stmt = $db->prepare(
+                'UPDATE tutoring_classrooms SET name = :name, sort_order = :sort_order WHERE id = :id'
+            );
+            $stmt->execute([
+                'name'       => $name,
+                'sort_order' => $sortOrder,
+                'id'         => $classroomId,
+            ]);
+
+            if (($teacherName !== null || $field !== null) && (int) $existing['instructor_id'] > 0) {
+                self::updateInstructorMetadata($db, (int) $existing['instructor_id'], $teacherName, $field);
+            }
+
+            $db->commit();
+        } catch (\Throwable $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            throw $e;
+        }
+
+        return self::classroomDetailById($classroomId);
+    }
+
+    /**
+     * Delete or deactivate a tutoring classroom column and close any open session in it.
+     */
+    public static function deleteClassroom(int $classroomId): void
+    {
+        $db = Database::getConnection();
+        $stmt = $db->prepare('SELECT id, is_active FROM tutoring_classrooms WHERE id = :id LIMIT 1');
+        $stmt->execute(['id' => $classroomId]);
+        $row = $stmt->fetch();
+
+        if ($row === false) {
+            throw new ApiException('کلاس درس یافت نشد', 404, 'NOT_FOUND');
+        }
+
+        $now = IranDay::nowUtc();
+        $db->beginTransaction();
+        try {
+            // End any open session in this classroom so students are not left with an open session
+            $closeSessions = $db->prepare(
+                'UPDATE tutoring_sessions
+                    SET ended_at = :ended_at, updated_at = :updated_at
+                  WHERE classroom_id = :classroom_id
+                    AND ended_at IS NULL'
+            );
+            $closeSessions->execute([
+                'ended_at'     => $now,
+                'updated_at'   => $now,
+                'classroom_id' => $classroomId,
+            ]);
+
+            $sessionCountStmt = $db->prepare('SELECT COUNT(*) FROM tutoring_sessions WHERE classroom_id = :classroom_id');
+            $sessionCountStmt->execute(['classroom_id' => $classroomId]);
+            $sessionCount = (int) $sessionCountStmt->fetchColumn();
+
+            if ($sessionCount === 0) {
+                $del = $db->prepare('DELETE FROM tutoring_classrooms WHERE id = :id');
+                $del->execute(['id' => $classroomId]);
+            } else {
+                $deact = $db->prepare('UPDATE tutoring_classrooms SET is_active = 0 WHERE id = :id');
+                $deact->execute(['id' => $classroomId]);
+            }
+
+            $db->commit();
+        } catch (\Throwable $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public static function classroomDetailById(int $classroomId): array
+    {
+        $stmt = Database::getConnection()->prepare(
+            'SELECT c.id, c.name, c.instructor_id, c.sort_order, c.is_active,
+                    COALESCE(i.name, \'\') AS teacher_name,
+                    COALESCE(i.title, \'\') AS teacher_title
+               FROM tutoring_classrooms c
+               LEFT JOIN instructors i ON i.id = c.instructor_id
+              WHERE c.id = :id
+              LIMIT 1'
+        );
+        $stmt->execute(['id' => $classroomId]);
+        $row = $stmt->fetch();
+
+        if ($row === false) {
+            throw new ApiException('کلاس درس یافت نشد', 404, 'NOT_FOUND');
+        }
+
+        return self::shapeClassroom($row);
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     public static function firstActiveClassroom(): ?array
@@ -346,7 +593,9 @@ class Tutoring
         $sql = 'SELECT c.id AS classroom_id,
                        c.name AS classroom_name,
                        c.instructor_id AS instructor_id,
-                       i.name AS teacher_name,
+                       c.sort_order AS sort_order,
+                       COALESCE(i.name, \'\') AS teacher_name,
+                       COALESCE(i.title, \'\') AS teacher_title,
                        (SELECT st.status FROM tutoring_teacher_status_log st
                          WHERE st.instructor_id = c.instructor_id
                            AND st.status_date = :today_status
@@ -364,7 +613,7 @@ class Tutoring
                        stu.grade AS student_grade,
                        stu.field AS student_field
                   FROM tutoring_classrooms c
-                  JOIN instructors i ON i.id = c.instructor_id
+                  LEFT JOIN instructors i ON i.id = c.instructor_id
                   LEFT JOIN tutoring_sessions s ON s.id = (
                         SELECT s2.id FROM tutoring_sessions s2
                          WHERE s2.classroom_id = c.id
@@ -386,10 +635,15 @@ class Tutoring
             }
 
             $board[] = [
+                'id'             => (int) $row['classroom_id'],
                 'classroom_id'   => (int) $row['classroom_id'],
+                'name'           => $row['classroom_name'],
+                'class_name'     => $row['classroom_name'],
                 'classroom_name' => $row['classroom_name'],
                 'instructor_id'  => (int) $row['instructor_id'],
                 'teacher_name'   => $row['teacher_name'],
+                'field'          => $row['teacher_title'] !== '' ? $row['teacher_title'] : null,
+                'sort_order'     => (int) $row['sort_order'],
                 'status'         => $row['status'],
                 'status_since'   => $row['status_since'],
                 'session_id'     => $row['session_id'] !== null ? (int) $row['session_id'] : null,
@@ -468,6 +722,100 @@ class Tutoring
         $id = $stmt->fetchColumn();
 
         return $id === false ? null : (int) $id;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private static function shapeClassroom(array $row): array
+    {
+        $teacherTitle = trim((string) ($row['teacher_title'] ?? ''));
+
+        return [
+            'id'             => (int) $row['id'],
+            'classroom_id'   => (int) $row['id'],
+            'name'           => $row['name'],
+            'class_name'     => $row['name'],
+            'classroom_name' => $row['name'],
+            'instructor_id'  => (int) $row['instructor_id'],
+            'teacher_name'   => (string) ($row['teacher_name'] ?? ''),
+            'field'          => $teacherTitle !== '' ? $teacherTitle : null,
+            'sort_order'     => (int) $row['sort_order'],
+            'is_active'      => (bool) $row['is_active'],
+        ];
+    }
+
+    private static function resolveOrCreateInstructorForClassroom(
+        PDO $db,
+        string $teacherName,
+        string $classroomName,
+        string $field
+    ): int {
+        if ($teacherName !== '') {
+            // Prefer an existing instructor with the same name who does not currently have an active classroom
+            $stmt = $db->prepare(
+                'SELECT i.id
+                   FROM instructors i
+                   LEFT JOIN tutoring_classrooms c ON c.instructor_id = i.id
+                  WHERE i.name = :name
+                    AND (c.id IS NULL OR c.is_active = 0)
+                  ORDER BY i.id ASC
+                  LIMIT 1'
+            );
+            $stmt->execute(['name' => $teacherName]);
+            $foundId = $stmt->fetchColumn();
+            if ($foundId !== false) {
+                if ($field !== '') {
+                    self::updateInstructorMetadata($db, (int) $foundId, null, $field);
+                }
+                return (int) $foundId;
+            }
+        }
+
+        return self::createDedicatedInstructor($db, $teacherName, $field);
+    }
+
+    private static function createDedicatedInstructor(PDO $db, string $teacherName, string $field): int
+    {
+        $title = $field !== '' ? $field : 'مدرس';
+        $initial = $teacherName !== '' ? mb_substr($teacherName, 0, 1) : null;
+
+        $stmt = $db->prepare(
+            'INSERT INTO instructors (name, title, initial_letter, display_order)
+             VALUES (:name, :title, :initial_letter, 0)'
+        );
+        $stmt->execute([
+            'name'           => $teacherName,
+            'title'          => $title,
+            'initial_letter' => $initial,
+        ]);
+
+        return (int) $db->lastInsertId();
+    }
+
+    private static function updateInstructorMetadata(
+        PDO $db,
+        int $instructorId,
+        ?string $teacherName,
+        ?string $field
+    ): void {
+        if ($teacherName !== null && $field !== null && $field !== '') {
+            $stmt = $db->prepare('UPDATE instructors SET name = :name, title = :title WHERE id = :id');
+            $stmt->execute(['name' => $teacherName, 'title' => $field, 'id' => $instructorId]);
+            return;
+        }
+
+        if ($teacherName !== null) {
+            $stmt = $db->prepare('UPDATE instructors SET name = :name WHERE id = :id');
+            $stmt->execute(['name' => $teacherName, 'id' => $instructorId]);
+            return;
+        }
+
+        if ($field !== null && $field !== '') {
+            $stmt = $db->prepare('UPDATE instructors SET title = :title WHERE id = :id');
+            $stmt->execute(['title' => $field, 'id' => $instructorId]);
+        }
     }
 
     /**

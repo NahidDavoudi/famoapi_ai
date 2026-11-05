@@ -147,6 +147,90 @@ class TutoringController
         }
     }
 
+    public function listClassrooms(Request $request, Response $response): Response
+    {
+        try {
+            return $this->ok($response, $this->service->listClassrooms());
+        } catch (ApiException $e) {
+            return $this->fail($response, $e);
+        }
+    }
+
+    public function createClassroom(Request $request, Response $response): Response
+    {
+        $body = $request->getParsedBody() ?? [];
+        $name = $body['name'] ?? $body['class_name'] ?? $body['classroom_name'] ?? $body['teacher_name'] ?? null;
+
+        $validator = new Validator();
+        $validator
+            ->required('name', 'نام کلاس', $name)
+            ->string('name', 'نام کلاس', $name)
+            ->maxLength('name', 'نام کلاس', $name, 100)
+            ->positiveInt('instructor_id', 'شناسه مدرس', $body['instructor_id'] ?? null)
+            ->integer('sort_order', 'ترتیب نمایش', $body['sort_order'] ?? null, 0);
+
+        if (isset($body['teacher_name']) && $body['teacher_name'] !== null) {
+            $validator->string('teacher_name', 'نام مدرس', $body['teacher_name'])
+                ->maxLength('teacher_name', 'نام مدرس', $body['teacher_name'], 255);
+        }
+        if (isset($body['field']) && $body['field'] !== null) {
+            $validator->string('field', 'رشته', $body['field'])
+                ->maxLength('field', 'رشته', $body['field'], 255);
+        }
+
+        if (!$validator->passes()) {
+            return $this->fail($response, new ApiException($validator->firstError(), 422, 'VALIDATION_ERROR'));
+        }
+
+        try {
+            return $this->ok($response, $this->service->createClassroom($body), 201);
+        } catch (ApiException $e) {
+            return $this->fail($response, $e);
+        }
+    }
+
+    public function updateClassroom(Request $request, Response $response, array $args): Response
+    {
+        $body = $request->getParsedBody() ?? [];
+        $name = $body['name'] ?? $body['class_name'] ?? $body['classroom_name'] ?? null;
+
+        $validator = new Validator();
+        $validator->requireBody($body);
+        if ($name !== null) {
+            $validator->string('name', 'نام کلاس', $name)->maxLength('name', 'نام کلاس', $name, 100);
+        }
+        $validator->integer('sort_order', 'ترتیب نمایش', $body['sort_order'] ?? null, 0);
+        if (isset($body['teacher_name']) && $body['teacher_name'] !== null) {
+            $validator->string('teacher_name', 'نام مدرس', $body['teacher_name'])
+                ->maxLength('teacher_name', 'نام مدرس', $body['teacher_name'], 255);
+        }
+        if (isset($body['field']) && $body['field'] !== null) {
+            $validator->string('field', 'رشته', $body['field'])
+                ->maxLength('field', 'رشته', $body['field'], 255);
+        }
+
+        if (!$validator->passes()) {
+            return $this->fail($response, new ApiException($validator->firstError(), 422, 'VALIDATION_ERROR'));
+        }
+
+        try {
+            return $this->ok($response, $this->service->updateClassroom((int) $args['id'], $body));
+        } catch (ApiException $e) {
+            return $this->fail($response, $e);
+        }
+    }
+
+    public function deleteClassroom(Request $request, Response $response, array $args): Response
+    {
+        try {
+            $this->service->deleteClassroom((int) $args['id']);
+
+            return $this->ok($response, ['id' => (int) $args['id'], 'deleted' => true]);
+        } catch (ApiException $e) {
+            return $this->fail($response, $e);
+        }
+    }
+
     private function caller(Request $request): object
     {
         $user = $request->getAttribute('user');

@@ -4819,6 +4819,213 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  /api/v1/tutoring/classrooms:
+    get:
+      tags: [Tutoring]
+      summary: List active tutoring classrooms
+      operationId: tutoringListClassrooms
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Active tutoring classrooms
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/TutoringClassroomItem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Tutoring]
+      summary: Create a tutoring classroom column
+      operationId: tutoringCreateClassroom
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  maxLength: 100
+                  description: Classroom column title (or provide class_name / classroom_name)
+                class_name:
+                  type: string
+                  maxLength: 100
+                classroom_name:
+                  type: string
+                  maxLength: 100
+                teacher_name:
+                  type: string
+                  maxLength: 255
+                field:
+                  type: string
+                  maxLength: 255
+                instructor_id:
+                  type: integer
+                sort_order:
+                  type: integer
+      responses:
+        "201":
+          description: Created classroom column
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/TutoringClassroomItem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/tutoring/classrooms/{id}:
+    parameters:
+      - $ref: "#/components/parameters/IdParam"
+    put:
+      tags: [Tutoring]
+      summary: Update a tutoring classroom column
+      operationId: tutoringUpdateClassroom
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  maxLength: 100
+                class_name:
+                  type: string
+                  maxLength: 100
+                classroom_name:
+                  type: string
+                  maxLength: 100
+                teacher_name:
+                  type: string
+                  maxLength: 255
+                field:
+                  type: string
+                  maxLength: 255
+                sort_order:
+                  type: integer
+      responses:
+        "200":
+          description: Updated classroom column
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/TutoringClassroomItem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    patch:
+      tags: [Tutoring]
+      summary: Partially update a tutoring classroom column
+      operationId: tutoringPatchClassroom
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  maxLength: 100
+                class_name:
+                  type: string
+                  maxLength: 100
+                classroom_name:
+                  type: string
+                  maxLength: 100
+                teacher_name:
+                  type: string
+                  maxLength: 255
+                field:
+                  type: string
+                  maxLength: 255
+                sort_order:
+                  type: integer
+      responses:
+        "200":
+          description: Updated classroom column
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/TutoringClassroomItem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [Tutoring]
+      summary: Delete a tutoring classroom column
+      operationId: tutoringDeleteClassroom
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Classroom column deleted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          id:
+                            type: integer
+                          deleted:
+                            type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   # ───────────────────── Bot Gateway ─────────────────────
   /api/v1/bot/ping:
     get:
@@ -7462,17 +7669,53 @@ components:
           type: string
           format: date-time
 
-    TutoringBoardClass:
+    TutoringClassroomItem:
       type: object
       properties:
+        id:
+          type: integer
         classroom_id:
           type: integer
+        name:
+          type: string
+        class_name:
+          type: string
         classroom_name:
           type: string
         instructor_id:
           type: integer
         teacher_name:
           type: string
+        field:
+          type: string
+          nullable: true
+        sort_order:
+          type: integer
+        is_active:
+          type: boolean
+
+    TutoringBoardClass:
+      type: object
+      properties:
+        id:
+          type: integer
+        classroom_id:
+          type: integer
+        name:
+          type: string
+        class_name:
+          type: string
+        classroom_name:
+          type: string
+        instructor_id:
+          type: integer
+        teacher_name:
+          type: string
+        field:
+          type: string
+          nullable: true
+        sort_order:
+          type: integer
         status:
           type: string
           enum: [absent, ready, break]
@@ -7480,6 +7723,9 @@ components:
         status_since:
           type: string
           format: date-time
+          nullable: true
+        session_id:
+          type: integer
           nullable: true
         student:
           type: object

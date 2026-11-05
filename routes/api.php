@@ -366,7 +366,11 @@ return function (App $app) {
     $app->get('/api/v1/tutoring/students', [$tutoringController, 'students'])->add($requireTeacher)->add($authMiddleware);
     $app->post('/api/v1/tutoring/sessions', [$tutoringController, 'startSession'])->add($requireTeacher)->add($authMiddleware);
     $app->post('/api/v1/tutoring/sessions/{id:[0-9]+}/end', [$tutoringController, 'endSession'])->add($requireTeacher)->add($authMiddleware);
-    $app->get('/api/v1/tutoring/board', [$tutoringController, 'board'])->add($requireSupporter)->add($authMiddleware);
+    $app->get('/api/v1/tutoring/board', [$tutoringController, 'board'])->add($requireStaff)->add($authMiddleware);
+    $app->get('/api/v1/tutoring/classrooms', [$tutoringController, 'listClassrooms'])->add($requireStaff)->add($authMiddleware);
+    $app->post('/api/v1/tutoring/classrooms', [$tutoringController, 'createClassroom'])->add($requireStaff)->add($authMiddleware);
+    $app->map(['PUT', 'PATCH'], '/api/v1/tutoring/classrooms/{id:[0-9]+}', [$tutoringController, 'updateClassroom'])->add($requireStaff)->add($authMiddleware);
+    $app->delete('/api/v1/tutoring/classrooms/{id:[0-9]+}', [$tutoringController, 'deleteClassroom'])->add($requireStaff)->add($authMiddleware);
 
     // Admin statistics (admin JWT). Content reading has a separate permission.
     $app->group('/api/v1/admin/stats', function ($group) use ($statsController, $requireContentAccess) {

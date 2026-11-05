@@ -121,6 +121,42 @@ class TutoringService
     }
 
     /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listClassrooms(): array
+    {
+        return Tutoring::listClassrooms();
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    public function createClassroom(array $data): array
+    {
+        $name = trim((string) ($data['name'] ?? $data['class_name'] ?? $data['classroom_name'] ?? $data['teacher_name'] ?? ''));
+        if ($name === '') {
+            throw new ApiException('نام کلاس الزامی است', 422, 'VALIDATION_ERROR');
+        }
+
+        return Tutoring::createClassroom($data);
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    public function updateClassroom(int $classroomId, array $data): array
+    {
+        return Tutoring::updateClassroom($classroomId, $data);
+    }
+
+    public function deleteClassroom(int $classroomId): void
+    {
+        Tutoring::deleteClassroom($classroomId);
+    }
+
+    /**
      * @param array<string, mixed> $data
      * @return array<string, mixed>
      */

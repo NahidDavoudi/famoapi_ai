@@ -548,6 +548,38 @@ class TutoringTest extends TestCase
         $this->assertNotNull($endedData['data']['ended_at']);
     }
 
+    public function testStaffCanCreateAndDeleteClassroomColumns(): void
+    {
+        $created = $this->handleRequest(
+            $this->adminRequest('POST', '/api/v1/tutoring/classrooms', [
+                'name'         => 'TUT_TST_Column 1',
+                'class_name'   => 'TUT_TST_Column 1',
+                'field'        => 'تجربی',
+                'teacher_name' => 'TUT_TST_Dr_Mohammadi',
+            ], ['Origin' => 'http://localhost'])
+        );
+        $createdData = $this->assertJsonResponse($created, 201);
+        $classroomId = (int) $createdData['data']['id'];
+        $this->assertSame('TUT_TST_Column 1', $createdData['data']['name']);
+        $this->assertSame('TUT_TST_Dr_Mohammadi', $createdData['data']['teacher_name']);
+        $this->assertSame('تجربی', $createdData['data']['field']);
+
+        $board = $this->handleRequest($this->supporterRequest('GET', '/api/v1/tutoring/board'));
+        $boardData = $this->assertJsonResponse($board, 200);
+        $entry = $this->findBoardEntry($boardData['data'], $classroomId);
+        $this->assertNotNull($entry);
+        $this->assertSame('TUT_TST_Dr_Mohammadi', $entry['teacher_name']);
+
+        $deleted = $this->handleRequest(
+            $this->adminRequest('DELETE', "/api/v1/tutoring/classrooms/{$classroomId}", [], ['Origin' => 'http://localhost'])
+        );
+        $this->assertJsonResponse($deleted, 200);
+
+        $boardAfter = $this->handleRequest($this->supporterRequest('GET', '/api/v1/tutoring/board'));
+        $boardAfterData = $this->assertJsonResponse($boardAfter, 200);
+        $this->assertNull($this->findBoardEntry($boardAfterData['data'], $classroomId));
+    }
+
     /**
      * @param array<int,array<string,mixed>> $board
      * @return array<string,mixed>|null
