@@ -145,17 +145,17 @@ class ExamResult
         $stmt = $db->prepare(
             'INSERT INTO exam_comments (student_id, exam_date, teacher_user_id, body)
              VALUES (:student_id, :exam_date, :teacher_user_id, :body)
-             ON CONFLICT (student_id, exam_date, teacher_user_id)
-             DO UPDATE SET body = EXCLUDED.body, updated_at = CURRENT_TIMESTAMP
-             RETURNING id'
+             ON DUPLICATE KEY UPDATE
+                 body = :body_upd,
+                 updated_at = CURRENT_TIMESTAMP'
         );
         $stmt->execute([
             'student_id'      => $studentId,
             'exam_date'       => $examDate,
             'teacher_user_id' => $teacherUserId,
             'body'            => $body,
+            'body_upd'        => $body,
         ]);
-        $commentId = (int) $stmt->fetchColumn();
 
         $fetch = $db->prepare(
             "SELECT ec.id, ec.student_id, ec.exam_date, ec.teacher_user_id,
@@ -165,10 +165,16 @@ class ExamResult
              FROM exam_comments ec
              JOIN users u ON ec.teacher_user_id = u.id
              LEFT JOIN instructors i ON u.role = 'teacher' AND u.linked_id = i.id
-             WHERE ec.id = :id
+             WHERE ec.student_id = :student_id
+               AND ec.exam_date = :exam_date
+               AND ec.teacher_user_id = :teacher_user_id
              LIMIT 1"
         );
-        $fetch->execute(['id' => $commentId]);
+        $fetch->execute([
+            'student_id'      => $studentId,
+            'exam_date'       => $examDate,
+            'teacher_user_id' => $teacherUserId,
+        ]);
         return $fetch->fetch() ?: [];
     }
 
@@ -190,8 +196,7 @@ class ExamResult
         $db = Database::getConnection();
         $stmt = $db->prepare(
             'INSERT INTO exam_result_links (token_hash, student_id, exam_date, expires_at, created_by)
-             VALUES (:token_hash, :student_id, :exam_date, :expires_at, :created_by)
-             RETURNING id'
+             VALUES (:token_hash, :student_id, :exam_date, :expires_at, :created_by)'
         );
         $stmt->execute([
             'token_hash' => $tokenHash,
@@ -200,7 +205,7 @@ class ExamResult
             'expires_at' => $expiresAt,
             'created_by' => $createdBy,
         ]);
-        return (int) $stmt->fetchColumn();
+        return (int) $db->lastInsertId();
     }
 
     public static function markShareLinkSmsSent(int $linkId, ?string $sentAt = null): string

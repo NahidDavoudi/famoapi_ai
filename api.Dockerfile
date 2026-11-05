@@ -9,10 +9,9 @@ RUN composer install --no-dev --no-interaction --no-scripts --prefer-dist --opti
 FROM php:8.4-apache AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    libpq-dev \
     libpng-dev libjpeg-dev libwebp-dev libfreetype6-dev libzip-dev libicu-dev \
     && docker-php-ext-configure gd --with-jpeg --with-webp --with-freetype \
-    && docker-php-ext-install -j"$(nproc)" gd pdo_pgsql pgsql zip intl opcache bcmath \
+    && docker-php-ext-install -j"$(nproc)" gd pdo_mysql mysqli zip intl opcache bcmath \
     && pecl install redis \
     && docker-php-ext-enable redis \
     && a2enmod rewrite headers remoteip \

@@ -165,19 +165,19 @@ final class RateLimiter
 
         $sql = 'INSERT INTO auth_throttle (throttle_key, attempts, window_started_at, locked_until, updated_at)
                 VALUES (:k, 1, :now_ins, :init_lock, :now_upd)
-                ON CONFLICT (throttle_key) DO UPDATE SET
+                ON DUPLICATE KEY UPDATE
+                    locked_until = CASE
+                        WHEN (CASE WHEN window_started_at < :cutoff_l THEN 1 ELSE attempts + 1 END) >= :max_att
+                            THEN :lock_until
+                        ELSE locked_until
+                    END,
                     attempts = CASE
-                        WHEN auth_throttle.window_started_at < :cutoff THEN 1
-                        ELSE auth_throttle.attempts + 1
+                        WHEN window_started_at < :cutoff THEN 1
+                        ELSE attempts + 1
                     END,
                     window_started_at = CASE
-                        WHEN auth_throttle.window_started_at < :cutoff_w THEN :now_w
-                        ELSE auth_throttle.window_started_at
-                    END,
-                    locked_until = CASE
-                        WHEN (CASE WHEN auth_throttle.window_started_at < :cutoff_l THEN 1 ELSE auth_throttle.attempts + 1 END) >= :max_att
-                            THEN :lock_until
-                        ELSE auth_throttle.locked_until
+                        WHEN window_started_at < :cutoff_w THEN :now_w
+                        ELSE window_started_at
                     END,
                     updated_at = :now_u';
 

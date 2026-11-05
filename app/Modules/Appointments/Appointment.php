@@ -206,7 +206,7 @@ class Appointment
             }
         }
 
-        $sql .= " ORDER BY a.student_id ASC, a.appointment_date ASC, a.start_time ASC NULLS LAST, a.id ASC";
+        $sql .= " ORDER BY a.student_id ASC, a.appointment_date ASC, a.start_time IS NULL ASC, a.start_time ASC, a.id ASC";
         $stmt = $db->prepare($sql);
         $stmt->execute($params);
         return $stmt->fetchAll();
@@ -310,31 +310,47 @@ class Appointment
                 :student_id, :week_date, :mobile, :recipient_type, :appointment_at,
                 :status, :error, 1, :sent_at, :created_by, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             )
-            ON CONFLICT (student_id, week_date, mobile) DO UPDATE SET
-                recipient_type = EXCLUDED.recipient_type,
-                appointment_at = EXCLUDED.appointment_at,
-                status         = EXCLUDED.status,
-                error          = EXCLUDED.error,
-                attempts       = appointment_sms_log.attempts + 1,
-                sent_at        = COALESCE(EXCLUDED.sent_at, appointment_sms_log.sent_at),
-                created_by     = EXCLUDED.created_by,
-                updated_at     = CURRENT_TIMESTAMP
-            RETURNING *"
+            ON DUPLICATE KEY UPDATE
+                recipient_type = :upd_recipient_type,
+                appointment_at = :upd_appointment_at,
+                status         = :upd_status,
+                error          = :upd_error,
+                attempts       = attempts + 1,
+                sent_at        = COALESCE(:upd_sent_at, sent_at),
+                created_by     = :upd_created_by,
+                updated_at     = CURRENT_TIMESTAMP"
         );
 
         $stmt->execute([
-            'student_id'     => $studentId,
-            'week_date'      => $weekDate,
-            'mobile'         => $mobile,
-            'recipient_type' => 'parent',
-            'appointment_at' => $data['appointment_at'] ?? null,
-            'status'         => (string) $data['status'],
-            'error'          => $data['error'] ?? null,
-            'sent_at'        => $data['sent_at'] ?? null,
-            'created_by'     => $data['created_by'] ?? null,
+            'student_id'         => $studentId,
+            'week_date'          => $weekDate,
+            'mobile'             => $mobile,
+            'recipient_type'     => 'parent',
+            'appointment_at'     => $data['appointment_at'] ?? null,
+            'status'             => (string) $data['status'],
+            'error'              => $data['error'] ?? null,
+            'sent_at'            => $data['sent_at'] ?? null,
+            'created_by'         => $data['created_by'] ?? null,
+            'upd_recipient_type' => 'parent',
+            'upd_appointment_at' => $data['appointment_at'] ?? null,
+            'upd_status'         => (string) $data['status'],
+            'upd_error'          => $data['error'] ?? null,
+            'upd_sent_at'        => $data['sent_at'] ?? null,
+            'upd_created_by'     => $data['created_by'] ?? null,
         ]);
 
-        return $stmt->fetch() ?: [];
+        $fetch = $db->prepare(
+            "SELECT * FROM appointment_sms_log
+             WHERE student_id = :student_id AND week_date = :week_date AND mobile = :mobile
+             LIMIT 1"
+        );
+        $fetch->execute([
+            'student_id' => $studentId,
+            'week_date'  => $weekDate,
+            'mobile'     => $mobile,
+        ]);
+
+        return $fetch->fetch() ?: [];
     }
 
     public static function countSmsLogs(array $filters): int

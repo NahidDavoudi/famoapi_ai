@@ -7,7 +7,7 @@ $dotenv->load();
 
 date_default_timezone_set('UTC');
 
-$driver = $_ENV['DB_DRIVER'] ?? 'pgsql';
+$driver = $_ENV['DB_DRIVER'] ?? 'mysql';
 $port = $_ENV['DB_PORT'] ?? ($driver === 'pgsql' ? '5432' : '3306');
 $dsn = $driver === 'pgsql'
     ? "pgsql:host={$_ENV['DB_HOST']};port={$port};dbname={$_ENV['DB_NAME']}"
@@ -26,6 +26,8 @@ $db = new \PDO(
 if ($driver === 'pgsql') {
     $db->exec("SET NAMES 'UTF8'");
     $db->exec("SET TIME ZONE 'UTC'");
+} else {
+    $db->exec("SET NAMES utf8mb4 COLLATE utf8mb4_persian_ci");
 }
 
 if (!class_exists('App\\Core\\Database')) {

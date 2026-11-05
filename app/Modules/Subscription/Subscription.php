@@ -65,7 +65,7 @@ class Subscription
 
         if (isset($filters['search']) && trim((string) $filters['search']) !== '') {
             $search = '%' . trim((string) $filters['search']) . '%';
-            $conditions[] = '(st.name ILIKE :search OR st.phone LIKE :search_exact OR c.name ILIKE :search_course OR COALESCE(sub.note, \'\') ILIKE :search_note)';
+            $conditions[] = '(st.name LIKE :search OR st.phone LIKE :search_exact OR c.name LIKE :search_course OR COALESCE(sub.note, \'\') LIKE :search_note)';
             $params[':search'] = $search;
             $params[':search_exact'] = $search;
             $params[':search_course'] = $search;
@@ -200,8 +200,7 @@ class Subscription
                 :end_at,
                 CURRENT_TIMESTAMP,
                 CURRENT_TIMESTAMP
-            )
-            RETURNING id'
+            )'
         );
 
         $stmt->execute([
@@ -214,7 +213,7 @@ class Subscription
             ':end_at'     => $data['end_at'] ?? null,
         ]);
 
-        return (int) $stmt->fetchColumn();
+        return (int) $pdo->lastInsertId();
     }
 
     public static function update(int $id, array $data): bool

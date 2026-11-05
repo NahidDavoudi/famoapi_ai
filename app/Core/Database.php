@@ -14,9 +14,9 @@ class Database
     public static function getConnection(): \PDO
     {
         if (self::$instance === null) {
-            $driver = strtolower(trim((string) ($_ENV['DB_DRIVER'] ?? 'pgsql')));
+            $driver = strtolower(trim((string) ($_ENV['DB_DRIVER'] ?? 'mysql')));
             $host = trim((string) ($_ENV['DB_HOST'] ?? ''));
-            $port = trim((string) ($_ENV['DB_PORT'] ?? '5432'));
+            $port = trim((string) ($_ENV['DB_PORT'] ?? '3306'));
             $name = trim((string) ($_ENV['DB_NAME'] ?? ''));
             $user = trim((string) ($_ENV['DB_USER'] ?? ''));
             $pass = (string) ($_ENV['DB_PASS'] ?? '');
