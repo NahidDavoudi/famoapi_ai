@@ -48,6 +48,17 @@ class AppointmentService
         return $appointment;
     }
 
+    public function update(int $id, array $data): array
+    {
+        $appointment = Appointment::findById($id);
+        if (!$appointment) {
+            throw new ApiException('نوبت یافت نشد', 404, 'NOT_FOUND');
+        }
+
+        Appointment::update($id, $data);
+        return Appointment::findById($id);
+    }
+
     public function updateStatus(int $id, string $status): array
     {
         $appointment = Appointment::findById($id);

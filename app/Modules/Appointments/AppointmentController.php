@@ -97,6 +97,94 @@ class AppointmentController
         return $response->withStatus(201)->withHeader('Content-Type', 'application/json; charset=utf-8');
     }
 
+    public function update(Request $request, Response $response, array $args): Response
+    {
+        $body = $request->getParsedBody() ?? [];
+
+        $validator = new Validator();
+        $validator
+            ->positiveInt('student_id', 'شناسه دانش‌آموز', $body['student_id'] ?? null)
+            ->date('appointment_date', 'تاریخ قرار ملاقات', $body['appointment_date'] ?? null)
+            ->time('start_time', 'ساعت شروع', $body['start_time'] ?? null)
+            ->time('end_time', 'ساعت پایان', $body['end_time'] ?? null)
+            ->string('status', 'وضعیت قرار ملاقات', $body['status'] ?? null)
+            ->inArray('status', 'وضعیت قرار ملاقات', $body['status'] ?? null, [
+                'pending', 'confirmed', 'completed', 'cancelled', 'canceled', 'absent', 'done', 'scheduled', 'accepted', 'rejected',
+            ])
+            ->string('type', 'نوع جلسه', $body['type'] ?? null)
+            ->maxLength('type', 'نوع جلسه', $body['type'] ?? null, 100)
+            ->string('description', 'توضیحات', $body['description'] ?? null)
+            ->maxLength('description', 'توضیحات', $body['description'] ?? null, 1000);
+
+        if (array_key_exists('appointment_date', $body)) {
+            $validator->required('appointment_date', 'تاریخ قرار ملاقات', $body['appointment_date']);
+        }
+        if (array_key_exists('start_time', $body)) {
+            $validator->required('start_time', 'ساعت شروع', $body['start_time']);
+        }
+
+        if (!$validator->passes()) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => 'VALIDATION_ERROR',
+                    'message' => $validator->firstError(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $updateData = [];
+        if (array_key_exists('student_id', $body) && $body['student_id'] !== null && $body['student_id'] !== '') {
+            $updateData['student_id'] = (int) $body['student_id'];
+        }
+        if (array_key_exists('appointment_date', $body)) {
+            $updateData['appointment_date'] = trim((string) $body['appointment_date']);
+        }
+        if (array_key_exists('start_time', $body)) {
+            $updateData['start_time'] = trim((string) $body['start_time']);
+        }
+        if (array_key_exists('end_time', $body)) {
+            $updateData['end_time'] = ($body['end_time'] !== null && trim((string) $body['end_time']) !== '')
+                ? trim((string) $body['end_time'])
+                : null;
+        }
+        if (array_key_exists('status', $body) && $body['status'] !== null && trim((string) $body['status']) !== '') {
+            $updateData['status'] = trim((string) $body['status']);
+        }
+        if (array_key_exists('type', $body)) {
+            $updateData['type'] = (string) ($body['type'] ?? '');
+        }
+        if (array_key_exists('description', $body)) {
+            $updateData['description'] = (string) ($body['description'] ?? '');
+        }
+
+        try {
+            $result = $this->service->update((int) $args['id'], $updateData);
+        } catch (ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => $e->getErrorCode(),
+                    'message' => $e->getMessage(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success'    => true,
+            'data'       => $result,
+            'pagination' => null,
+            'error'      => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+
     public function updateStatus(Request $request, Response $response, array $args): Response
     {
         $body = $request->getParsedBody() ?? [];

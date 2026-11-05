@@ -4130,6 +4130,65 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   /api/v1/appointments/{id}:
+    put:
+      tags: [Appointments]
+      summary: Update appointment by ID (supporter+)
+      operationId: appointmentUpdate
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                student_id:
+                  type: integer
+                appointment_date:
+                  type: string
+                  format: date
+                start_time:
+                  type: string
+                  description: e.g. 14:00
+                end_time:
+                  type: string
+                  nullable: true
+                  description: Optional end time (e.g. 14:30)
+                status:
+                  type: string
+                  enum: [pending, confirmed, completed, cancelled, canceled, absent, done, scheduled]
+                type:
+                  type: string
+                description:
+                  type: string
+      responses:
+        "200":
+          description: Appointment updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/Appointment"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
     delete:
       tags: [Appointments]
       summary: Delete appointment (supporter+)

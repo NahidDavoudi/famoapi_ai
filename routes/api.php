@@ -344,6 +344,7 @@ return function (App $app) {
     // Appointments (protected)
     $app->get('/api/v1/appointments', [$appointmentController, 'list'])->add($requireSupporter)->add($authMiddleware);
     $app->post('/api/v1/appointments', [$appointmentController, 'create'])->add($requireSupporter)->add($authMiddleware);
+    $app->map(['PUT', 'PATCH'], '/api/v1/appointments/{id:[0-9]+}', [$appointmentController, 'update'])->add($requireSupporter)->add($authMiddleware);
     $app->put('/api/v1/appointments/{id:[0-9]+}/status', [$appointmentController, 'updateStatus'])->add($requireSupporter)->add($authMiddleware);
     $app->delete('/api/v1/appointments/{id:[0-9]+}', [$appointmentController, 'delete'])->add($requireSupporter)->add($authMiddleware);
 
