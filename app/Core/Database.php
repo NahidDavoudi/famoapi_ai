@@ -55,6 +55,7 @@ class Database
 
             if ($driver === 'mysql') {
                 self::$instance->exec("SET NAMES utf8mb4 COLLATE utf8mb4_persian_ci");
+                self::$instance->exec("SET time_zone = '+00:00'");
             } else {
                 self::$instance->exec("SET NAMES 'UTF8'");
                 self::$instance->exec("SET TIME ZONE 'UTC'");

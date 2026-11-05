@@ -71,13 +71,20 @@ class AuthService
     public function consume2faCode(int $userId, string $code): array
     {
         $db = Database::getConnection();
+        $normalizedCode = trim(strtr($code, [
+            '۰' => '0', '۱' => '1', '۲' => '2', '۳' => '3', '۴' => '4',
+            '۵' => '5', '۶' => '6', '۷' => '7', '۸' => '8', '۹' => '9',
+            '٠' => '0', '١' => '1', '٢' => '2', '٣' => '3', '٤' => '4',
+            '٥' => '5', '٦' => '6', '٧' => '7', '٨' => '8', '٩' => '9',
+        ]));
+        $now = gmdate('Y-m-d H:i:s');
 
         $stmt = $db->prepare(
             'SELECT * FROM login_codes
-             WHERE user_id = ? AND code = ? AND used = 0 AND expires_at > CURRENT_TIMESTAMP
+             WHERE user_id = ? AND code = ? AND used = 0 AND expires_at > ?
              ORDER BY id DESC LIMIT 1'
         );
-        $stmt->execute([$userId, $code]);
+        $stmt->execute([$userId, $normalizedCode, $now]);
         $record = $stmt->fetch();
 
         if (!$record) {
@@ -86,9 +93,9 @@ class AuthService
 
         $stmt = $db->prepare(
             'UPDATE login_codes SET used = 1
-             WHERE id = ? AND used = 0 AND expires_at > CURRENT_TIMESTAMP'
+             WHERE id = ? AND used = 0 AND expires_at > ?'
         );
-        $stmt->execute([$record['id']]);
+        $stmt->execute([$record['id'], $now]);
         if ($stmt->rowCount() !== 1) {
             throw new \App\Core\ApiException('کد تأیید نامعتبر یا قبلاً استفاده شده است', 401, '2FA_ERROR');
         }
