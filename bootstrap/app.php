@@ -9,6 +9,12 @@ use Slim\Psr7\Response;
 $dotenv = Dotenv\Dotenv::createImmutable(__DIR__ . '/..');
 $dotenv->safeLoad();
 
+foreach ((array) getenv() as $envKey => $envVal) {
+    if (!isset($_ENV[$envKey]) && is_string($envVal)) {
+        $_ENV[$envKey] = $envVal;
+    }
+}
+
 date_default_timezone_set('UTC');
 
 $app = AppFactory::create();
