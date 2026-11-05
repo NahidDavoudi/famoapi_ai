@@ -612,7 +612,7 @@ curl -X GET "https://api.famoacademy.ir/api/v1/appointments/sms/log?week_date=20
   | `student_id` | `integer` | **بله** | عدد صحیح مثبت (`> 0`) | شناسه‌ی شاگرد. |
   | `appointment_date` | `string` | **بله** | `YYYY-MM-DD` | تاریخ میلادی نوبت. |
   | `start_time` | `string` | **بله** | `HH:MM` یا `HH:MM:SS` | ساعت شروع نوبت (مثلاً `"16:30"`). |
-  | `end_time` | `string` | **بله** | `HH:MM` یا `HH:MM:SS` | ساعت پایان نوبت (مثلاً `"17:00"`). |
+  | `end_time` | `string \| null` | خیر | `HH:MM` یا `HH:MM:SS` | ساعت پایان نوبت (اختیاری؛ پیش‌فرض `null`). |
   | `type` | `string` | خیر | حداکثر ۱۰۰ کاراکتر | نوع جلسه (مثلاً `"حضوری"` یا `"تلفنی"`). پیش‌فرض `""`. |
   | `description` | `string` | خیر | حداکثر ۱۰۰۰ کاراکتر | توضیحات نوبت. پیش‌فرض `""`. |
 - **نمونه‌ی درخواست `curl`:**

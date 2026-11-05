@@ -67,11 +67,14 @@ class Appointment
             "INSERT INTO appointments (student_id, appointment_date, start_time, end_time, status, type, description, created_at, updated_at)
              VALUES (:student_id, :appointment_date, :start_time, :end_time, :status, :type, :description, NOW(), NOW())"
         );
+        $endTime = isset($data['end_time']) && trim((string) $data['end_time']) !== ''
+            ? trim((string) $data['end_time'])
+            : null;
         $stmt->execute([
             'student_id'       => $data['student_id'],
             'appointment_date' => $data['appointment_date'],
             'start_time'       => $data['start_time'],
-            'end_time'         => $data['end_time'],
+            'end_time'         => $endTime,
             'status'           => $data['status'] ?? 'pending',
             'type'             => $data['type'] ?? '',
             'description'      => $data['description'] ?? '',
@@ -87,8 +90,12 @@ class Appointment
 
         foreach ($allowed as $field) {
             if (array_key_exists($field, $data)) {
+                $value = $data[$field];
+                if ($field === 'end_time') {
+                    $value = ($value !== null && trim((string) $value) !== '') ? trim((string) $value) : null;
+                }
                 $sets[] = "{$field} = :{$field}";
-                $params[$field] = $data[$field];
+                $params[$field] = $value;
             }
         }
 

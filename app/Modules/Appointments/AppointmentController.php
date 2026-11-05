@@ -43,7 +43,6 @@ class AppointmentController
             ->date('appointment_date', 'تاریخ قرار ملاقات', $body['appointment_date'] ?? null)
             ->required('start_time', 'ساعت شروع', $body['start_time'] ?? null)
             ->time('start_time', 'ساعت شروع', $body['start_time'] ?? null)
-            ->required('end_time', 'ساعت پایان', $body['end_time'] ?? null)
             ->time('end_time', 'ساعت پایان', $body['end_time'] ?? null)
             ->string('type', 'نوع جلسه', $body['type'] ?? null)
             ->maxLength('type', 'نوع جلسه', $body['type'] ?? null, 100)
@@ -63,12 +62,16 @@ class AppointmentController
             return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
         }
 
+        $endTime = isset($body['end_time']) && trim((string) $body['end_time']) !== ''
+            ? trim((string) $body['end_time'])
+            : null;
+
         try {
             $result = $this->service->createOrUpdate([
                 'student_id'       => (int) $body['student_id'],
                 'appointment_date' => (string) $body['appointment_date'],
                 'start_time'       => (string) $body['start_time'],
-                'end_time'         => (string) $body['end_time'],
+                'end_time'         => $endTime,
                 'type'             => (string) ($body['type'] ?? ''),
                 'description'      => (string) ($body['description'] ?? ''),
             ]);

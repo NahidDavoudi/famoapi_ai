@@ -4062,12 +4062,13 @@ paths:
                   description: e.g. 14:00
                 end_time:
                   type: string
-                  description: e.g. 14:30
+                  nullable: true
+                  description: Optional end time (e.g. 14:30)
                 type:
                   type: string
                 description:
                   type: string
-              required: [student_id, appointment_date, start_time, end_time]
+              required: [student_id, appointment_date, start_time]
       responses:
         "201":
           description: Appointment created

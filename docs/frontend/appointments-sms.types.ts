@@ -399,8 +399,8 @@ export interface UpsertAppointmentRequest {
   appointment_date: string;
   /** `HH:MM` or `HH:MM:SS` */
   start_time: string;
-  /** `HH:MM` or `HH:MM:SS` */
-  end_time: string;
+  /** Optional `HH:MM` or `HH:MM:SS` */
+  end_time?: string | null;
   /** Max 100 chars */
   type?: string;
   /** Max 1000 chars */
