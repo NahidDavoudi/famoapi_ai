@@ -17,16 +17,17 @@ CREATE TABLE IF NOT EXISTS admins (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS supporters (
-    id         INT          NOT NULL AUTO_INCREMENT,
-    name       VARCHAR(255) NOT NULL,
-    grade      INT          NOT NULL DEFAULT 12,
-    field      VARCHAR(50)  NOT NULL DEFAULT '',
-    phone      VARCHAR(15)  DEFAULT NULL,
-    chat_id    BIGINT       DEFAULT NULL,
-    avatar     VARCHAR(255) DEFAULT NULL,
-    is_active  TINYINT(1)   NOT NULL DEFAULT 1,
-    admin_id   INT          DEFAULT NULL,
-    created_at DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    id          INT          NOT NULL AUTO_INCREMENT,
+    name        VARCHAR(255) NOT NULL,
+    grade       INT          NOT NULL DEFAULT 12,
+    field       VARCHAR(50)  NOT NULL DEFAULT '',
+    phone       VARCHAR(15)  DEFAULT NULL,
+    chat_id     BIGINT       DEFAULT NULL,
+    avatar      VARCHAR(255) DEFAULT NULL,
+    description TEXT         DEFAULT NULL,
+    is_active   TINYINT(1)   NOT NULL DEFAULT 1,
+    admin_id    INT          DEFAULT NULL,
+    created_at  DATETIME     DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     KEY idx_supporters_is_active (is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -89,7 +90,7 @@ CREATE TABLE IF NOT EXISTS users (
     phone         VARCHAR(20)  DEFAULT NULL,
     email         VARCHAR(255) DEFAULT NULL,
     password_hash VARCHAR(255) NOT NULL,
-    role          ENUM('admin','supporter','student','teacher') NOT NULL,
+    role          ENUM('admin','supporter','student','teacher') NOT NULL DEFAULT 'student',
     linked_id     INT          DEFAULT NULL,
     is_active     TINYINT(1)   NOT NULL DEFAULT 1,
     created_at    DATETIME     DEFAULT CURRENT_TIMESTAMP,

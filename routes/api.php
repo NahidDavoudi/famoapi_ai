@@ -218,6 +218,8 @@ return function (App $app) {
     $app->post('/api/v1/instructors', [$instructorController, 'create'])->add($requireAdmin)->add($authMiddleware);
     $app->get('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'get'])->add($authMiddleware);
     $app->put('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'update'])->add($requireAdmin)->add($authMiddleware);
+    $app->patch('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'update'])->add($requireAdmin)->add($authMiddleware);
+    $app->post('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'update'])->add($requireAdmin)->add($authMiddleware);
     $app->delete('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'delete'])->add($requireAdmin)->add($authMiddleware);
 
     // Supporters (protected)
@@ -226,6 +228,10 @@ return function (App $app) {
     $app->post('/api/v1/supporters', [$supporterController, 'create'])->add($requireAdmin)->add($authMiddleware);
     $app->get('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'get'])->add($requireSupporter)->add($authMiddleware);
     $app->put('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'update'])->add($requireAdmin)->add($authMiddleware);
+    $app->patch('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'update'])->add($requireAdmin)->add($authMiddleware);
+    $app->post('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'update'])->add($requireAdmin)->add($authMiddleware);
+    $app->post('/api/v1/supporters/{id:[0-9]+}/avatar', [$supporterController, 'uploadAvatar'])->add($requireAdmin)->add($authMiddleware);
+    $app->delete('/api/v1/supporters/{id:[0-9]+}/avatar', [$supporterController, 'deleteAvatar'])->add($requireAdmin)->add($authMiddleware);
     $app->delete('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'delete'])->add($requireAdmin)->add($authMiddleware);
 
     // Student → supporter assignments (canonical). Admin only.

@@ -347,14 +347,26 @@ const INITIAL_SUPPORTERS = [
   {
     id: 301,
     name: 'Parisa Mohammadi',
+    grade: 12,
+    field: 'تجربی',
     specialty: 'Experimental Sciences Academic Advisor',
+    description: 'رتبه برتر کنکور تجربی و مشاور تخصصی برنامه‌ریزی و پیگیری روزانه دانش‌آموزان پایه دوازدهم.',
+    avatar: 'supporters/301/parisa-mohammadi.webp',
+    avatar_url: 'https://api.example.com/uploads/supporters/301/parisa-mohammadi.webp',
+    image_url: 'https://api.example.com/uploads/supporters/301/parisa-mohammadi.webp',
     students_count: 48,
     experience_years: 6,
   },
   {
     id: 302,
     name: 'Keyvan Rahimi',
+    grade: 12,
+    field: 'ریاضی',
     specialty: 'Mathematics & Engineering Study Planner',
+    description: 'پشتیبان تخصصی رشته ریاضی و فیزیک با ۵ سال سابقه هدایت تحصیلی و تحلیل آزمون.',
+    avatar: 'supporters/302/keyvan-rahimi.webp',
+    avatar_url: 'https://api.example.com/uploads/supporters/302/keyvan-rahimi.webp',
+    image_url: 'https://api.example.com/uploads/supporters/302/keyvan-rahimi.webp',
     students_count: 42,
     experience_years: 5,
   },
@@ -422,7 +434,18 @@ export function createAppContext() {
     { id: 1, name: 'ادمین اصلی', phone: '09120000001', chat_id: '1001', is_active: 1 },
   ];
   const supporters = [
-    { id: 10, name: 'پشتیبان اول', phone: '09120000002', grade: 12, field: 'تجربی', is_active: 1 },
+    {
+      id: 10,
+      name: 'پشتیبان اول',
+      phone: '09120000002',
+      grade: 12,
+      field: 'تجربی',
+      description: 'پشتیبان تخصصی رشته تجربی پایه دوازدهم با سابقه مشاوره رتبه‌های برتر کنکور',
+      avatar: 'supporters/10/avatar.webp',
+      avatar_url: 'https://api.example.com/uploads/supporters/10/avatar.webp',
+      image_url: 'https://api.example.com/uploads/supporters/10/avatar.webp',
+      is_active: 1,
+    },
   ];
   const students = [
     { id: 20, name: 'دانش‌آموز نمونه', phone: '09120000003', national_id: '0012345678', grade: 12, field: 'ریاضی', is_active: 1 },
@@ -2479,7 +2502,26 @@ export function handlePublicEndpoint(ctx, method, urlObj, clientIp = '127.0.0.1'
     const { value } = cache.remember('public', 'instructors', 300, () => INITIAL_INSTRUCTORS);
     responsePayload = { success: true, data: value };
   } else if (pathname === '/api/v1/public/supporters') {
-    const { value } = cache.remember('public', 'supporters', 300, () => INITIAL_SUPPORTERS);
+    const { value } = cache.remember('public', 'supporters', 300, () => {
+      const customSupporters = (ctx.supporters || []).map((s) => {
+        const resolvedUrl = s.avatar
+          ? /^https?:\/\//i.test(s.avatar)
+            ? s.avatar
+            : `https://api.example.com/uploads/${String(s.avatar).replace(/^\/?uploads\/?/, '')}`
+          : null;
+        return {
+          id: s.id,
+          name: s.name,
+          grade: s.grade ?? 12,
+          field: s.field ?? '',
+          description: s.description ?? null,
+          avatar: s.avatar ?? null,
+          avatar_url: resolvedUrl,
+          image_url: resolvedUrl,
+        };
+      });
+      return [...INITIAL_SUPPORTERS, ...customSupporters];
+    });
     responsePayload = { success: true, data: value };
   } else if (pathname === '/api/v1/public/blog/categories') {
     const { value } = cache.remember('public', 'blog_categories', 300, () => [
@@ -3361,6 +3403,321 @@ export function handleAdminActivityLogEndpoint(ctx, method, urlObj, body = {}, a
   };
 }
 
+/**
+ * Supporter CRUD + Avatar upload & Description simulator mirroring SupporterController / SupporterService
+ */
+export function handleSupporterEndpoint(ctx, method, urlObj, body = {}, authUser = null) {
+  const pathname = urlObj instanceof URL ? urlObj.pathname : String(urlObj);
+  const parsedUrl = urlObj instanceof URL ? urlObj : new URL(pathname, 'http://localhost');
+
+  if (!authUser || !authUser.role) {
+    return {
+      status: 401,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'UNAUTHORIZED', message: 'احراز هویت الزامی است' },
+      },
+    };
+  }
+
+  const role = String(authUser.role).toLowerCase();
+  const resolveAvatarUrl = (avatarPath) => {
+    if (!avatarPath) return null;
+    if (/^https?:\/\//i.test(avatarPath)) return avatarPath;
+    const clean = String(avatarPath).replace(/^\/+/, '').replace(/^uploads\//, '');
+    return `https://api.example.com/uploads/${clean}`;
+  };
+
+  const hydrateSupporter = (row) => {
+    const resolved = resolveAvatarUrl(row.avatar ?? null);
+    return {
+      ...row,
+      description: row.description ?? null,
+      avatar: row.avatar ?? null,
+      avatar_url: resolved,
+      image_url: resolved,
+    };
+  };
+
+  // GET /api/v1/supporters
+  if (method === 'GET' && pathname === '/api/v1/supporters') {
+    if (role !== 'admin' && role !== 'supporter') {
+      return {
+        status: 403,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'FORBIDDEN', message: 'شما مجوز دسترسی به این بخش را ندارید' },
+        },
+      };
+    }
+    const items = (ctx.supporters || []).map(hydrateSupporter);
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: items,
+        pagination: { page: 1, per_page: 20, total: items.length, total_pages: 1 },
+        error: null,
+      },
+    };
+  }
+
+  // GET /api/v1/supporters/{id}
+  const idMatch = pathname.match(/^\/api\/v1\/supporters\/(\d+)$/);
+  if (method === 'GET' && idMatch) {
+    if (role !== 'admin' && role !== 'supporter') {
+      return {
+        status: 403,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'FORBIDDEN', message: 'شما مجوز دسترسی به این بخش را ندارید' },
+        },
+      };
+    }
+    const id = parseInt(idMatch[1], 10);
+    const found = (ctx.supporters || []).find((s) => s.id === id);
+    if (!found) {
+      return {
+        status: 404,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'NOT_FOUND', message: 'پشتیبان یافت نشد' },
+        },
+      };
+    }
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: hydrateSupporter(found),
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  // Admin-only mutations below
+  if (role !== 'admin') {
+    return {
+      status: 403,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'FORBIDDEN', message: 'فقط مدیر سیستم مجاز به انجام این عملیات است' },
+      },
+    };
+  }
+
+  const normalizeInputBody = (raw) => {
+    const out = { ...(raw || {}) };
+    if (typeof out.scopes === 'string' && out.scopes.trim() !== '') {
+      try {
+        const parsed = JSON.parse(out.scopes);
+        if (Array.isArray(parsed)) out.scopes = parsed;
+      } catch {
+        // leave as-is for validation
+      }
+    }
+    if (out.description === undefined && out.bio !== undefined) {
+      out.description = out.bio;
+    }
+    return out;
+  };
+
+  // POST /api/v1/supporters
+  if (method === 'POST' && pathname === '/api/v1/supporters') {
+    const input = normalizeInputBody(body);
+    const name = String(input.name || '').trim();
+    const phone = normalizeIranianPhone(input.phone);
+    if (!name || !phone) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'نام و شماره تلفن معتبر پشتیبان الزامی است' },
+        },
+      };
+    }
+    const nextId =
+      (ctx.supporters || []).reduce((max, s) => Math.max(max, s.id), 10) + 1;
+    const uploadedFile = input.avatar_file || input.image_file || input.avatar || input.image || null;
+    let avatarPath = null;
+    if (uploadedFile && typeof uploadedFile === 'object' && uploadedFile.filename) {
+      const baseName = String(uploadedFile.filename).replace(/\.[^.]+$/, '');
+      avatarPath = `supporters/${nextId}/${baseName}.webp`;
+    } else if (typeof uploadedFile === 'string' && uploadedFile.trim() !== '') {
+      avatarPath = uploadedFile.trim().startsWith('supporters/')
+        ? uploadedFile.trim()
+        : `supporters/${nextId}/${uploadedFile.trim()}`;
+    }
+
+    const grade = input.grade ? Number(input.grade) : (Array.isArray(input.scopes) && input.scopes[0]?.grade ? Number(input.scopes[0].grade) : 12);
+    const field = input.field || (Array.isArray(input.scopes) && input.scopes[0]?.field ? String(input.scopes[0].field) : 'تجربی');
+
+    const newSupporter = {
+      id: nextId,
+      name,
+      grade,
+      field,
+      phone,
+      chat_id: input.chat_id ?? null,
+      description: input.description !== undefined ? input.description : null,
+      avatar: avatarPath,
+      scopes: Array.isArray(input.scopes) ? input.scopes : [{ field, grade }],
+      is_active: input.is_active !== undefined ? Number(input.is_active) : 1,
+    };
+    ctx.supporters.push(newSupporter);
+    ctx.cache.flushGroup('public');
+
+    return {
+      status: 201,
+      body: {
+        success: true,
+        data: hydrateSupporter(newSupporter),
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  // PUT / PATCH / POST /api/v1/supporters/{id} or /api/v1/supporters/{id}/avatar
+  const avatarRouteMatch = pathname.match(/^\/api\/v1\/supporters\/(\d+)\/avatar$/);
+  if (avatarRouteMatch && (method === 'POST' || method === 'DELETE')) {
+    const id = parseInt(avatarRouteMatch[1], 10);
+    const supporter = (ctx.supporters || []).find((s) => s.id === id);
+    if (!supporter) {
+      return {
+        status: 404,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'NOT_FOUND', message: 'پشتیبان یافت نشد' },
+        },
+      };
+    }
+    if (method === 'DELETE') {
+      supporter.avatar = null;
+      ctx.cache.flushGroup('public');
+      return {
+        status: 200,
+        body: {
+          success: true,
+          data: hydrateSupporter(supporter),
+          pagination: null,
+          error: null,
+        },
+      };
+    }
+    const uploaded = body.avatar_file || body.image_file || body.avatar || body.image || null;
+    if (!uploaded) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'فایل عکس پروفایل (avatar یا image) ارسال نشده است' },
+        },
+      };
+    }
+    const fileLabel = typeof uploaded === 'object' && uploaded.filename ? uploaded.filename : String(uploaded);
+    supporter.avatar = `supporters/${id}/${fileLabel.replace(/\.[^.]+$/, '')}.webp`;
+    ctx.cache.flushGroup('public');
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: hydrateSupporter(supporter),
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  if (idMatch && (method === 'PUT' || method === 'PATCH' || method === 'POST')) {
+    const id = parseInt(idMatch[1], 10);
+    const supporter = (ctx.supporters || []).find((s) => s.id === id);
+    if (!supporter) {
+      return {
+        status: 404,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'NOT_FOUND', message: 'پشتیبان یافت نشد' },
+        },
+      };
+    }
+
+    const input = normalizeInputBody(body);
+    if (input.name !== undefined) supporter.name = String(input.name).trim();
+    if (input.grade !== undefined && input.grade !== null && input.grade !== '') supporter.grade = Number(input.grade);
+    if (input.field !== undefined && input.field !== null && input.field !== '') supporter.field = String(input.field);
+    if (input.description !== undefined) supporter.description = input.description;
+    if (input.phone !== undefined && input.phone !== null && input.phone !== '') {
+      const norm = normalizeIranianPhone(input.phone);
+      if (!norm) {
+        return {
+          status: 422,
+          body: {
+            success: false,
+            data: null,
+            pagination: null,
+            error: { code: 'VALIDATION_ERROR', message: 'شماره تلفن پشتیبان معتبر نیست' },
+          },
+        };
+      }
+      supporter.phone = norm;
+    }
+    if (Array.isArray(input.scopes)) {
+      supporter.scopes = input.scopes;
+    }
+    const uploaded = input.avatar_file || input.image_file || input.avatar || input.image;
+    if (uploaded !== undefined) {
+      if (uploaded === null || uploaded === '') {
+        supporter.avatar = null;
+      } else if (typeof uploaded === 'object' && uploaded.filename) {
+        supporter.avatar = `supporters/${id}/${String(uploaded.filename).replace(/\.[^.]+$/, '')}.webp`;
+      } else if (typeof uploaded === 'string') {
+        supporter.avatar = uploaded.startsWith('supporters/') ? uploaded : `supporters/${id}/${uploaded}`;
+      }
+    }
+
+    ctx.cache.flushGroup('public');
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: hydrateSupporter(supporter),
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  return {
+    status: 404,
+    body: {
+      success: false,
+      data: null,
+      pagination: null,
+      error: { code: 'NOT_FOUND', message: 'مسیر یافت نشد' },
+    },
+  };
+}
+
 const REQUIRED_PHP_FILES = [
   'openapi.yaml',
   'public/openapi.yaml',
@@ -3368,6 +3725,7 @@ const REQUIRED_PHP_FILES = [
   'database/schema.postgres.sql',
   'database/migrations/008_tutoring_classroom_audit_log.sql',
   'database/migrations/009_staff_activity_logs.sql',
+  'database/migrations/010_supporter_description.sql',
   'config/database.php',
   'app/Core/Database.php',
   'app/Core/Migrator.php',
@@ -4501,6 +4859,36 @@ export function startServer(port = parseInt(process.env.PORT || '3000', 10)) {
           }
         }
         const result = handleAdminActivityLogEndpoint(ctx, method, urlObj, parsedBody, actor);
+        res.writeHead(result.status, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(result.body));
+      });
+      return;
+    }
+
+    if (pathname === '/api/v1/supporters' || pathname.startsWith('/api/v1/supporters/')) {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        let parsedBody = {};
+        if (raw) {
+          try {
+            parsedBody = JSON.parse(raw);
+          } catch {
+            parsedBody = {};
+          }
+        }
+        let actor = { sub: 1, role: 'admin', instructor_id: null };
+        const rawActor = req.headers['x-demo-actor'];
+        if (typeof rawActor === 'string' && rawActor) {
+          try {
+            actor = JSON.parse(rawActor);
+          } catch {
+            // keep default admin actor
+          }
+        }
+        const result = handleSupporterEndpoint(ctx, method, urlObj, parsedBody, actor);
         res.writeHead(result.status, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(result.body));
       });

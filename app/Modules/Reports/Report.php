@@ -61,13 +61,13 @@ class Report
     public static function getStats(): array
     {
         $stmt = Database::getConnection()->query(
-            'SELECT DATE(report_date) as date,
-                    SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END) as replied,
-                    SUM(CASE WHEN status = 0 OR status IS NULL THEN 1 ELSE 0 END) as pending
+            "SELECT DATE(report_date) as date,
+                    SUM(CASE WHEN status IN ('replied', '1') THEN 1 ELSE 0 END) as replied,
+                    SUM(CASE WHEN status IN ('pending', '0') OR status IS NULL THEN 1 ELSE 0 END) as pending
              FROM reports_status
              GROUP BY DATE(report_date)
              ORDER BY date DESC
-             LIMIT 30'
+             LIMIT 30"
         );
         return $stmt->fetchAll();
     }

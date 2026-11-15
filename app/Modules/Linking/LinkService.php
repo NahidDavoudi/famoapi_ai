@@ -229,7 +229,7 @@ class LinkService
 
             return ['account' => $account, 'is_active' => Admin::isAccountActive($accountId)];
         }
-        if( $role === 'supporter') {
+        if ($role === 'supporter') {
             $account = Supporter::findById($accountId);
             if (!$account) {
                 throw new ApiException('پشتیبان یافت نشد', 404, 'ACCOUNT_NOT_FOUND');
@@ -237,7 +237,8 @@ class LinkService
 
             return ['account' => $account, 'is_active' => Supporter::isAccountActive($accountId)];
         }
-        
+
+        throw new ApiException('نقش نامعتبر است', 422, 'INVALID_ROLE');
     }
 
     private function identity(string $role, int $accountId, string $name, bool $isActive, ?int $telegramUserId): array

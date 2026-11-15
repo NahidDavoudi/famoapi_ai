@@ -141,7 +141,10 @@ class Student
 
     public static function create(array $data): int
     {
-        $phone = PhoneNumber::normalizeOrFail($data['phone'] ?? null, 'شماره تلفن دانش‌آموز معتبر نیست');
+        $rawPhone = $data['phone'] ?? null;
+        $phone = ($rawPhone !== null && trim((string) $rawPhone) !== '')
+            ? PhoneNumber::normalizeOrFail($rawPhone, 'شماره تلفن دانش‌آموز معتبر نیست')
+            : null;
 
         $db = Database::getConnection();
         $stmt = $db->prepare(

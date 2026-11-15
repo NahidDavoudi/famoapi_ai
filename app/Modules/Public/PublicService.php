@@ -56,8 +56,19 @@ class PublicService
             return ['supporters' => Supporter::findAllPublished()];
         });
 
+        // اگر کش قدیمی فاقد کلید description باشد، کش را تازه می‌کنیم
+        if (!empty($data['supporters']) && is_array($data['supporters'][0] ?? null) && !array_key_exists('description', $data['supporters'][0])) {
+            Cache::forget(self::GROUP, 'supporters');
+            $data = Cache::remember(self::GROUP, 'supporters', self::TTL, function () {
+                return ['supporters' => Supporter::findAllPublished()];
+            });
+        }
+
         foreach ($data['supporters'] as &$supporter) {
-            $supporter['avatar_url'] = AssetUrl::fromStorage($supporter['avatar'] ?? null);
+            $resolvedUrl = AssetUrl::fromStorage($supporter['avatar'] ?? null);
+            $supporter['avatar_url'] = $resolvedUrl;
+            $supporter['image_url'] = $resolvedUrl;
+            $supporter['description'] = $supporter['description'] ?? null;
         }
         unset($supporter);
 

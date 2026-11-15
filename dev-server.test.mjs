@@ -11,6 +11,7 @@ import {
   handleAppointmentSmsEndpoint,
   handleTutoringClassroomEndpoint,
   handleAdminActivityLogEndpoint,
+  handleSupporterEndpoint,
   recordStaffActivity,
 } from './dev-server.mjs';
 
@@ -1548,6 +1549,142 @@ test('Admin Staff Activity Monitoring (/api/v1/admin/activity-logs & /stats) —
   assert.ok(Array.isArray(statsRes.body.data.active_actors));
   assert.equal(statsRes.body.data.active_actors.length, 3);
 });
+
+test('Supporter Profile Photo & Description (Admin upload + Public landing page /api/v1/public/supporters)', () => {
+  const migration001 = fs.readFileSync(
+    new URL('./database/migrations/001_core_identity_and_users.sql', import.meta.url),
+    'utf8'
+  );
+  const migration010 = fs.readFileSync(
+    new URL('./database/migrations/010_supporter_description.sql', import.meta.url),
+    'utf8'
+  );
+  const supporterModel = fs.readFileSync(
+    new URL('./app/Modules/Supporters/Supporter.php', import.meta.url),
+    'utf8'
+  );
+  const supporterService = fs.readFileSync(
+    new URL('./app/Modules/Supporters/SupporterService.php', import.meta.url),
+    'utf8'
+  );
+  const supporterController = fs.readFileSync(
+    new URL('./app/Modules/Supporters/SupporterController.php', import.meta.url),
+    'utf8'
+  );
+  const publicSupporterModel = fs.readFileSync(
+    new URL('./app/Modules/Public/Supporter.php', import.meta.url),
+    'utf8'
+  );
+  const publicService = fs.readFileSync(
+    new URL('./app/Modules/Public/PublicService.php', import.meta.url),
+    'utf8'
+  );
+  const storagePhp = fs.readFileSync(
+    new URL('./app/Core/Storage.php', import.meta.url),
+    'utf8'
+  );
+  const routesPhp = fs.readFileSync(
+    new URL('./routes/api.php', import.meta.url),
+    'utf8'
+  );
+  const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
+  const publicSpec = fs.readFileSync(new URL('./public/openapi.yaml', import.meta.url), 'utf8');
+
+  // 1. Verify schema, PHP implementation, and OpenAPI synchronization
+  assert.equal(rootSpec, publicSpec);
+  assert.match(migration001, /description\s+TEXT\s+DEFAULT NULL/);
+  assert.match(migration010, /ALTER TABLE supporters/);
+  assert.match(migration010, /ADD COLUMN description TEXT/);
+  assert.match(supporterModel, /public static function ensureProfileColumns\(\): void/);
+  assert.match(supporterModel, /INSERT INTO supporters \(name, grade, field, phone, chat_id, avatar, description, is_active\)/);
+  assert.match(supporterModel, /\$allowed = \['name', 'grade', 'field', 'phone', 'chat_id', 'avatar', 'description', 'is_active'\]/);
+  assert.match(supporterService, /\$row\['avatar_url'\] = \$resolvedUrl/);
+  assert.match(supporterService, /\$row\['image_url'\] = \$resolvedUrl/);
+  assert.match(supporterService, /\$row\['description'\] = \$row\['description'\] \?\? null/);
+  assert.match(supporterController, /\['avatar', 'image', 'photo', 'profile_image'\]/);
+  assert.match(supporterController, /public function uploadAvatar\(/);
+  assert.match(supporterController, /public function deleteAvatar\(/);
+  assert.match(publicSupporterModel, /SELECT id, name, grade, field, description, avatar FROM supporters/);
+  assert.match(publicService, /\$supporter\['avatar_url'\] = \$resolvedUrl/);
+  assert.match(publicService, /\$supporter\['image_url'\] = \$resolvedUrl/);
+  assert.match(publicService, /\$supporter\['description'\] = \$supporter\['description'\] \?\? null/);
+  assert.match(storagePhp, /'instructors',\s*'supporters'\s*=>\s*\['max_width'\s*=>\s*800/);
+  assert.match(routesPhp, /\/api\/v1\/supporters\/\{id:\[0-9\]\+\}\/avatar/);
+
+  // 2. Behavioral verification via simulator
+  const ctx = createAppContext();
+
+  // 2a. Create supporter in Admin Panel with description, JSON-encoded FormData scopes, and uploaded image file
+  const createRes = handleSupporterEndpoint(
+    ctx,
+    'POST',
+    new URL('http://localhost:3000/api/v1/supporters'),
+    {
+      name: 'نگار کریمی',
+      phone: '09128887766',
+      scopes: JSON.stringify([{ field: 'تجربی', grade: 12 }]),
+      description: 'رتبه ۱۲ کنکور تجربی و مشاور تخصصی برنامه‌ریزی و آزمون‌های آزمایشی',
+      image: { filename: 'negar-profile.jpg' },
+    },
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(createRes.status, 201);
+  assert.equal(createRes.body.data.name, 'نگار کریمی');
+  assert.equal(
+    createRes.body.data.description,
+    'رتبه ۱۲ کنکور تجربی و مشاور تخصصی برنامه‌ریزی و آزمون‌های آزمایشی'
+  );
+  assert.equal(
+    createRes.body.data.avatar_url,
+    `https://api.example.com/uploads/supporters/${createRes.body.data.id}/negar-profile.webp`
+  );
+  assert.equal(createRes.body.data.image_url, createRes.body.data.avatar_url);
+
+  // 2b. Update supporter description and avatar via PUT /api/v1/supporters/{id}
+  const supporterId = createRes.body.data.id;
+  const updateRes = handleSupporterEndpoint(
+    ctx,
+    'PUT',
+    new URL(`http://localhost:3000/api/v1/supporters/${supporterId}`),
+    {
+      description: 'مشاور ارشد کنکور تجربی با ۴ سال سابقه همراهی رتبه‌های برتر',
+      avatar: { filename: 'negar-updated.png' },
+    },
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(updateRes.status, 200);
+  assert.equal(
+    updateRes.body.data.description,
+    'مشاور ارشد کنکور تجربی با ۴ سال سابقه همراهی رتبه‌های برتر'
+  );
+  assert.equal(
+    updateRes.body.data.avatar_url,
+    `https://api.example.com/uploads/supporters/${supporterId}/negar-updated.webp`
+  );
+  assert.equal(updateRes.body.data.image_url, updateRes.body.data.avatar_url);
+
+  // 2c. Fetch landing page GET /api/v1/public/supporters and verify description + avatar_url + image_url are returned
+  const publicRes = handlePublicEndpoint(
+    ctx,
+    'GET',
+    new URL('http://localhost:3000/api/v1/public/supporters'),
+    '127.0.0.1'
+  );
+  assert.equal(publicRes.status, 200);
+  assert.equal(publicRes.body.success, true);
+  const publicItem = publicRes.body.data.find((s) => s.id === supporterId);
+  assert.ok(publicItem, 'Newly created supporter must appear in GET /api/v1/public/supporters');
+  assert.equal(
+    publicItem.description,
+    'مشاور ارشد کنکور تجربی با ۴ سال سابقه همراهی رتبه‌های برتر'
+  );
+  assert.equal(
+    publicItem.avatar_url,
+    `https://api.example.com/uploads/supporters/${supporterId}/negar-updated.webp`
+  );
+  assert.equal(publicItem.image_url, publicItem.avatar_url);
+});
+
 
 
 

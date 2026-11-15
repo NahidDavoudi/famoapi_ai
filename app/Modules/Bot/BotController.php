@@ -28,28 +28,34 @@ class BotController
     public function me(Request $request, Response $response): Response
     {
         /** @var array $actor */
-        $actor = $request->getAttribute('bot_actor');
+        $actor = (array) ($request->getAttribute('bot_actor') ?? []);
+        $link = isset($actor['link']) && is_array($actor['link']) ? $actor['link'] : [];
+
+        $chatId = (int) ($link['chat_id'] ?? $actor['chat_id'] ?? 0);
+        $telegramUserId = (int) ($link['telegram_user_id'] ?? $actor['telegram_user_id'] ?? 0);
+        $isBlocked = (int) ($link['is_blocked'] ?? $actor['is_blocked'] ?? 0) === 1;
+        $linkedAt = $link['linked_at'] ?? $actor['linked_at'] ?? null;
 
         $context = [
-            'chat_id'    => (int) $actor['link']['chat_id'],
-            'account_id' => (int) $actor['account_id'],
-            'role'       => (string) $actor['role'],
+            'chat_id'    => $chatId,
+            'account_id' => (int) ($actor['account_id'] ?? 0),
+            'role'       => (string) ($actor['role'] ?? ''),
         ];
 
-        if ((int) $actor['link']['is_blocked'] === 1) {
+        if ($isBlocked) {
             Logger::warning('Bot: me requested by blocked link', $context);
         } else {
             Logger::info('Bot: me', $context);
         }
 
         return ResponseHelper::json($response, [
-            'role'             => $actor['role'],
-            'account_id'       => $actor['account_id'],
-            'name'             => $actor['name'],
-            'telegram_user_id' => (int) $actor['link']['telegram_user_id'],
-            'chat_id'          => (int) $actor['link']['chat_id'],
-            'is_blocked'       => (int) $actor['link']['is_blocked'] === 1,
-            'linked_at'        => $actor['link']['linked_at'],
+            'role'             => $actor['role'] ?? null,
+            'account_id'       => $actor['account_id'] ?? null,
+            'name'             => $actor['name'] ?? '',
+            'telegram_user_id' => $telegramUserId,
+            'chat_id'          => $chatId,
+            'is_blocked'       => $isBlocked,
+            'linked_at'        => $linkedAt,
         ]);
     }
 

@@ -15,6 +15,7 @@ ALTER TABLE `daily_attendance`
     MODIFY COLUMN `status` ENUM('present','absent','excused') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'present';
 
 ALTER TABLE `users`
+    MODIFY COLUMN `role` ENUM('admin','supporter','student','teacher') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'student',
     ADD COLUMN IF NOT EXISTS `phone` VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL AFTER `username`,
     ADD COLUMN IF NOT EXISTS `is_active` TINYINT(1) NOT NULL DEFAULT 1 AFTER `linked_id`;
 
@@ -179,6 +180,10 @@ CREATE TABLE IF NOT EXISTS `staff_activity_logs` (
     KEY `idx_staff_activity_created` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+ALTER TABLE `supporters`
+    ADD COLUMN IF NOT EXISTS `avatar` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL AFTER `chat_id`,
+    ADD COLUMN IF NOT EXISTS `description` TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL AFTER `avatar`;
+
 -- 7. Record migrations in `migrations` table so Migrator::run() knows they are applied
 INSERT IGNORE INTO `migrations` (`migration`, `executed_at`) VALUES
     ('001_core_identity_and_users.sql', CURRENT_TIMESTAMP),
@@ -189,6 +194,8 @@ INSERT IGNORE INTO `migrations` (`migration`, `executed_at`) VALUES
     ('006_exam_comments_and_share_links.sql', CURRENT_TIMESTAMP),
     ('007_appointment_sms_log.sql', CURRENT_TIMESTAMP),
     ('008_tutoring_classroom_audit_log.sql', CURRENT_TIMESTAMP),
-    ('009_staff_activity_logs.sql', CURRENT_TIMESTAMP);
+    ('009_staff_activity_logs.sql', CURRENT_TIMESTAMP),
+    ('010_supporter_description.sql', CURRENT_TIMESTAMP);
+
 
 

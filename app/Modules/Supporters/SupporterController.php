@@ -43,8 +43,8 @@ class SupporterController
     }
 
     /**
-     * استخراج فایل آواتار از درخواست multipart.
-     * Extracts the avatar file from a multipart request (if present).
+     * استخراج فایل عکس پروفایل از درخواست multipart (پشتیبانی از نام فیلدهای avatar و image مثل اساتید).
+     * Extracts the profile photo file from a multipart request (supports both 'avatar' and 'image' field names).
      *
      * @param Request $request
      * @return UploadedFileInterface|null
@@ -52,15 +52,45 @@ class SupporterController
     private function avatarFileFromRequest(Request $request): ?UploadedFileInterface
     {
         $files = $request->getUploadedFiles();
-        if (!isset($files['avatar'])) {
-            return null;
+        foreach (['avatar', 'image', 'photo', 'profile_image'] as $key) {
+            if (!isset($files[$key])) {
+                continue;
+            }
+            $candidate = $files[$key];
+            // پشتیبانی از آرایه‌ای از فایل‌ها: اولین مورد استفاده می‌شود
+            if (is_array($candidate)) {
+                $candidate = $candidate[0] ?? null;
+            }
+            if ($candidate instanceof UploadedFileInterface && $candidate->getError() !== UPLOAD_ERR_NO_FILE) {
+                return $candidate;
+            }
         }
-        $avatar = $files['avatar'];
-        // پشتیبانی از آرایه‌ای از فایل‌ها: اولین مورد استفاده می‌شود
-        if (is_array($avatar)) {
-            return $avatar[0] ?? null;
+        return null;
+    }
+
+    /**
+     * نرمال‌سازی فیلد scopes در صورتی که از طریق FormData به صورت رشته JSON ارسال شده باشد.
+     *
+     * @param array<string,mixed> $body
+     * @return array<string,mixed>
+     */
+    private function normalizeBodyPayload(array $body): array
+    {
+        if (isset($body['scopes']) && is_string($body['scopes'])) {
+            $trimmed = trim($body['scopes']);
+            if ($trimmed === '') {
+                unset($body['scopes']);
+            } else {
+                $decoded = json_decode($trimmed, true);
+                if (is_array($decoded)) {
+                    $body['scopes'] = $decoded;
+                }
+            }
         }
-        return $avatar;
+        if (!array_key_exists('description', $body) && array_key_exists('bio', $body)) {
+            $body['description'] = $body['bio'];
+        }
+        return $body;
     }
 
     public function list(Request $request, Response $response): Response
@@ -99,19 +129,22 @@ class SupporterController
 
     public function create(Request $request, Response $response): Response
     {
-        $body = $request->getParsedBody() ?? [];
+        $body = $this->normalizeBodyPayload((array) ($request->getParsedBody() ?? []));
 
         $hasScopes = isset($body['scopes']) && is_array($body['scopes']) && $body['scopes'] !== [];
 
         $validator = new Validator();
         $validator->required('name', 'نام و نام خانوادگی', $body['name'] ?? null);
+        if (array_key_exists('description', $body) && $body['description'] !== null) {
+            $validator->string('description', 'توضیحات', $body['description']);
+        }
 
         if ($hasScopes) {
             $message = $this->scopeError($body['scopes']);
         } else {
             $validator
                 ->required('grade', 'پایه تحصیلی', $body['grade'] ?? null)
-                ->inArray('grade', 'پایه تحصیلی', $body['grade'] ?? null, $this->validGrades)
+                ->inArray('grade', 'پایه تحصیلی', isset($body['grade']) && $body['grade'] !== '' ? (int) $body['grade'] : null, $this->validGrades)
                 ->required('field', 'رشته تحصیلی', $body['field'] ?? null)
                 ->inArray('field', 'رشته تحصیلی', $body['field'] ?? null, $this->validFields);
             $message = $validator->firstError();
@@ -140,15 +173,21 @@ class SupporterController
 
         try {
             $data = [
-                'name'      => $body['name'],
-                'grade'     => $body['grade'] ?? null,
-                'field'     => $body['field'] ?? null,
-                'phone'     => $body['phone'],
-                'chat_id'   => $body['chat_id'] ?? null,
-                'is_active' => $body['is_active'] ?? 1,
+                'name'        => $body['name'],
+                'grade'       => isset($body['grade']) && $body['grade'] !== '' ? (int) $body['grade'] : null,
+                'field'       => $body['field'] ?? null,
+                'phone'       => $body['phone'],
+                'chat_id'     => $body['chat_id'] ?? null,
+                'description' => $body['description'] ?? null,
+                'is_active'   => $body['is_active'] ?? 1,
             ];
             if (array_key_exists('scopes', $body)) {
                 $data['scopes'] = $body['scopes'];
+            }
+            if (isset($body['avatar']) && is_string($body['avatar']) && trim($body['avatar']) !== '') {
+                $data['avatar'] = trim($body['avatar']);
+            } elseif (isset($body['image_url']) && is_string($body['image_url']) && trim($body['image_url']) !== '') {
+                $data['avatar'] = trim($body['image_url']);
             }
 
             $avatarFile = $this->avatarFileFromRequest($request);
@@ -203,7 +242,7 @@ class SupporterController
 
     public function update(Request $request, Response $response, array $args): Response
     {
-        $body = $request->getParsedBody() ?? [];
+        $body = $this->normalizeBodyPayload((array) ($request->getParsedBody() ?? []));
         $avatarFile = $this->avatarFileFromRequest($request);
 
         $validator = new Validator();
@@ -223,10 +262,23 @@ class SupporterController
             $validator->inArray('field', 'رشته تحصیلی', $body['field'], $this->validFields);
             $data['field'] = $body['field'];
         }
+        if (array_key_exists('description', $body)) {
+            if ($body['description'] !== null) {
+                $validator->string('description', 'توضیحات', $body['description']);
+            }
+            $data['description'] = $body['description'];
+        }
         if (array_key_exists('phone', $body)) $data['phone'] = $body['phone'];
         if (isset($body['chat_id'])) $data['chat_id'] = $body['chat_id'];
         if (array_key_exists('is_active', $body)) $data['is_active'] = (int) $body['is_active'];
-        if (isset($body['password'])) {
+        if ($avatarFile === null) {
+            if (array_key_exists('avatar', $body) && (is_string($body['avatar']) || $body['avatar'] === null)) {
+                $data['avatar'] = is_string($body['avatar']) ? trim($body['avatar']) : null;
+            } elseif (array_key_exists('image_url', $body) && (is_string($body['image_url']) || $body['image_url'] === null)) {
+                $data['avatar'] = is_string($body['image_url']) ? trim($body['image_url']) : null;
+            }
+        }
+        if (isset($body['password']) && $body['password'] !== '') {
             $validator
                 ->string('password', 'رمز عبور', $body['password'])
                 ->minLength('password', 'رمز عبور', $body['password'], 4);
@@ -268,6 +320,51 @@ class SupporterController
 
         try {
             $result = $this->service->update((int) $args['id'], $data, $avatarFile);
+        } catch (\App\Core\ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => 'UPDATE_ERROR',
+                    'message' => $e->getMessage(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus() ?: 500)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success'    => true,
+            'data'       => $result,
+            'pagination' => null,
+            'error'      => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+
+    public function uploadAvatar(Request $request, Response $response, array $args): Response
+    {
+        $avatarFile = $this->avatarFileFromRequest($request);
+        if ($avatarFile === null) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => 'VALIDATION_ERROR',
+                    'message' => 'فایل عکس پروفایل (avatar یا image) ارسال نشده است',
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        return $this->update($request, $response, $args);
+    }
+
+    public function deleteAvatar(Request $request, Response $response, array $args): Response
+    {
+        try {
+            $result = $this->service->update((int) $args['id'], ['avatar' => null], null);
         } catch (\App\Core\ApiException $e) {
             $response->getBody()->write(json_encode([
                 'success'    => false,

@@ -47,8 +47,8 @@ class SupporterService
     }
 
     /**
-     * افزودن avatar_url به هر ردیف پشتیبان (در صورت وجود avatar).
-     * Appends a public avatar_url to each supporter row when an avatar is stored.
+     * افزودن avatar_url، image_url و description به هر ردیف پشتیبان.
+     * Appends public avatar_url, image_url (alias for instructor compatibility), and description to each supporter row.
      *
      * @param array<int,array> $supporters
      * @return array<int,array>
@@ -56,7 +56,10 @@ class SupporterService
     private function withAvatarUrl(array $supporters): array
     {
         foreach ($supporters as &$row) {
-            $row['avatar_url'] = AssetUrl::fromStorage($row['avatar'] ?? null);
+            $resolvedUrl = AssetUrl::fromStorage($row['avatar'] ?? null);
+            $row['avatar_url'] = $resolvedUrl;
+            $row['image_url'] = $resolvedUrl;
+            $row['description'] = $row['description'] ?? null;
         }
         unset($row);
         return $supporters;
@@ -83,6 +86,8 @@ class SupporterService
      */
     public function create(array $data, ?UploadedFileInterface $avatarFile = null): array
     {
+        Supporter::ensureProfileColumns();
+
         if (array_key_exists('phone', $data)) {
             $data['phone'] = $this->normalizePhoneOrFail($data['phone']);
         }
@@ -104,8 +109,12 @@ class SupporterService
             }
         }
 
-        // avatar در ابتدا NULL است؛ بعد از ساخت رکورد آپلود می‌شود تا مسیر با id owner ذخیره شود
-        $data['avatar'] = null;
+        // اگر فایل آواتار ارسال شده باشد، ابتدا NULL ذخیره شده و بعد از ساخت رکورد آپلود می‌شود تا مسیر با id ذخیره گردد
+        if ($avatarFile !== null && $avatarFile->getError() === UPLOAD_ERR_OK) {
+            $data['avatar'] = null;
+        } else {
+            $data['avatar'] = $data['avatar'] ?? null;
+        }
 
         $db = Database::getConnection();
         $db->beginTransaction();
@@ -153,7 +162,10 @@ class SupporterService
         if (!$supporter) {
             throw new \App\Core\ApiException('پشتیبان یافت نشد', 404, 'NOT_FOUND');
         }
-        $supporter['avatar_url'] = AssetUrl::fromStorage($supporter['avatar'] ?? null);
+        $resolvedUrl = AssetUrl::fromStorage($supporter['avatar'] ?? null);
+        $supporter['avatar_url'] = $resolvedUrl;
+        $supporter['image_url'] = $resolvedUrl;
+        $supporter['description'] = $supporter['description'] ?? null;
         return $supporter;
     }
 
@@ -179,6 +191,8 @@ class SupporterService
      */
     public function update(int $id, array $data, ?UploadedFileInterface $avatarFile = null): array
     {
+        Supporter::ensureProfileColumns();
+
         $supporter = Supporter::findById($id);
         if (!$supporter) {
             throw new \App\Core\ApiException('پشتیبان یافت نشد', 404, 'NOT_FOUND');
@@ -201,6 +215,14 @@ class SupporterService
         $db->beginTransaction();
 
         try {
+            // اگر آواتار به صورت رشته خالی یا null صراحتاً برای حذف ارسال شده باشد (و فایل جدیدی نباشد)
+            if ($avatarFile === null && array_key_exists('avatar', $data) && ($data['avatar'] === null || $data['avatar'] === '')) {
+                if (!empty($supporter['avatar'])) {
+                    Storage::delete($supporter['avatar']);
+                }
+                $data['avatar'] = null;
+            }
+
             Supporter::update($id, $data);
 
             // آپلود آواتار جدید و جایگزینی با قبلی
@@ -211,6 +233,17 @@ class SupporterService
                 }
                 $avatarPath = Storage::upload($avatarFile, 'supporters', $id);
                 Supporter::update($id, ['avatar' => $avatarPath]);
+            }
+
+            if (array_key_exists('name', $data) && $data['name'] !== null && $data['name'] !== '') {
+                $stmtName = $db->prepare(
+                    'UPDATE users SET full_name = :full_name WHERE linked_id = :linked_id AND role = :role'
+                );
+                $stmtName->execute([
+                    'full_name' => $data['name'],
+                    'linked_id' => $id,
+                    'role'      => 'supporter',
+                ]);
             }
 
             if (array_key_exists('phone', $data) && $data['phone'] !== null) {

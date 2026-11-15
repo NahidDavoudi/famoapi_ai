@@ -674,21 +674,30 @@ class ActivityLog
 
         if (isset($moduleLabels[$first])) {
             $meta = $moduleLabels[$first];
-            $targetId = $extractId($second !== null && ctype_digit($second) ? $second : ($third !== null && ctype_digit($third) ? $third : null));
+            $hasNumericSecond = $second !== null && ctype_digit($second);
+            $targetId = $extractId($hasNumericSecond ? $second : ($third !== null && ctype_digit($third) ? $third : null));
             $title = (string) ($body['name'] ?? $body['title'] ?? $responseData['name'] ?? $responseData['title'] ?? '');
 
-            $verb = match ($method) {
-                'POST' => 'ایجاد/ثبت',
-                'PUT', 'PATCH' => 'ویرایش',
-                'DELETE' => 'حذف',
-                default => 'مدیریت',
-            };
-            $act = match ($method) {
-                'POST' => 'create',
-                'PUT', 'PATCH' => 'update',
-                'DELETE' => 'delete',
-                default => 'action',
-            };
+            if ($third === 'avatar') {
+                $verb = $method === 'DELETE' ? 'حذف عکس پروفایل' : 'آپلود عکس پروفایل';
+                $act = $method === 'DELETE' ? 'delete_avatar' : 'upload_avatar';
+            } elseif ($method === 'POST' && $hasNumericSecond) {
+                $verb = 'ویرایش';
+                $act = 'update';
+            } else {
+                $verb = match ($method) {
+                    'POST' => 'ایجاد/ثبت',
+                    'PUT', 'PATCH' => 'ویرایش',
+                    'DELETE' => 'حذف',
+                    default => 'مدیریت',
+                };
+                $act = match ($method) {
+                    'POST' => 'create',
+                    'PUT', 'PATCH' => 'update',
+                    'DELETE' => 'delete',
+                    default => 'action',
+                };
+            }
 
             return [
                 'module'      => $first,

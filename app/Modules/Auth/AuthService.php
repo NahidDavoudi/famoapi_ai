@@ -123,19 +123,16 @@ class AuthService
         }
 
         try {
-            $userId = (int) $db->query('SELECT COALESCE(MAX(id), 0) + 1 FROM users')->fetchColumn();
-
             $createdId = User::create([
-                'id'        => $userId,
                 'full_name' => $data['name'],
                 'username'  => $data['phone'],
                 'phone'     => $data['phone'],
                 'password'  => $data['password'],
                 'role'      => 'student',
             ]);
-            if ($createdId > 0) {
-                $userId = $createdId;
-            }
+            $userId = $createdId > 0
+                ? $createdId
+                : (int) $db->query('SELECT COALESCE(MAX(id), 0) FROM users')->fetchColumn();
 
             $stmt = $db->prepare(
                 'INSERT INTO students (name, national_id, grade, field, phone)
@@ -170,9 +167,23 @@ class AuthService
 
     public function login(string $username, string $password, ?string $ip = null): array
     {
-        $user = User::findByUsername($username) ?? User::findByPhone($username);
+        $candidates = User::findCandidatesForLogin($username);
+        if ($candidates === []) {
+            $fallback = User::findByUsername($username) ?? User::findByPhone($username);
+            if ($fallback !== null) {
+                $candidates = [$fallback];
+            }
+        }
 
-        if (!$user || !password_verify($password, $user['password_hash'])) {
+        $user = null;
+        foreach ($candidates as $candidate) {
+            if (isset($candidate['password_hash']) && password_verify($password, (string) $candidate['password_hash'])) {
+                $user = $candidate;
+                break;
+            }
+        }
+
+        if (!$user) {
             throw new \App\Core\ApiException('نام کاربری یا رمز عبور اشتباه است', 401, 'AUTH_ERROR');
         }
 

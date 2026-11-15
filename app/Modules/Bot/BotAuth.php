@@ -76,12 +76,20 @@ final class BotAuth implements MiddlewareInterface
             }
         }
 
+        $resolvedLink = $link ?? TelegramLink::findByRoleAndAccount($role, $accountId);
+
         return $handler->handle($request->withAttribute('bot_actor', [
             'role'             => $role,
             'account_id'       => $accountId,
-            'telegram_user_id' => $tgUserId,
+            'telegram_user_id' => $tgUserId > 0 ? $tgUserId : (int) ($resolvedLink['telegram_user_id'] ?? 0),
             'name'             => $name,
-            'chat_id'          => $chatId,
+            'chat_id'          => $chatId > 0 ? $chatId : (int) ($resolvedLink['chat_id'] ?? 0),
+            'link'             => [
+                'telegram_user_id' => $tgUserId > 0 ? $tgUserId : (int) ($resolvedLink['telegram_user_id'] ?? 0),
+                'chat_id'          => $chatId > 0 ? $chatId : (int) ($resolvedLink['chat_id'] ?? 0),
+                'is_blocked'       => (int) ($resolvedLink['is_blocked'] ?? 0),
+                'linked_at'        => $resolvedLink['linked_at'] ?? null,
+            ],
         ]));
     }
 

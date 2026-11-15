@@ -112,7 +112,11 @@ class PlanService
         }
 
         $foundId = 0;
-        if ($nationalId !== '') {
+        $isValidLookupNationalId = preg_match('/^\d{10}$/', $nationalId) === 1
+            && !preg_match('/^(\d)\1{9}$/', $nationalId)
+            && $nationalId !== '2147483647';
+
+        if ($isValidLookupNationalId) {
             $stmt = $db->prepare('SELECT id FROM students WHERE national_id = :national_id LIMIT 1');
             $stmt->execute(['national_id' => $nationalId]);
             $foundId = (int) $stmt->fetchColumn();

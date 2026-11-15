@@ -7,8 +7,54 @@ use App\Core\PhoneNumber;
 
 class Supporter
 {
+    private static bool $profileColumnsEnsured = false;
+
+    /**
+     * Ensures `avatar` and `description` columns exist on `supporters` table
+     * before running queries or starting a transaction (since MySQL ALTER TABLE causes an implicit commit).
+     */
+    public static function ensureProfileColumns(): void
+    {
+        if (self::$profileColumnsEnsured) {
+            return;
+        }
+
+        try {
+            $pdo = Database::getConnection();
+            if ($pdo->inTransaction()) {
+                return;
+            }
+
+            $driver = strtolower((string) $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME));
+            if ($driver === 'mysql') {
+                $stmt = $pdo->prepare(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'supporters'
+                       AND COLUMN_NAME IN ('avatar', 'description')"
+                );
+                $stmt->execute();
+                $cols = $stmt->fetchAll(\PDO::FETCH_COLUMN);
+
+                if (!in_array('avatar', $cols, true)) {
+                    $pdo->exec("ALTER TABLE supporters ADD COLUMN avatar VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL AFTER chat_id");
+                }
+                if (!in_array('description', $cols, true)) {
+                    $pdo->exec("ALTER TABLE supporters ADD COLUMN description TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL AFTER avatar");
+                }
+            } elseif ($driver === 'pgsql') {
+                $pdo->exec("ALTER TABLE supporters ADD COLUMN IF NOT EXISTS avatar VARCHAR(255) DEFAULT NULL");
+                $pdo->exec("ALTER TABLE supporters ADD COLUMN IF NOT EXISTS description TEXT DEFAULT NULL");
+            }
+
+            self::$profileColumnsEnsured = true;
+        } catch (\Throwable) {
+            self::$profileColumnsEnsured = true;
+        }
+    }
+
     public static function findAll(int $page, int $perPage): array
     {
+        self::ensureProfileColumns();
         $offset = ($page - 1) * $perPage;
         $stmt = Database::getConnection()->prepare(
             'SELECT s.*,
@@ -39,6 +85,7 @@ class Supporter
 
     public static function findById(int $id): ?array
     {
+        self::ensureProfileColumns();
         $stmt = Database::getConnection()->prepare(
             'SELECT s.*, u.id AS user_id, u.username, u.role
              FROM supporters s
@@ -86,9 +133,10 @@ class Supporter
 
     public static function findMissingPhone(int $page, int $perPage): array
     {
+        self::ensureProfileColumns();
         $offset = ($page - 1) * $perPage;
         $stmt = Database::getConnection()->prepare(
-            "SELECT id, name, grade, field, phone, is_active, created_at
+            "SELECT id, name, grade, field, phone, avatar, description, is_active, created_at
              FROM supporters
              WHERE phone IS NULL OR phone = ''
              ORDER BY name ASC
@@ -300,36 +348,39 @@ class Supporter
 
     public static function create(array $data): int
     {
+        self::ensureProfileColumns();
         $phone = isset($data['phone']) && $data['phone'] !== ''
             ? PhoneNumber::normalizeOrFail($data['phone'], 'شماره تلفن پشتیبان معتبر نیست')
             : null;
 
         $db = Database::getConnection();
         $stmt = $db->prepare(
-            'INSERT INTO supporters (name, grade, field, phone, chat_id, avatar, is_active)
-             VALUES (:name, :grade, :field, :phone, :chat_id, :avatar, :is_active)'
+            'INSERT INTO supporters (name, grade, field, phone, chat_id, avatar, description, is_active)
+             VALUES (:name, :grade, :field, :phone, :chat_id, :avatar, :description, :is_active)'
         );
         $stmt->execute([
-            'name'      => $data['name'],
-            'grade'     => $data['grade'] ?? null,
-            'field'     => $data['field'] ?? null,
-            'phone'     => $phone,
-            'chat_id'   => $data['chat_id'] ?? null,
-            'avatar'    => $data['avatar'] ?? null,
-            'is_active' => array_key_exists('is_active', $data) ? (int) $data['is_active'] : 1,
+            'name'        => $data['name'],
+            'grade'       => $data['grade'] ?? null,
+            'field'       => $data['field'] ?? null,
+            'phone'       => $phone,
+            'chat_id'     => $data['chat_id'] ?? null,
+            'avatar'      => $data['avatar'] ?? null,
+            'description' => $data['description'] ?? null,
+            'is_active'   => array_key_exists('is_active', $data) ? (int) $data['is_active'] : 1,
         ]);
         return (int) $db->lastInsertId();
     }
 
     public static function update(int $id, array $data): int
     {
+        self::ensureProfileColumns();
         if (array_key_exists('phone', $data) && $data['phone'] !== null && $data['phone'] !== '') {
             $data['phone'] = PhoneNumber::normalizeOrFail($data['phone'], 'شماره تلفن پشتیبان معتبر نیست');
         }
 
         $sets = [];
         $params = ['id' => $id];
-        $allowed = ['name', 'grade', 'field', 'phone', 'chat_id', 'avatar', 'is_active'];
+        $allowed = ['name', 'grade', 'field', 'phone', 'chat_id', 'avatar', 'description', 'is_active'];
 
         foreach ($allowed as $field) {
             if (array_key_exists($field, $data)) {

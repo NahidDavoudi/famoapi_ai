@@ -26,6 +26,11 @@ class StudentService
     public function create(array $data): array
     {
         $data['phone'] = PhoneNumber::normalizeOrFail($data['phone'] ?? null, 'شماره تلفن دانش‌آموز معتبر نیست');
+        $isPlaceholderPhone = ($data['phone'] === '09000000000');
+
+        if (!$isPlaceholderPhone && \App\Modules\Auth\User::findByPhone($data['phone'])) {
+            throw new ApiException('این شماره تلفن قبلاً ثبت شده است', 409, 'DUPLICATE_PHONE');
+        }
 
         // پشتیبان رو بر اساس (رشته، پایه) از supporter_scopes پیدا کن
         $supporterId = Supporter::findForStudent(
@@ -41,23 +46,32 @@ class StudentService
 
             $studentId = Student::create($data);
 
-            $stmt = $db->prepare(
-                'INSERT INTO users (username, phone, full_name, password_hash, role, linked_id)
-                 VALUES (:username, :phone, :full_name, :password_hash, :role, :linked_id)'
-            );
-            $stmt->execute([
-                'username'      => $data['phone'],
-                'phone'         => $data['phone'],
-                'full_name'     => $data['name'],
-                'password_hash' => password_hash('1234', PASSWORD_DEFAULT),
-                'role'          => 'student',
-                'linked_id'     => $studentId,
-            ]);
+            if (!$isPlaceholderPhone) {
+                $stmt = $db->prepare(
+                    'INSERT INTO users (username, phone, full_name, password_hash, role, linked_id)
+                     VALUES (:username, :phone, :full_name, :password_hash, :role, :linked_id)'
+                );
+                $stmt->execute([
+                    'username'      => $data['phone'],
+                    'phone'         => $data['phone'],
+                    'full_name'     => $data['name'],
+                    'password_hash' => password_hash('1234', PASSWORD_DEFAULT),
+                    'role'          => 'student',
+                    'linked_id'     => $studentId,
+                ]);
+            }
 
             $db->commit();
+        } catch (ApiException $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            throw $e;
         } catch (\Throwable $e) {
-            $db->rollBack();
-            throw new ApiException($e->getMessage(), 500, 'REGISTER_FAILED');
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            throw new ApiException('خطا در ثبت دانش‌آموز', 500, 'REGISTER_FAILED', $e);
         }
 
         return $this->get($studentId);

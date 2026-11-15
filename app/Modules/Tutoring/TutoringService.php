@@ -266,7 +266,7 @@ class TutoringService
 
         $userId = (int) ($user->sub ?? 0);
         $record = $userId > 0 ? User::findById($userId) : null;
-        if ($record !== null && in_array($record['role'] ?? null, ['teacher', 'admin'], true) && (int) ($record['linked_id'] ?? 0) > 0) {
+        if ($record !== null && ($record['role'] ?? null) === 'teacher' && (int) ($record['linked_id'] ?? 0) > 0) {
             return (int) $record['linked_id'];
         }
 

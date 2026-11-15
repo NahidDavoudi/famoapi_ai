@@ -27,6 +27,10 @@ class Authorization implements MiddlewareInterface
             'roles'   => ['admin', 'supporter', 'teacher'],
             'message' => 'دسترسی محدود به اساتید، پشتیبانان و مدیران',
         ],
+        'student' => [
+            'roles'   => ['admin', 'supporter', 'student'],
+            'message' => 'دسترسی غیرمجاز',
+        ],
     ];
 
     private string $requiredRole;
@@ -58,7 +62,7 @@ class Authorization implements MiddlewareInterface
 
         $rule = self::ROLE_RULES[$this->requiredRole] ?? null;
 
-        if ($rule !== null && !in_array($user->role ?? '', $rule['roles'], true)) {
+        if ($rule === null || !in_array($user->role ?? '', $rule['roles'], true)) {
             $response = new SlimResponse();
             $response->getBody()->write(json_encode([
                 'success' => false,
@@ -66,7 +70,7 @@ class Authorization implements MiddlewareInterface
                 'pagination' => null,
                 'error' => [
                     'code' => 'FORBIDDEN',
-                    'message' => $rule['message'],
+                    'message' => $rule['message'] ?? 'دسترسی غیرمجاز',
                 ],
             ], JSON_UNESCAPED_UNICODE));
             return $response

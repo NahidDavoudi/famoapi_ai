@@ -65,7 +65,17 @@ class Migrator
 
                 try {
                     foreach ($statements as $statement) {
-                        $pdo->exec($statement);
+                        try {
+                            $pdo->exec($statement);
+                        } catch (\PDOException $stmtErr) {
+                            $sqlState = (string) ($stmtErr->errorInfo[0] ?? $stmtErr->getCode());
+                            $driverCode = (int) ($stmtErr->errorInfo[1] ?? 0);
+                            // Ignore Duplicate column name (MySQL 1060 / SQLSTATE 42S21, PostgreSQL 42701)
+                            if ($driverCode === 1060 || in_array($sqlState, ['42S21', '42701'], true)) {
+                                continue;
+                            }
+                            throw $stmtErr;
+                        }
                     }
                     $insert = $pdo->prepare("INSERT INTO migrations (migration, executed_at) VALUES (?, CURRENT_TIMESTAMP)");
                     $insert->execute([$name]);

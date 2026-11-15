@@ -771,7 +771,7 @@ paths:
       tags: [Public]
       summary: Get public supporters list
       description: |
-        Returns all public supporters with `id`, `name`, `grade`, `field`, `avatar`, and resolved `avatar_url`.
+        Returns all public supporters with `id`, `name`, `grade`, `field`, `description`, `avatar`, and resolved `avatar_url` / `image_url`.
         - **Input Requirements**: None (no query, path, or body parameters required).
         - **Caching**: Cached in Redis under group `public` (`supporters` service key, 600s TTL; HTTP response cached 300s via `PublicCacheMiddleware`).
         - **Rate Limiting**: Enforced per client IP via `RateLimitMiddleware('public:ip')`.
@@ -2670,13 +2670,45 @@ paths:
           $ref: "#/components/responses/Unauthorized"
     post:
       tags: [Supporters]
-      summary: Create supporter (admin only)
+      summary: Create supporter with optional profile photo & description (admin only)
       operationId: supporterCreate
       security:
         - bearerAuth: []
       requestBody:
         required: true
         content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: نام و نام خانوادگی
+                grade:
+                  type: integer
+                  enum: [7, 8, 9, 10, 11, 12]
+                field:
+                  type: string
+                  enum: [ریاضی, تجربی, انسانی, زبان, هنر, عمومی, راهنمایی]
+                phone:
+                  type: string
+                  description: شماره تلفن
+                description:
+                  type: string
+                  nullable: true
+                  description: توضیحات و معرفی پشتیبان برای نمایش در لندینگ پیج
+                chat_id:
+                  type: string
+                  description: شناسه پیام‌رسان
+                avatar:
+                  type: string
+                  format: binary
+                  description: فایل عکس پروفایل پشتیبان (JPG/PNG/WebP)
+                image:
+                  type: string
+                  format: binary
+                  description: نام جایگزین فیلد فایل عکس پروفایل (مشابه اساتید)
+              required: [name, phone]
           application/json:
             schema:
               type: object
@@ -2693,6 +2725,10 @@ paths:
                 phone:
                   type: string
                   description: شماره تلفن
+                description:
+                  type: string
+                  nullable: true
+                  description: توضیحات و معرفی پشتیبان برای نمایش در لندینگ پیج
                 chat_id:
                   type: string
                   description: شناسه پیام‌رسان
@@ -2745,7 +2781,7 @@ paths:
           $ref: "#/components/responses/NotFound"
     put:
       tags: [Supporters]
-      summary: Update supporter (admin only)
+      summary: Update supporter profile, description & photo (admin only)
       operationId: supporterUpdate
       security:
         - bearerAuth: []
@@ -2758,6 +2794,39 @@ paths:
       requestBody:
         required: true
         content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                grade:
+                  type: integer
+                  enum: [7, 8, 9, 10, 11, 12]
+                field:
+                  type: string
+                description:
+                  type: string
+                  nullable: true
+                  description: توضیحات و معرفی پشتیبان برای نمایش در لندینگ پیج
+                phone:
+                  type: string
+                  nullable: true
+                is_active:
+                  type: integer
+                  enum: [0, 1]
+                chat_id:
+                  type: string
+                password:
+                  type: string
+                avatar:
+                  type: string
+                  format: binary
+                  description: فایل عکس پروفایل پشتیبان (JPG/PNG/WebP)
+                image:
+                  type: string
+                  format: binary
+                  description: نام جایگزین فیلد فایل عکس پروفایل (مشابه اساتید)
           application/json:
             schema:
               type: object
@@ -2769,6 +2838,10 @@ paths:
                   enum: [7, 8, 9, 10, 11, 12]
                 field:
                   type: string
+                description:
+                  type: string
+                  nullable: true
+                  description: توضیحات و معرفی پشتیبان برای نمایش در لندینگ پیج
                 phone:
                   type: string
                   nullable: true
@@ -2797,6 +2870,64 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [Supporters]
+      summary: Partially update supporter profile, description & photo (admin only)
+      operationId: supporterPatch
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                grade:
+                  type: integer
+                field:
+                  type: string
+                description:
+                  type: string
+                  nullable: true
+                avatar:
+                  type: string
+                  format: binary
+                image:
+                  type: string
+                  format: binary
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                grade:
+                  type: integer
+                field:
+                  type: string
+                description:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Supporter updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/Supporter"
     delete:
       tags: [Supporters]
       summary: Delete supporter (admin only)
@@ -7205,6 +7336,22 @@ components:
           type: integer
         field:
           type: string
+        description:
+          type: string
+          nullable: true
+          description: توضیحات و معرفی پشتیبان
+        avatar:
+          type: string
+          nullable: true
+          description: مسیر نسبی فایل عکس پروفایل در فضای ذخیره‌سازی
+        avatar_url:
+          type: string
+          nullable: true
+          description: آدرس کامل عکس پروفایل پشتیبان
+        image_url:
+          type: string
+          nullable: true
+          description: آدرس کامل عکس پروفایل پشتیبان (معادل avatar_url برای سازگاری با کارت اساتید)
         phone:
           type: string
           nullable: true
@@ -7232,6 +7379,10 @@ components:
         field:
           type: string
           nullable: true
+        description:
+          type: string
+          nullable: true
+          description: توضیحات و معرفی پشتیبان برای نمایش در لندینگ پیج
         avatar:
           type: string
           nullable: true
@@ -7240,6 +7391,10 @@ components:
           type: string
           nullable: true
           description: Fully resolved public URL for the supporter's avatar image
+        image_url:
+          type: string
+          nullable: true
+          description: Fully resolved public URL for the supporter's profile image (same as avatar_url)
       required: [id, name, avatar_url]
 
     BlogCategory:
