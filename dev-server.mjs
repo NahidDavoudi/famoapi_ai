@@ -537,6 +537,109 @@ export function createAppContext() {
     },
   ];
   const appointmentSmsLogs = [];
+  const tutoringClassrooms = [
+    {
+      id: 1,
+      classroom_id: 1,
+      name: 'کلاس ریاضی ۱',
+      class_name: 'کلاس ریاضی ۱',
+      classroom_name: 'کلاس ریاضی ۱',
+      instructor_id: 30,
+      teacher_name: 'استاد نمونه',
+      field: 'ریاضی',
+      sort_order: 1,
+      is_active: true,
+    },
+  ];
+  const tutoringClassroomAuditLogs = [
+    {
+      id: 1,
+      classroom_id: 1,
+      instructor_id: 30,
+      actor_user_id: 1,
+      actor_role: 'admin',
+      actor_instructor_id: null,
+      admin_or_instructor_id: 1,
+      action: 'created',
+      summary: 'کلاس «کلاس ریاضی ۱» ایجاد شد',
+      changes: {
+        before: null,
+        after: { ...tutoringClassrooms[0] },
+        diff: {
+          name: { from: null, to: 'کلاس ریاضی ۱' },
+          teacher_name: { from: null, to: 'استاد نمونه' },
+          field: { from: null, to: 'ریاضی' },
+          instructor_id: { from: null, to: 30 },
+          sort_order: { from: null, to: 1 },
+          is_active: { from: null, to: true },
+        },
+      },
+      timestamp: '2026-11-15 08:00:00',
+      created_at: '2026-11-15 08:00:00',
+    },
+  ];
+  const staffActivityLogs = [
+    {
+      id: 1,
+      actor_user_id: 1,
+      actor_role: 'admin',
+      actor_role_label: 'ادمین',
+      actor_linked_id: 1,
+      actor_name: 'مدیر ارشد',
+      module: 'tutoring',
+      action: 'create_classroom',
+      target_type: 'tutoring_classroom',
+      target_id: '1',
+      summary: 'ایجاد ستون کلاس رفع اشکال جدید «کلاس ریاضی ۱»',
+      http_method: 'POST',
+      endpoint: '/api/v1/tutoring/classrooms',
+      status_code: 201,
+      ip_address: '127.0.0.1',
+      details: { request: { name: 'کلاس ریاضی ۱', teacher_name: 'استاد نمونه', field: 'ریاضی' } },
+      timestamp: '2026-11-15 08:00:00',
+      created_at: '2026-11-15 08:00:00',
+    },
+    {
+      id: 2,
+      actor_user_id: 2,
+      actor_role: 'supporter',
+      actor_role_label: 'پشتیبان',
+      actor_linked_id: 10,
+      actor_name: 'پشتیبان اول',
+      module: 'appointments',
+      action: 'create',
+      target_type: 'appointment',
+      target_id: '1',
+      summary: 'ثبت نوبت مشاوره جدید (#1) برای دانش‌آموز #20',
+      http_method: 'POST',
+      endpoint: '/api/v1/appointments',
+      status_code: 201,
+      ip_address: '127.0.0.1',
+      details: { request: { student_id: 20, date: '2026-10-25', start_time: '16:30' } },
+      timestamp: '2026-11-15 08:15:00',
+      created_at: '2026-11-15 08:15:00',
+    },
+    {
+      id: 3,
+      actor_user_id: 4,
+      actor_role: 'teacher',
+      actor_role_label: 'استاد / مدرس',
+      actor_linked_id: 30,
+      actor_name: 'استاد نمونه',
+      module: 'exams',
+      action: 'upsert_comment',
+      target_type: 'exam_comment',
+      target_id: '20',
+      summary: 'ثبت/ویرایش نظر مشاور در کارنامه آزمون دانش‌آموز #20',
+      http_method: 'PUT',
+      endpoint: '/api/v1/exams/comments',
+      status_code: 200,
+      ip_address: '127.0.0.1',
+      details: { request: { student_id: 20, exam_date: '2026-04-10' } },
+      timestamp: '2026-11-15 08:30:00',
+      created_at: '2026-11-15 08:30:00',
+    },
+  ];
 
   return {
     redis,
@@ -555,6 +658,9 @@ export function createAppContext() {
     smsDispatches,
     appointments,
     appointmentSmsLogs,
+    tutoringClassrooms,
+    tutoringClassroomAuditLogs,
+    staffActivityLogs,
     smsGatewayAvailable: true,
     smsFailPhones: [],
     smsPhoneHourlyMax: 5,
@@ -2616,11 +2722,652 @@ export function handleHealthEndpoint(ctx) {
   };
 }
 
+export function handleTutoringClassroomEndpoint(ctx, method, urlObj, body = {}, authUser = null) {
+  if (!authUser || !authUser.sub) {
+    return {
+      status: 401,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'AUTH_ERROR', message: 'توکن احراز هویت ارسال نشده است' },
+      },
+    };
+  }
+
+  const allowedRoles = ['admin', 'supporter', 'teacher'];
+  if (!allowedRoles.includes(authUser.role)) {
+    return {
+      status: 403,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'FORBIDDEN', message: 'شما مجوز دسترسی به این بخش را ندارید' },
+      },
+    };
+  }
+
+  const pathname = urlObj.pathname;
+  const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+  const resolveActor = () => {
+    const actorUserId = Number(authUser.sub) > 0 ? Number(authUser.sub) : null;
+    const actorRole = authUser.role || null;
+    let actorInstructorId =
+      Number(authUser.instructor_id) > 0 ? Number(authUser.instructor_id) : null;
+    if (!actorInstructorId && actorUserId && actorRole === 'teacher') {
+      const userRec = ctx.users.find((u) => u.id === actorUserId);
+      if (userRec && Number(userRec.linked_id) > 0) {
+        actorInstructorId = Number(userRec.linked_id);
+      }
+    }
+    return {
+      actor_user_id: actorUserId,
+      actor_role: actorRole,
+      actor_instructor_id: actorInstructorId,
+      admin_or_instructor_id: actorInstructorId ?? actorUserId,
+    };
+  };
+
+  const recordAudit = (classroomId, instructorId, action, before, after) => {
+    const actor = resolveActor();
+    const trackedFields = ['name', 'teacher_name', 'field', 'instructor_id', 'sort_order', 'is_active'];
+    const diff = {};
+
+    if (!before && after) {
+      for (const f of trackedFields) {
+        diff[f] = { from: null, to: after[f] ?? null };
+      }
+    } else if (before && !after) {
+      for (const f of trackedFields) {
+        diff[f] = { from: before[f] ?? null, to: null };
+      }
+    } else if (before && after) {
+      for (const f of trackedFields) {
+        if ((before[f] ?? null) !== (after[f] ?? null)) {
+          diff[f] = { from: before[f] ?? null, to: after[f] ?? null };
+        }
+      }
+    }
+
+    const targetName = after?.name || before?.name || `#${classroomId}`;
+    const changedKeys = Object.keys(diff);
+    let summary = `تغییر وضعیت کلاس «${targetName}» (${action})`;
+    if (action === 'created') summary = `کلاس «${targetName}» ایجاد شد`;
+    else if (action === 'reactivated') summary = `کلاس «${targetName}» مجدداً فعال شد`;
+    else if (action === 'updated') {
+      summary =
+        changedKeys.length > 0
+          ? `پیکربندی کلاس «${targetName}» ویرایش شد (${changedKeys.join(', ')})`
+          : `پیکربندی کلاس «${targetName}» بررسی/به‌روزرسانی شد`;
+    } else if (action === 'deleted') summary = `کلاس «${targetName}» حذف شد`;
+    else if (action === 'deactivated') summary = `کلاس «${targetName}» غیرفعال شد`;
+
+    const nextId =
+      ctx.tutoringClassroomAuditLogs.reduce((m, item) => Math.max(m, item.id), 0) + 1;
+    const entry = {
+      id: nextId,
+      classroom_id: classroomId,
+      instructor_id: instructorId ?? null,
+      ...actor,
+      action,
+      summary,
+      changes: {
+        before: before ? { ...before } : null,
+        after: after ? { ...after } : null,
+        diff,
+      },
+      timestamp: nowUtc,
+      created_at: nowUtc,
+    };
+    ctx.tutoringClassroomAuditLogs.unshift(entry);
+    return entry;
+  };
+
+  if (method === 'GET' && pathname === '/api/v1/tutoring/classrooms') {
+    const active = ctx.tutoringClassrooms
+      .filter((c) => c.is_active)
+      .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
+    return {
+      status: 200,
+      body: { success: true, data: active, pagination: null, error: null },
+    };
+  }
+
+  const auditByIdMatch = pathname.match(/^\/api\/v1\/tutoring\/classrooms\/(\d+)\/audit-logs$/);
+  if (
+    method === 'GET' &&
+    (pathname === '/api/v1/tutoring/classrooms/audit-logs' || auditByIdMatch)
+  ) {
+    const classroomIdParam = auditByIdMatch
+      ? Number(auditByIdMatch[1])
+      : urlObj.searchParams.get('classroom_id');
+    const instructorIdParam = urlObj.searchParams.get('instructor_id');
+    const actorUserIdParam = urlObj.searchParams.get('actor_user_id');
+    const actionParam = urlObj.searchParams.get('action');
+    const limitParam = urlObj.searchParams.get('limit');
+
+    const allowedActions = ['created', 'reactivated', 'updated', 'deleted', 'deactivated'];
+    if (actionParam && !allowedActions.includes(actionParam)) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'عملیات نامعتبر است' },
+        },
+      };
+    }
+
+    let logs = [...ctx.tutoringClassroomAuditLogs];
+    if (classroomIdParam) {
+      logs = logs.filter((l) => l.classroom_id === Number(classroomIdParam));
+    }
+    if (instructorIdParam) {
+      const instId = Number(instructorIdParam);
+      logs = logs.filter(
+        (l) => l.instructor_id === instId || l.actor_instructor_id === instId
+      );
+    }
+    if (actorUserIdParam) {
+      logs = logs.filter((l) => l.actor_user_id === Number(actorUserIdParam));
+    }
+    if (actionParam) {
+      logs = logs.filter((l) => l.action === actionParam);
+    }
+
+    const limit = limitParam ? Math.min(200, Math.max(1, Number(limitParam))) : 50;
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: logs.slice(0, limit),
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  if (method === 'POST' && pathname === '/api/v1/tutoring/classrooms') {
+    const rawName = String(
+      body?.name ?? body?.class_name ?? body?.classroom_name ?? body?.teacher_name ?? ''
+    ).trim();
+    if (!rawName) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'نام کلاس الزامی است' },
+        },
+      };
+    }
+
+    const teacherName = String(body?.teacher_name ?? '').trim();
+    const field = String(body?.field ?? '').trim() || null;
+    const sortOrder =
+      body?.sort_order !== undefined && body?.sort_order !== null && body?.sort_order !== ''
+        ? Number(body.sort_order)
+        : ctx.tutoringClassrooms.reduce((m, c) => Math.max(m, c.sort_order), 0) + 1;
+
+    let instructorId = Number(body?.instructor_id) > 0 ? Number(body.instructor_id) : 0;
+    if (!instructorId) {
+      const nextInstId =
+        ctx.instructors.reduce((m, i) => Math.max(m, i.id), 0) + 1;
+      ctx.instructors.push({
+        id: nextInstId,
+        name: teacherName,
+        title: field || 'مدرس',
+      });
+      instructorId = nextInstId;
+    }
+
+    const nextId =
+      ctx.tutoringClassrooms.reduce((m, c) => Math.max(m, c.id), 0) + 1;
+    const created = {
+      id: nextId,
+      classroom_id: nextId,
+      name: rawName,
+      class_name: rawName,
+      classroom_name: rawName,
+      instructor_id: instructorId,
+      teacher_name: teacherName,
+      field,
+      sort_order: sortOrder,
+      is_active: true,
+    };
+    ctx.tutoringClassrooms.push(created);
+    recordAudit(nextId, instructorId, 'created', null, created);
+    recordStaffActivity(ctx, authUser, {
+      module: 'tutoring',
+      action: 'create_classroom',
+      target_type: 'tutoring_classroom',
+      target_id: String(nextId),
+      summary: `ایجاد ستون کلاس رفع اشکال جدید «${created.name}»`,
+      http_method: 'POST',
+      endpoint: '/api/v1/tutoring/classrooms',
+      status_code: 201,
+      details: { request: { name: created.name, teacher_name: created.teacher_name, field: created.field } },
+    });
+
+    return {
+      status: 201,
+      body: { success: true, data: created, pagination: null, error: null },
+    };
+  }
+
+  const itemMatch = pathname.match(/^\/api\/v1\/tutoring\/classrooms\/(\d+)$/);
+  if (itemMatch && (method === 'PUT' || method === 'PATCH')) {
+    const classroomId = Number(itemMatch[1]);
+    const idx = ctx.tutoringClassrooms.findIndex((c) => c.id === classroomId);
+    if (idx === -1) {
+      return {
+        status: 404,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'NOT_FOUND', message: 'کلاس درس یافت نشد' },
+        },
+      };
+    }
+
+    if (!body || typeof body !== 'object' || Object.keys(body).length === 0) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'بدنه درخواست الزامی است و باید یک شیء معتبر باشد',
+          },
+        },
+      };
+    }
+
+    const before = { ...ctx.tutoringClassrooms[idx] };
+    const nextName =
+      body.name !== undefined ||
+      body.class_name !== undefined ||
+      body.classroom_name !== undefined
+        ? String(body.name ?? body.class_name ?? body.classroom_name ?? '').trim()
+        : before.name;
+
+    if (!nextName) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'نام کلاس الزامی است' },
+        },
+      };
+    }
+
+    const updated = {
+      ...before,
+      name: nextName,
+      class_name: nextName,
+      classroom_name: nextName,
+      teacher_name:
+        body.teacher_name !== undefined ? String(body.teacher_name).trim() : before.teacher_name,
+      field:
+        body.field !== undefined
+          ? String(body.field).trim() || null
+          : before.field,
+      sort_order:
+        body.sort_order !== undefined && body.sort_order !== null && body.sort_order !== ''
+          ? Number(body.sort_order)
+          : before.sort_order,
+    };
+
+    ctx.tutoringClassrooms[idx] = updated;
+    recordAudit(classroomId, updated.instructor_id, 'updated', before, updated);
+    recordStaffActivity(ctx, authUser, {
+      module: 'tutoring',
+      action: 'update_classroom',
+      target_type: 'tutoring_classroom',
+      target_id: String(classroomId),
+      summary: `ویرایش پیکربندی کلاس رفع اشکال #${classroomId} «${updated.name}»`,
+      http_method: method,
+      endpoint: pathname,
+      status_code: 200,
+      details: { request: body },
+    });
+
+    return {
+      status: 200,
+      body: { success: true, data: updated, pagination: null, error: null },
+    };
+  }
+
+  if (itemMatch && method === 'DELETE') {
+    const classroomId = Number(itemMatch[1]);
+    const idx = ctx.tutoringClassrooms.findIndex((c) => c.id === classroomId);
+    if (idx === -1) {
+      return {
+        status: 404,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'NOT_FOUND', message: 'کلاس درس یافت نشد' },
+        },
+      };
+    }
+
+    const before = { ...ctx.tutoringClassrooms[idx] };
+    ctx.tutoringClassrooms.splice(idx, 1);
+    recordAudit(classroomId, before.instructor_id, 'deleted', before, null);
+    recordStaffActivity(ctx, authUser, {
+      module: 'tutoring',
+      action: 'delete_classroom',
+      target_type: 'tutoring_classroom',
+      target_id: String(classroomId),
+      summary: `حذف ستون کلاس رفع اشکال #${classroomId} «${before.name}»`,
+      http_method: 'DELETE',
+      endpoint: pathname,
+      status_code: 200,
+    });
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: { id: classroomId, deleted: true },
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  return {
+    status: 404,
+    body: {
+      success: false,
+      data: null,
+      pagination: null,
+      error: { code: 'NOT_FOUND', message: 'مسیر یافت نشد' },
+    },
+  };
+}
+
+export function recordStaffActivity(ctx, authUser, entry = {}) {
+  if (!ctx.staffActivityLogs) {
+    ctx.staffActivityLogs = [];
+  }
+  const actorUserId = Number(entry.actor_user_id ?? authUser?.sub ?? 1);
+  const userRec = ctx.users?.find((u) => u.id === actorUserId) || null;
+  const actorRole = String(entry.actor_role ?? authUser?.role ?? userRec?.role ?? 'admin').toLowerCase();
+  if (!['admin', 'supporter', 'teacher'].includes(actorRole)) {
+    return null;
+  }
+
+  let actorLinkedId =
+    entry.actor_linked_id !== undefined
+      ? entry.actor_linked_id
+      : authUser?.instructor_id ?? userRec?.linked_id ?? null;
+  if (actorLinkedId !== null) {
+    actorLinkedId = Number(actorLinkedId) > 0 ? Number(actorLinkedId) : null;
+  }
+
+  let actorName = entry.actor_name || userRec?.full_name || userRec?.username || null;
+  if (!actorName && actorLinkedId) {
+    if (actorRole === 'admin') {
+      actorName = ctx.admins?.find((a) => a.id === actorLinkedId)?.name || 'مدیر ارشد';
+    } else if (actorRole === 'supporter') {
+      actorName = ctx.supporters?.find((s) => s.id === actorLinkedId)?.name || 'پشتیبان';
+    } else if (actorRole === 'teacher') {
+      actorName = ctx.instructors?.find((i) => i.id === actorLinkedId)?.name || 'استاد';
+    }
+  }
+  if (!actorName) {
+    actorName =
+      actorRole === 'admin'
+        ? 'مدیر ارشد'
+        : actorRole === 'supporter'
+          ? 'پشتیبان نمونه'
+          : 'استاد نمونه';
+  }
+
+  const roleLabels = {
+    admin: 'ادمین',
+    supporter: 'پشتیبان',
+    teacher: 'استاد / مدرس',
+  };
+
+  const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const nextId = ctx.staffActivityLogs.reduce((m, item) => Math.max(m, item.id), 0) + 1;
+  const record = {
+    id: nextId,
+    actor_user_id: actorUserId,
+    actor_role: actorRole,
+    actor_role_label: roleLabels[actorRole] || actorRole,
+    actor_linked_id: actorLinkedId,
+    actor_name: actorName,
+    module: String(entry.module || 'system').toLowerCase(),
+    action: String(entry.action || 'action').toLowerCase(),
+    target_type: entry.target_type ?? null,
+    target_id: entry.target_id !== undefined && entry.target_id !== null ? String(entry.target_id) : null,
+    summary: String(entry.summary || 'ثبت فعالیت در سیستم'),
+    http_method: String(entry.http_method || 'POST').toUpperCase(),
+    endpoint: String(entry.endpoint || '/api/v1'),
+    status_code: Number(entry.status_code || 200),
+    ip_address: entry.ip_address || '127.0.0.1',
+    details: entry.details ?? null,
+    timestamp: nowUtc,
+    created_at: nowUtc,
+  };
+
+  ctx.staffActivityLogs.unshift(record);
+  return record;
+}
+
+export function handleAdminActivityLogEndpoint(ctx, method, urlObj, body = {}, authUser = null) {
+  if (!authUser || !authUser.sub) {
+    return {
+      status: 401,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'AUTH_ERROR', message: 'توکن احراز هویت ارسال نشده است' },
+      },
+    };
+  }
+
+  const pathname = urlObj.pathname;
+
+  // Allow simulator to record a staff activity from any staff role (admin/supporter/teacher)
+  if (method === 'POST' && pathname === '/api/v1/admin/activity-logs/record') {
+    if (!['admin', 'supporter', 'teacher'].includes(String(authUser.role || '').toLowerCase())) {
+      return {
+        status: 403,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'FORBIDDEN', message: 'شما مجوز ثبت فعالیت کادر آموزشی را ندارید' },
+        },
+      };
+    }
+    const created = recordStaffActivity(ctx, authUser, body);
+    return {
+      status: 201,
+      body: {
+        success: true,
+        data: created,
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  if (authUser.role !== 'admin') {
+    return {
+      status: 403,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'FORBIDDEN', message: 'فقط مدیران سیستم مجاز به مشاهده لاگ فعالیت‌ها هستند' },
+      },
+    };
+  }
+
+  const allLogs = [...(ctx.staffActivityLogs || [])].sort((a, b) => b.id - a.id);
+
+  if (
+    method === 'GET' &&
+    (pathname === '/api/v1/admin/activity-logs/stats' ||
+      pathname === '/api/v1/admin/stats/activity-logs/stats')
+  ) {
+    const todayPrefix = new Date().toISOString().slice(0, 10);
+    const byRole = { admin: 0, supporter: 0, teacher: 0 };
+    const moduleMap = new Map();
+    const actorMap = new Map();
+    let todayLogs = 0;
+
+    for (const l of allLogs) {
+      if (String(l.created_at || '').startsWith(todayPrefix)) {
+        todayLogs++;
+      }
+      if (byRole[l.actor_role] !== undefined) {
+        byRole[l.actor_role]++;
+      } else {
+        byRole[l.actor_role] = 1;
+      }
+      moduleMap.set(l.module, (moduleMap.get(l.module) || 0) + 1);
+
+      const actorKey = `${l.actor_user_id}:${l.actor_role}`;
+      if (!actorMap.has(actorKey)) {
+        actorMap.set(actorKey, {
+          actor_user_id: l.actor_user_id,
+          actor_role: l.actor_role,
+          actor_linked_id: l.actor_linked_id,
+          actor_name: l.actor_name,
+          actions_count: 0,
+          last_activity_at: l.created_at,
+        });
+      }
+      const actorStat = actorMap.get(actorKey);
+      actorStat.actions_count++;
+      if (l.created_at > actorStat.last_activity_at) {
+        actorStat.last_activity_at = l.created_at;
+      }
+    }
+
+    const byModule = [...moduleMap.entries()]
+      .map(([module, count]) => ({ module, count }))
+      .sort((a, b) => b.count - a.count);
+
+    const activeActors = [...actorMap.values()].sort(
+      (a, b) => b.actions_count - a.actions_count || b.last_activity_at.localeCompare(a.last_activity_at)
+    );
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: {
+          total_logs: allLogs.length,
+          today_logs: todayLogs,
+          by_role: byRole,
+          by_module: byModule,
+          active_actors: activeActors,
+        },
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  if (
+    method === 'GET' &&
+    (pathname === '/api/v1/admin/activity-logs' || pathname === '/api/v1/admin/stats/activity-logs')
+  ) {
+    const roleFilter = (urlObj.searchParams.get('role') || '').trim().toLowerCase();
+    const actorUserIdFilter = urlObj.searchParams.get('actor_user_id');
+    const actorLinkedIdFilter = urlObj.searchParams.get('actor_linked_id');
+    const moduleFilter = (urlObj.searchParams.get('module') || '').trim().toLowerCase();
+    const actionFilter = (urlObj.searchParams.get('action') || '').trim().toLowerCase();
+    const qFilter = (urlObj.searchParams.get('q') || '').trim().toLowerCase();
+    const fromFilter = (urlObj.searchParams.get('from') || urlObj.searchParams.get('date_from') || '').trim();
+    const toFilter = (urlObj.searchParams.get('to') || urlObj.searchParams.get('date_to') || '').trim();
+
+    let filtered = allLogs.filter((l) => {
+      if (roleFilter && l.actor_role !== roleFilter) return false;
+      if (actorUserIdFilter && l.actor_user_id !== Number(actorUserIdFilter)) return false;
+      if (actorLinkedIdFilter && l.actor_linked_id !== Number(actorLinkedIdFilter)) return false;
+      if (moduleFilter && l.module !== moduleFilter) return false;
+      if (actionFilter && l.action !== actionFilter) return false;
+      if (fromFilter) {
+        const minStr = /^\d{4}-\d{2}-\d{2}$/.test(fromFilter) ? `${fromFilter} 00:00:00` : fromFilter;
+        if (l.created_at < minStr) return false;
+      }
+      if (toFilter) {
+        const maxStr = /^\d{4}-\d{2}-\d{2}$/.test(toFilter) ? `${toFilter} 23:59:59` : toFilter;
+        if (l.created_at > maxStr) return false;
+      }
+      if (qFilter) {
+        const hay = `${l.summary || ''} ${l.actor_name || ''} ${l.endpoint || ''} ${l.target_id || ''}`.toLowerCase();
+        if (!hay.includes(qFilter)) return false;
+      }
+      return true;
+    });
+
+    const page = Math.max(1, parseInt(urlObj.searchParams.get('page') || '1', 10) || 1);
+    const perPage = Math.min(
+      200,
+      Math.max(
+        1,
+        parseInt(urlObj.searchParams.get('per_page') || urlObj.searchParams.get('limit') || '50', 10) || 50
+      )
+    );
+    const total = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(total / perPage));
+    const items = filtered.slice((page - 1) * perPage, page * perPage);
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: items,
+        pagination: {
+          page,
+          per_page: perPage,
+          total,
+          total_pages: totalPages,
+        },
+        error: null,
+      },
+    };
+  }
+
+  return {
+    status: 404,
+    body: {
+      success: false,
+      data: null,
+      pagination: null,
+      error: { code: 'NOT_FOUND', message: 'مسیر یافت نشد' },
+    },
+  };
+}
+
 const REQUIRED_PHP_FILES = [
   'openapi.yaml',
   'public/openapi.yaml',
   'README.md',
   'database/schema.postgres.sql',
+  'database/migrations/008_tutoring_classroom_audit_log.sql',
+  'database/migrations/009_staff_activity_logs.sql',
   'config/database.php',
   'app/Core/Database.php',
   'app/Core/Migrator.php',
@@ -2630,6 +3377,11 @@ const REQUIRED_PHP_FILES = [
   'app/Core/PublicCacheMiddleware.php',
   'app/Core/RateLimiter.php',
   'app/Core/RateLimitMiddleware.php',
+  'app/Modules/ActivityLogs/ActivityLog.php',
+  'app/Modules/ActivityLogs/ActivityLogController.php',
+  'app/Modules/Tutoring/Tutoring.php',
+  'app/Modules/Tutoring/TutoringService.php',
+  'app/Modules/Tutoring/TutoringController.php',
   'app/Modules/Subscription/Subscription.php',
   'app/Modules/Subscription/SubscriptionService.php',
   'app/Modules/Subscription/SubscriptionController.php',
@@ -3095,6 +3847,129 @@ function renderDashboardHtml() {
           <pre id="response-viewer">Click any public endpoint above to inspect the live response and Redis headers.</pre>
         </div>
       </section>
+
+      <section class="panel" id="classroom-audit-panel">
+        <div class="panel-header">
+          <div class="panel-title">Tutoring Classroom Configuration & Audit Log (<code>/api/v1/tutoring/classrooms/audit-logs</code>)</div>
+          <span id="audit-log-count" style="font-size: 0.75rem; color: var(--emerald);">1 audit entry</span>
+        </div>
+        <div class="panel-body">
+          <div class="controls-row" style="gap: 0.6rem;">
+            <label for="select-audit-actor">
+              Acting Identity:
+              <select id="select-audit-actor" aria-label="Acting Identity" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.35rem 0.55rem; font-size: 0.78rem;">
+                <option value="admin:1:0">Admin (actor_user_id: 1)</option>
+                <option value="teacher:4:30">Instructor #30 (actor_user_id: 4, instructor_id: 30)</option>
+              </select>
+            </label>
+            <label for="input-cls-name">
+              Class Name:
+              <input id="input-cls-name" aria-label="Class Name" type="text" value="کلاس زیست پیشرفته" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.32rem 0.55rem; font-size: 0.78rem; width: 9.5rem;" />
+            </label>
+            <label for="input-cls-teacher">
+              Teacher:
+              <input id="input-cls-teacher" aria-label="Teacher Name" type="text" value="دکتر محسنی" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.32rem 0.55rem; font-size: 0.78rem; width: 8.5rem;" />
+            </label>
+            <label for="input-cls-field">
+              Field:
+              <input id="input-cls-field" aria-label="Field" type="text" value="تجربی" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.32rem 0.55rem; font-size: 0.78rem; width: 5.5rem;" />
+            </label>
+            <button id="btn-create-classroom" class="primary">Add Classroom</button>
+          </div>
+
+          <div id="classroom-list-container" style="display: flex; flex-direction: column; gap: 0.45rem;"></div>
+
+          <div style="overflow-x: auto;">
+            <table class="redis-table" aria-label="Classroom Configuration Audit Logs">
+              <thead>
+                <tr>
+                  <th>Timestamp (UTC)</th>
+                  <th>Admin / Instructor ID</th>
+                  <th>Action</th>
+                  <th>Classroom</th>
+                  <th>Specific Changes Made</th>
+                </tr>
+              </thead>
+              <tbody id="audit-logs-tbody">
+                <tr><td colspan="5" style="color: var(--muted);">Loading audit logs...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="staff-activity-monitor">
+        <div class="panel-header">
+          <div class="panel-title">Admin Panel — Staff Activity Monitor (<code>/api/v1/admin/activity-logs</code>)</div>
+          <span id="staff-activity-count" style="font-size: 0.75rem; color: var(--emerald);">3 activities</span>
+        </div>
+        <div class="panel-body">
+          <div class="metrics-bar" id="staff-role-metrics">
+            <div class="metric-box">
+              <div class="metric-label">Total Staff Actions</div>
+              <div class="metric-val" id="stat-total-actions">3</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-label">Admins (ادمین‌ها)</div>
+              <div class="metric-val val-hit" id="stat-admin-actions">1</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-label">Supporters (پشتیبان‌ها)</div>
+              <div class="metric-val val-rate" id="stat-supporter-actions">1</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-label">Teachers (اساتید)</div>
+              <div class="metric-val" style="color: #a78bfa;" id="stat-teacher-actions">1</div>
+            </div>
+          </div>
+
+          <div class="controls-row" style="gap: 0.6rem; flex-wrap: wrap;">
+            <label for="filter-activity-role">
+              Role Filter:
+              <select id="filter-activity-role" aria-label="Filter Staff Role" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.35rem 0.55rem; font-size: 0.78rem;">
+                <option value="">All Roles (همه نقش‌ها)</option>
+                <option value="admin">Admin (ادمین)</option>
+                <option value="supporter">Supporter (پشتیبان)</option>
+                <option value="teacher">Teacher (استاد / مدرس)</option>
+              </select>
+            </label>
+            <label for="filter-activity-module">
+              Module:
+              <select id="filter-activity-module" aria-label="Filter Activity Module" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.35rem 0.55rem; font-size: 0.78rem;">
+                <option value="">All Modules (همه بخش‌ها)</option>
+                <option value="appointments">appointments (نوبت‌دهی)</option>
+                <option value="tutoring">tutoring (رفع اشکال)</option>
+                <option value="exams">exams (آزمون و کارنامه)</option>
+                <option value="attendance">attendance (حضور و غیاب)</option>
+                <option value="students">students (دانش‌آموزان)</option>
+              </select>
+            </label>
+            <label for="filter-activity-q">
+              Search:
+              <input id="filter-activity-q" aria-label="Search Staff Activities" type="text" placeholder="جستجو در نام یا شرح فعالیت..." style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.32rem 0.55rem; font-size: 0.78rem; width: 11rem;" />
+            </label>
+            <button id="btn-sim-supporter" aria-label="Simulate Supporter Action">Simulate Supporter Action</button>
+            <button id="btn-sim-teacher" aria-label="Simulate Teacher Action">Simulate Teacher Action</button>
+          </div>
+
+          <div style="overflow-x: auto;">
+            <table class="redis-table" aria-label="Staff Activity Logs">
+              <thead>
+                <tr>
+                  <th>Time (UTC)</th>
+                  <th>Staff Member & Role</th>
+                  <th>Module</th>
+                  <th>Method & Endpoint</th>
+                  <th>Activity Description (هر کس چه کاری انجام داد)</th>
+                </tr>
+              </thead>
+              <tbody id="staff-activity-tbody">
+                <tr><td colspan="5" style="color: var(--muted);">Loading staff activity logs...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
     </div>
 
     <div style="display: flex; flex-direction: column; gap: 1.25rem;">
@@ -3138,6 +4013,223 @@ function renderDashboardHtml() {
     let currentEndpoint = '/api/v1/public/courses';
     let phpFiles = {};
     let activePhpFile = 'public/openapi.yaml';
+
+    function getActorHeader() {
+      const val = document.getElementById('select-audit-actor').value || 'admin:1:0';
+      const [role, sub, instId] = val.split(':');
+      return JSON.stringify({
+        role,
+        sub: Number(sub),
+        instructor_id: Number(instId) > 0 ? Number(instId) : null,
+      });
+    }
+
+    async function refreshClassroomsAndAuditLogs() {
+      const headers = { 'X-Demo-Actor': getActorHeader() };
+      const [clsRes, logRes] = await Promise.all([
+        fetch('/api/v1/tutoring/classrooms', { headers }),
+        fetch('/api/v1/tutoring/classrooms/audit-logs', { headers }),
+      ]);
+      const clsJson = await clsRes.json();
+      const logJson = await logRes.json();
+
+      const classrooms = clsJson.data || [];
+      const logs = logJson.data || [];
+
+      document.getElementById('audit-log-count').textContent =
+        logs.length + (logs.length === 1 ? ' audit entry' : ' audit entries');
+
+      const clsContainer = document.getElementById('classroom-list-container');
+      if (classrooms.length === 0) {
+        clsContainer.innerHTML = '<div style="font-size: 0.78rem; color: var(--muted);">No active classrooms. Add one above.</div>';
+      } else {
+        clsContainer.innerHTML = classrooms.map(c => \`
+          <div class="endpoint-row" data-classroom-id="\${c.id}">
+            <div class="endpoint-meta">
+              <span class="method-tag">#\${c.id}</span>
+              <div>
+                <div class="endpoint-path">\${c.name} <span style="color: var(--muted);">(\${c.field || '—'})</span></div>
+                <div class="endpoint-desc">Teacher: \${c.teacher_name || '—'} · Instructor ID: \${c.instructor_id}</div>
+              </div>
+            </div>
+            <div style="display: flex; gap: 0.4rem;">
+              <button data-edit-cls="\${c.id}" aria-label="Rename Classroom #\${c.id}">Update Config</button>
+              <button class="danger" data-delete-cls="\${c.id}" aria-label="Delete Classroom #\${c.id}">Delete</button>
+            </div>
+          </div>
+        \`).join('');
+      }
+
+      clsContainer.querySelectorAll('[data-edit-cls]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.getAttribute('data-edit-cls');
+          const nameInput = document.getElementById('input-cls-name').value.trim();
+          const teacherInput = document.getElementById('input-cls-teacher').value.trim();
+          const fieldInput = document.getElementById('input-cls-field').value.trim();
+          await fetch('/api/v1/tutoring/classrooms/' + id, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Demo-Actor': getActorHeader(),
+            },
+            body: JSON.stringify({
+              name: nameInput || 'کلاس ویرایش‌شده',
+              teacher_name: teacherInput,
+              field: fieldInput,
+            }),
+          });
+          await refreshClassroomsAndAuditLogs();
+          await refreshStaffActivityLogs();
+        });
+      });
+
+      clsContainer.querySelectorAll('[data-delete-cls]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.getAttribute('data-delete-cls');
+          await fetch('/api/v1/tutoring/classrooms/' + id, {
+            method: 'DELETE',
+            headers: { 'X-Demo-Actor': getActorHeader() },
+          });
+          await refreshClassroomsAndAuditLogs();
+          await refreshStaffActivityLogs();
+        });
+      });
+
+      const auditTbody = document.getElementById('audit-logs-tbody');
+      if (logs.length === 0) {
+        auditTbody.innerHTML = '<tr><td colspan="5" style="color: var(--muted);">No audit entries recorded.</td></tr>';
+      } else {
+        auditTbody.innerHTML = logs.map(l => {
+          const diffEntries = Object.entries(l.changes?.diff || {})
+            .map(([k, v]) => \`\${k}: \${JSON.stringify(v.from)} → \${JSON.stringify(v.to)}\`)
+            .join(' | ');
+          const actorBadge = l.actor_instructor_id
+            ? \`Instructor #\${l.actor_instructor_id} (User #\${l.actor_user_id})\`
+            : \`Admin #\${l.actor_user_id} (\${l.actor_role})\`;
+          return \`
+            <tr>
+              <td style="white-space: nowrap;">\${l.timestamp}</td>
+              <td style="color: var(--accent);">\${actorBadge}</td>
+              <td><span class="method-tag">\${l.action.toUpperCase()}</span></td>
+              <td>#\${l.classroom_id}</td>
+              <td>
+                <div style="font-weight: 500; color: var(--text);">\${l.summary}</div>
+                <div style="color: var(--muted); font-size: 0.7rem;">\${diffEntries}</div>
+              </td>
+            </tr>
+          \`;
+        }).join('');
+      }
+    }
+
+    document.getElementById('btn-create-classroom').addEventListener('click', async () => {
+      const name = document.getElementById('input-cls-name').value.trim();
+      const teacher_name = document.getElementById('input-cls-teacher').value.trim();
+      const field = document.getElementById('input-cls-field').value.trim();
+      await fetch('/api/v1/tutoring/classrooms', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Demo-Actor': getActorHeader(),
+        },
+        body: JSON.stringify({ name, class_name: name, teacher_name, field }),
+      });
+      await refreshClassroomsAndAuditLogs();
+      await refreshStaffActivityLogs();
+    });
+
+    async function refreshStaffActivityLogs() {
+      const role = document.getElementById('filter-activity-role').value;
+      const mod = document.getElementById('filter-activity-module').value;
+      const q = document.getElementById('filter-activity-q').value.trim();
+
+      const params = new URLSearchParams();
+      if (role) params.set('role', role);
+      if (mod) params.set('module', mod);
+      if (q) params.set('q', q);
+
+      const adminHeader = { 'X-Demo-Actor': JSON.stringify({ role: 'admin', sub: 1 }) };
+      const [listRes, statsRes] = await Promise.all([
+        fetch('/api/v1/admin/activity-logs?' + params.toString(), { headers: adminHeader }),
+        fetch('/api/v1/admin/activity-logs/stats', { headers: adminHeader }),
+      ]);
+      const listJson = await listRes.json();
+      const statsJson = await statsRes.json();
+
+      const items = listJson.data || [];
+      const stats = statsJson.data || { total_logs: 0, by_role: { admin: 0, supporter: 0, teacher: 0 } };
+
+      document.getElementById('staff-activity-count').textContent =
+        items.length + (items.length === 1 ? ' activity' : ' activities');
+      document.getElementById('stat-total-actions').textContent = String(stats.total_logs ?? items.length);
+      document.getElementById('stat-admin-actions').textContent = String(stats.by_role?.admin ?? 0);
+      document.getElementById('stat-supporter-actions').textContent = String(stats.by_role?.supporter ?? 0);
+      document.getElementById('stat-teacher-actions').textContent = String(stats.by_role?.teacher ?? 0);
+
+      const tbody = document.getElementById('staff-activity-tbody');
+      if (items.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="color: var(--muted);">هیچ فعالیتی مطابق فیلتر انتخاب‌شده یافت نشد.</td></tr>';
+      } else {
+        tbody.innerHTML = items.map(item => \`
+          <tr>
+            <td style="white-space: nowrap;">\${item.timestamp}</td>
+            <td>
+              <div style="font-weight: 600; color: var(--text);">\${item.actor_name || ('User #' + item.actor_user_id)}</div>
+              <div style="font-size: 0.7rem; color: var(--accent);">\${item.actor_role_label} (\${item.actor_role}) · ID #\${item.actor_user_id}</div>
+            </td>
+            <td><span class="method-tag">\${item.module}</span></td>
+            <td style="font-size: 0.72rem; color: var(--muted);">\${item.http_method} \${item.endpoint}</td>
+            <td style="font-weight: 500; color: var(--text);">\${item.summary}</td>
+          </tr>
+        \`).join('');
+      }
+    }
+
+    document.getElementById('filter-activity-role').addEventListener('change', refreshStaffActivityLogs);
+    document.getElementById('filter-activity-module').addEventListener('change', refreshStaffActivityLogs);
+    document.getElementById('filter-activity-q').addEventListener('input', refreshStaffActivityLogs);
+
+    document.getElementById('btn-sim-supporter').addEventListener('click', async () => {
+      await fetch('/api/v1/admin/activity-logs/record', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Demo-Actor': JSON.stringify({ role: 'supporter', sub: 2, linked_id: 10 }),
+        },
+        body: JSON.stringify({
+          module: 'appointments',
+          action: 'update',
+          target_type: 'appointment',
+          target_id: '29',
+          summary: 'ویرایش نوبت مشاوره #29 برای دانش‌آموز نمونه',
+          http_method: 'PUT',
+          endpoint: '/api/v1/appointments/29',
+          status_code: 200,
+        }),
+      });
+      await refreshStaffActivityLogs();
+    });
+
+    document.getElementById('btn-sim-teacher').addEventListener('click', async () => {
+      await fetch('/api/v1/admin/activity-logs/record', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Demo-Actor': JSON.stringify({ role: 'teacher', sub: 4, instructor_id: 30 }),
+        },
+        body: JSON.stringify({
+          module: 'tutoring',
+          action: 'start_session',
+          target_type: 'tutoring_session',
+          target_id: '14',
+          summary: 'ثبت ورود دانش‌آموز #20 به جلسه رفع اشکال',
+          http_method: 'POST',
+          endpoint: '/api/v1/tutoring/sessions',
+          status_code: 201,
+        }),
+      });
+      await refreshStaffActivityLogs();
+    });
 
     async function refreshState() {
       const res = await fetch('/api/v1/dev/state');
@@ -3254,8 +4346,10 @@ function renderDashboardHtml() {
       }
     });
 
-    // Run initial request on load so state is populated immediately
+    // Run initial requests on load so state is populated immediately
     callPublicEndpoint('/api/v1/public/courses');
+    refreshClassroomsAndAuditLogs();
+    refreshStaffActivityLogs();
   </script>
 </body>
 </html>`;
@@ -3346,6 +4440,69 @@ export function startServer(port = parseInt(process.env.PORT || '3000', 10)) {
             maxAttempts: ctx.rateLimiter.maxAttempts,
           })
         );
+      });
+      return;
+    }
+
+    if (pathname.startsWith('/api/v1/tutoring/classrooms')) {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        let parsedBody = {};
+        if (raw) {
+          try {
+            parsedBody = JSON.parse(raw);
+          } catch {
+            parsedBody = {};
+          }
+        }
+        let actor = { sub: 1, role: 'admin', instructor_id: null };
+        const rawActor = req.headers['x-demo-actor'];
+        if (typeof rawActor === 'string' && rawActor) {
+          try {
+            actor = JSON.parse(rawActor);
+          } catch {
+            // keep default admin actor
+          }
+        }
+        const result = handleTutoringClassroomEndpoint(ctx, method, urlObj, parsedBody, actor);
+        res.writeHead(result.status, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(result.body));
+      });
+      return;
+    }
+
+    if (
+      pathname.startsWith('/api/v1/admin/activity-logs') ||
+      pathname.startsWith('/api/v1/admin/stats/activity-logs')
+    ) {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        let parsedBody = {};
+        if (raw) {
+          try {
+            parsedBody = JSON.parse(raw);
+          } catch {
+            parsedBody = {};
+          }
+        }
+        let actor = { sub: 1, role: 'admin', instructor_id: null };
+        const rawActor = req.headers['x-demo-actor'];
+        if (typeof rawActor === 'string' && rawActor) {
+          try {
+            actor = JSON.parse(rawActor);
+          } catch {
+            // keep default admin actor
+          }
+        }
+        const result = handleAdminActivityLogEndpoint(ctx, method, urlObj, parsedBody, actor);
+        res.writeHead(result.status, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(result.body));
       });
       return;
     }

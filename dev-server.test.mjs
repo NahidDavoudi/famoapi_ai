@@ -9,6 +9,9 @@ import {
   handleExamEndpoint,
   handlePublicExamResultEndpoint,
   handleAppointmentSmsEndpoint,
+  handleTutoringClassroomEndpoint,
+  handleAdminActivityLogEndpoint,
+  recordStaffActivity,
 } from './dev-server.mjs';
 
 test('Health endpoint (/health) returns current database and Redis connection status', () => {
@@ -1218,7 +1221,13 @@ test('CORS middleware, AuthCookie, and Slim bootstrap inject CORS_ORIGINS for al
   assert.match(envExample, /CORS_ORIGINS=https:\/\/famoacademy\.ir.*https:\/\/auth\.famoacademy\.ir/);
 });
 
-test('Tutoring classrooms endpoints (POST/DELETE /api/v1/tutoring/classrooms) and admin session control are implemented and documented', () => {
+test('Tutoring classrooms endpoints (POST/PUT/DELETE /api/v1/tutoring/classrooms) and classroom configuration audit logging are implemented, documented, and verified', () => {
+  const mig008 = fs.readFileSync(
+    'database/migrations/008_tutoring_classroom_audit_log.sql',
+    'utf8'
+  );
+  const upgradeSql = fs.readFileSync('database/mysql_upgrade_from_dump.sql', 'utf8');
+  const schemaPostgres = fs.readFileSync('database/schema.postgres.sql', 'utf8');
   const tutoringPhp = fs.readFileSync('app/Modules/Tutoring/Tutoring.php', 'utf8');
   const tutoringSvcPhp = fs.readFileSync('app/Modules/Tutoring/TutoringService.php', 'utf8');
   const tutoringCtrlPhp = fs.readFileSync('app/Modules/Tutoring/TutoringController.php', 'utf8');
@@ -1226,21 +1235,321 @@ test('Tutoring classrooms endpoints (POST/DELETE /api/v1/tutoring/classrooms) an
   const rootSpec = fs.readFileSync('openapi.yaml', 'utf8');
   const publicSpec = fs.readFileSync('public/openapi.yaml', 'utf8');
 
+  // 1. Verify Migration 008, Upgrade SQL, and Postgres Schema
+  assert.match(mig008, /CREATE TABLE IF NOT EXISTS tutoring_classroom_audit_logs/);
+  assert.match(mig008, /actor_user_id/);
+  assert.match(mig008, /actor_instructor_id/);
+  assert.match(mig008, /changes_json\s+JSON/);
+  assert.match(upgradeSql, /CREATE TABLE IF NOT EXISTS `tutoring_classroom_audit_logs`/);
+  assert.match(upgradeSql, /008_tutoring_classroom_audit_log\.sql/);
+  assert.match(schemaPostgres, /008_tutoring_classroom_audit_log\.sql/);
+
+  // 2. Verify PHP Model, Service, Controller, Routes, and OpenAPI
   assert.equal(rootSpec, publicSpec);
-  assert.match(tutoringPhp, /public static function createClassroom\(array \$data\): array/);
-  assert.match(tutoringPhp, /public static function deleteClassroom\(int \$classroomId\): void/);
+  assert.match(tutoringPhp, /public static function createClassroom\(array \$data, \?object \$actor = null\): array/);
+  assert.match(tutoringPhp, /public static function updateClassroom\(int \$classroomId, array \$data, \?object \$actor = null\): array/);
+  assert.match(tutoringPhp, /public static function deleteClassroom\(int \$classroomId, \?object \$actor = null\): void/);
+  assert.match(tutoringPhp, /public static function listClassroomAuditLogs\(array \$filters = \[\]\): array/);
+  assert.match(tutoringPhp, /private static function recordClassroomAuditLog\(/);
   assert.match(tutoringPhp, /LEFT JOIN instructors i ON i\.id = c\.instructor_id/);
-  assert.match(tutoringSvcPhp, /public function createClassroom\(array \$data\): array/);
-  assert.match(tutoringSvcPhp, /public function deleteClassroom\(int \$classroomId\): void/);
+  assert.match(tutoringSvcPhp, /public function createClassroom\(array \$data, \?object \$actor = null\): array/);
+  assert.match(tutoringSvcPhp, /public function updateClassroom\(int \$classroomId, array \$data, \?object \$actor = null\): array/);
+  assert.match(tutoringSvcPhp, /public function deleteClassroom\(int \$classroomId, \?object \$actor = null\): void/);
+  assert.match(tutoringSvcPhp, /public function listClassroomAuditLogs\(array \$filters = \[\]\): array/);
   assert.match(tutoringCtrlPhp, /public function createClassroom\(Request \$request, Response \$response\): Response/);
+  assert.match(tutoringCtrlPhp, /public function updateClassroom\(Request \$request, Response \$response, array \$args\): Response/);
   assert.match(tutoringCtrlPhp, /public function deleteClassroom\(Request \$request, Response \$response, array \$args\): Response/);
+  assert.match(tutoringCtrlPhp, /public function listClassroomAuditLogs\(Request \$request, Response \$response, array \$args = \[\]\): Response/);
   assert.match(routesPhp, /\$app->post\('\/api\/v1\/tutoring\/classrooms',\s*\[\$tutoringController,\s*'createClassroom'\]\)->add\(\$requireStaff\)->add\(\$authMiddleware\)/);
+  assert.match(routesPhp, /\$app->get\('\/api\/v1\/tutoring\/classrooms\/audit-logs',\s*\[\$tutoringController,\s*'listClassroomAuditLogs'\]\)->add\(\$requireStaff\)->add\(\$authMiddleware\)/);
+  assert.match(routesPhp, /\$app->get\('\/api\/v1\/tutoring\/classrooms\/\{id:\[0-9\]\+\}\/audit-logs',\s*\[\$tutoringController,\s*'listClassroomAuditLogs'\]\)->add\(\$requireStaff\)->add\(\$authMiddleware\)/);
   assert.match(routesPhp, /\$app->delete\('\/api\/v1\/tutoring\/classrooms\/\{id:\[0-9\]\+\}',\s*\[\$tutoringController,\s*'deleteClassroom'\]\)->add\(\$requireStaff\)->add\(\$authMiddleware\)/);
   assert.match(rootSpec, /\/api\/v1\/tutoring\/classrooms:/);
   assert.match(rootSpec, /\/api\/v1\/tutoring\/classrooms\/\{id\}:/);
+  assert.match(rootSpec, /\/api\/v1\/tutoring\/classrooms\/audit-logs:/);
+  assert.match(rootSpec, /\/api\/v1\/tutoring\/classrooms\/\{id\}\/audit-logs:/);
   assert.match(rootSpec, /operationId:\s*tutoringCreateClassroom/);
   assert.match(rootSpec, /operationId:\s*tutoringDeleteClassroom/);
+  assert.match(rootSpec, /operationId:\s*tutoringListClassroomAuditLogs/);
+  assert.match(rootSpec, /TutoringClassroomAuditLogItem:/);
+
+  // 3. Behavioral verification via simulator
+  const ctx = createAppContext();
+  const classroomsUrl = new URL('http://localhost:3000/api/v1/tutoring/classrooms');
+  const auditLogsUrl = new URL('http://localhost:3000/api/v1/tutoring/classrooms/audit-logs');
+
+  // 3a. Student gets 403 FORBIDDEN
+  const studentForbidden = handleTutoringClassroomEndpoint(
+    ctx,
+    'POST',
+    classroomsUrl,
+    { name: 'کلاس غیرمجاز' },
+    { sub: 3, role: 'student' }
+  );
+  assert.equal(studentForbidden.status, 403);
+
+  // 3b. Admin creates classroom -> 201 and audit log records timestamp, admin ID, and created configuration
+  const createRes = handleTutoringClassroomEndpoint(
+    ctx,
+    'POST',
+    classroomsUrl,
+    {
+      name: 'کلاس شیمی کنکور',
+      teacher_name: 'دکتر حبیبی',
+      field: 'تجربی',
+      sort_order: 2,
+    },
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(createRes.status, 201);
+  const newId = createRes.body.data.id;
+  assert.equal(createRes.body.data.name, 'کلاس شیمی کنکور');
+
+  // 3c. Instructor updates classroom -> 200 and audit log records instructor ID and field-level diff
+  const itemUrl = new URL(`http://localhost:3000/api/v1/tutoring/classrooms/${newId}`);
+  const updateRes = handleTutoringClassroomEndpoint(
+    ctx,
+    'PUT',
+    itemUrl,
+    {
+      name: 'کلاس شیمی جامع',
+      teacher_name: 'استاد نصرالله‌زاده',
+      field: 'ریاضی',
+    },
+    { sub: 4, role: 'teacher', instructor_id: 30 }
+  );
+  assert.equal(updateRes.status, 200);
+  assert.equal(updateRes.body.data.name, 'کلاس شیمی جامع');
+
+  // 3d. Admin deletes classroom -> 200 and audit log records deletion
+  const deleteRes = handleTutoringClassroomEndpoint(
+    ctx,
+    'DELETE',
+    itemUrl,
+    {},
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(deleteRes.status, 200);
+
+  // 3e. Query audit logs for this classroom -> returns deleted, updated, created in reverse chronological order
+  const itemAuditUrl = new URL(
+    `http://localhost:3000/api/v1/tutoring/classrooms/${newId}/audit-logs`
+  );
+  const logsRes = handleTutoringClassroomEndpoint(
+    ctx,
+    'GET',
+    itemAuditUrl,
+    {},
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(logsRes.status, 200);
+  assert.equal(logsRes.body.data.length, 3);
+
+  const [delLog, updLog, crtLog] = logsRes.body.data;
+  assert.equal(delLog.action, 'deleted');
+  assert.equal(delLog.actor_user_id, 1);
+  assert.equal(delLog.admin_or_instructor_id, 1);
+  assert.equal(delLog.changes.before.name, 'کلاس شیمی جامع');
+  assert.equal(delLog.changes.after, null);
+
+  assert.equal(updLog.action, 'updated');
+  assert.equal(updLog.actor_user_id, 4);
+  assert.equal(updLog.actor_instructor_id, 30);
+  assert.equal(updLog.admin_or_instructor_id, 30);
+  assert.deepEqual(updLog.changes.diff.name, {
+    from: 'کلاس شیمی کنکور',
+    to: 'کلاس شیمی جامع',
+  });
+  assert.deepEqual(updLog.changes.diff.teacher_name, {
+    from: 'دکتر حبیبی',
+    to: 'استاد نصرالله‌زاده',
+  });
+  assert.deepEqual(updLog.changes.diff.field, {
+    from: 'تجربی',
+    to: 'ریاضی',
+  });
+
+  assert.equal(crtLog.action, 'created');
+  assert.equal(crtLog.actor_user_id, 1);
+  assert.equal(crtLog.changes.before, null);
+  assert.equal(crtLog.changes.after.name, 'کلاس شیمی کنکور');
+  assert.match(crtLog.timestamp, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+
+  // 3f. Filter audit logs by action=updated
+  const filteredUrl = new URL(
+    'http://localhost:3000/api/v1/tutoring/classrooms/audit-logs?action=updated'
+  );
+  const filteredRes = handleTutoringClassroomEndpoint(
+    ctx,
+    'GET',
+    filteredUrl,
+    {},
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(filteredRes.status, 200);
+  assert.equal(filteredRes.body.data.length, 1);
+  assert.equal(filteredRes.body.data[0].action, 'updated');
 });
+
+test('Admin Staff Activity Monitoring (/api/v1/admin/activity-logs & /stats) — tracks all actions by admins, supporters, and teachers', () => {
+  const migrationSql = fs.readFileSync(
+    new URL('./database/migrations/009_staff_activity_logs.sql', import.meta.url),
+    'utf8'
+  );
+  const pgSchemaSql = fs.readFileSync(
+    new URL('./database/schema.postgres.sql', import.meta.url),
+    'utf8'
+  );
+  const mysqlUpgradeSql = fs.readFileSync(
+    new URL('./database/mysql_upgrade_from_dump.sql', import.meta.url),
+    'utf8'
+  );
+  const activityLogPhp = fs.readFileSync(
+    new URL('./app/Modules/ActivityLogs/ActivityLog.php', import.meta.url),
+    'utf8'
+  );
+  const activityCtrlPhp = fs.readFileSync(
+    new URL('./app/Modules/ActivityLogs/ActivityLogController.php', import.meta.url),
+    'utf8'
+  );
+  const authMiddlewarePhp = fs.readFileSync(
+    new URL('./app/Modules/Auth/AuthMiddleware.php', import.meta.url),
+    'utf8'
+  );
+  const authCtrlPhp = fs.readFileSync(
+    new URL('./app/Modules/Auth/AuthController.php', import.meta.url),
+    'utf8'
+  );
+  const routesPhp = fs.readFileSync(new URL('./routes/api.php', import.meta.url), 'utf8');
+  const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
+  const pubSpec = fs.readFileSync(new URL('./public/openapi.yaml', import.meta.url), 'utf8');
+
+  // 1. Verify schema, PHP implementation, AuthMiddleware hook, routes, and OpenAPI spec
+  assert.match(migrationSql, /CREATE TABLE IF NOT EXISTS `staff_activity_logs`/);
+  assert.match(pgSchemaSql, /009_staff_activity_logs\.sql/);
+  assert.match(mysqlUpgradeSql, /009_staff_activity_logs\.sql/);
+
+  assert.match(activityLogPhp, /public static function recordFromRequest\(/);
+  assert.match(activityLogPhp, /public static function describeEndpoint\(/);
+  assert.match(activityLogPhp, /public static function list\(array \$filters = \[\]\): array/);
+  assert.match(activityLogPhp, /public static function stats\(array \$filters = \[\]\): array/);
+  assert.match(activityCtrlPhp, /public function list\(/);
+  assert.match(activityCtrlPhp, /public function stats\(/);
+
+  assert.match(authMiddlewarePhp, /ActivityLog::recordFromRequest\(\$request,\s*\$response,\s*\$decoded\)/);
+  assert.match(authCtrlPhp, /ActivityLog::record\(/);
+
+  assert.match(routesPhp, /\/api\/v1\/admin\/activity-logs/);
+  assert.match(routesPhp, /\/api\/v1\/admin\/activity-logs\/stats/);
+
+  assert.equal(rootSpec, pubSpec);
+  assert.match(rootSpec, /\/api\/v1\/admin\/activity-logs:/);
+  assert.match(rootSpec, /\/api\/v1\/admin\/activity-logs\/stats:/);
+  assert.match(rootSpec, /StaffActivityLogItem:/);
+  assert.match(rootSpec, /StaffActivityLogStats:/);
+
+  // 2. Behavioral verification via simulator
+  const ctx = createAppContext();
+  const listUrl = new URL('http://localhost:3000/api/v1/admin/activity-logs');
+  const statsUrl = new URL('http://localhost:3000/api/v1/admin/activity-logs/stats');
+  const recordUrl = new URL('http://localhost:3000/api/v1/admin/activity-logs/record');
+
+  // 2a. Auth & RBAC enforcement: 401 when unauthenticated, 403 for non-admin on GET list/stats
+  assert.equal(handleAdminActivityLogEndpoint(ctx, 'GET', listUrl, {}, null).status, 401);
+  assert.equal(
+    handleAdminActivityLogEndpoint(ctx, 'GET', listUrl, {}, { sub: 2, role: 'supporter' }).status,
+    403
+  );
+  assert.equal(
+    handleAdminActivityLogEndpoint(ctx, 'GET', statsUrl, {}, { sub: 4, role: 'teacher' }).status,
+    403
+  );
+
+  // 2b. Record Supporter action (appointment update) and Teacher action (start session)
+  const supRec = handleAdminActivityLogEndpoint(
+    ctx,
+    'POST',
+    recordUrl,
+    {
+      module: 'appointments',
+      action: 'update',
+      target_type: 'appointment',
+      target_id: '29',
+      summary: 'ویرایش نوبت مشاوره #29',
+      http_method: 'PUT',
+      endpoint: '/api/v1/appointments/29',
+      status_code: 200,
+    },
+    { sub: 2, role: 'supporter' }
+  );
+  assert.equal(supRec.status, 201);
+  assert.equal(supRec.body.data.actor_role, 'supporter');
+  assert.equal(supRec.body.data.actor_role_label, 'پشتیبان');
+  assert.equal(supRec.body.data.actor_name, 'پشتیبان اول');
+
+  const teacherRec = recordStaffActivity(
+    ctx,
+    { sub: 4, role: 'teacher', instructor_id: 30 },
+    {
+      module: 'tutoring',
+      action: 'start_session',
+      target_type: 'tutoring_session',
+      target_id: '55',
+      summary: 'ثبت ورود دانش‌آموز #20 به جلسه رفع اشکال',
+      http_method: 'POST',
+      endpoint: '/api/v1/tutoring/sessions',
+      status_code: 201,
+    }
+  );
+  assert.equal(teacherRec.actor_role, 'teacher');
+  assert.equal(teacherRec.actor_role_label, 'استاد / مدرس');
+
+  // 2c. Filter by role=supporter
+  const supFilterUrl = new URL('http://localhost:3000/api/v1/admin/activity-logs?role=supporter');
+  const supListRes = handleAdminActivityLogEndpoint(
+    ctx,
+    'GET',
+    supFilterUrl,
+    {},
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(supListRes.status, 200);
+  assert.equal(supListRes.body.data.length, 2);
+  assert.ok(supListRes.body.data.every((item) => item.actor_role === 'supporter'));
+
+  // 2d. Filter by module=tutoring
+  const modFilterUrl = new URL('http://localhost:3000/api/v1/admin/activity-logs?module=tutoring');
+  const modListRes = handleAdminActivityLogEndpoint(
+    ctx,
+    'GET',
+    modFilterUrl,
+    {},
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(modListRes.status, 200);
+  assert.equal(modListRes.body.data.length, 2);
+  assert.ok(modListRes.body.data.every((item) => item.module === 'tutoring'));
+
+  // 2e. Check stats endpoint
+  const statsRes = handleAdminActivityLogEndpoint(
+    ctx,
+    'GET',
+    statsUrl,
+    {},
+    { sub: 1, role: 'admin' }
+  );
+  assert.equal(statsRes.status, 200);
+  assert.equal(statsRes.body.data.total_logs, 5);
+  assert.deepEqual(statsRes.body.data.by_role, {
+    admin: 1,
+    supporter: 2,
+    teacher: 2,
+  });
+  assert.ok(Array.isArray(statsRes.body.data.active_actors));
+  assert.equal(statsRes.body.data.active_actors.length, 3);
+});
+
+
 
 
 

@@ -136,7 +136,50 @@ CREATE TABLE IF NOT EXISTS `appointment_sms_log` (
     KEY `idx_appointment_sms_log_student_week` (`student_id`, `week_date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 5. Record migrations in `migrations` table so Migrator::run() knows they are applied
+-- 5. Tutoring Classroom Configuration Audit Log (Migration 008)
+CREATE TABLE IF NOT EXISTS `tutoring_classroom_audit_logs` (
+    `id`                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    `classroom_id`        INT             NOT NULL,
+    `instructor_id`       INT             DEFAULT NULL,
+    `actor_user_id`       INT             DEFAULT NULL,
+    `actor_role`          VARCHAR(30)     DEFAULT NULL,
+    `actor_instructor_id` INT             DEFAULT NULL,
+    `action`              VARCHAR(30)     NOT NULL,
+    `summary`             VARCHAR(500)    NOT NULL DEFAULT '',
+    `changes_json`        JSON            NOT NULL,
+    `created_at`          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_tutoring_cls_audit_classroom` (`classroom_id`, `created_at`),
+    KEY `idx_tutoring_cls_audit_actor` (`actor_user_id`, `created_at`),
+    KEY `idx_tutoring_cls_audit_action` (`action`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 6. Staff Activity Logs for Admins, Supporters, and Teachers (Migration 009)
+CREATE TABLE IF NOT EXISTS `staff_activity_logs` (
+    `id`              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    `actor_user_id`   INT UNSIGNED    NOT NULL,
+    `actor_role`      VARCHAR(32)     NOT NULL COMMENT 'admin | supporter | teacher',
+    `actor_linked_id` INT UNSIGNED    DEFAULT NULL,
+    `actor_name`      VARCHAR(150)    DEFAULT NULL,
+    `module`          VARCHAR(64)     NOT NULL,
+    `action`          VARCHAR(64)     NOT NULL,
+    `target_type`     VARCHAR(64)     DEFAULT NULL,
+    `target_id`       VARCHAR(64)     DEFAULT NULL,
+    `summary`         VARCHAR(500)    NOT NULL,
+    `http_method`     VARCHAR(10)     NOT NULL DEFAULT 'POST',
+    `endpoint`        VARCHAR(255)    NOT NULL,
+    `status_code`     SMALLINT UNSIGNED NOT NULL DEFAULT 200,
+    `ip_address`      VARCHAR(64)     DEFAULT NULL,
+    `details`         JSON            DEFAULT NULL,
+    `created_at`      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_staff_activity_actor` (`actor_user_id`, `actor_role`),
+    KEY `idx_staff_activity_role_date` (`actor_role`, `created_at`),
+    KEY `idx_staff_activity_module_date` (`module`, `created_at`),
+    KEY `idx_staff_activity_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 7. Record migrations in `migrations` table so Migrator::run() knows they are applied
 INSERT IGNORE INTO `migrations` (`migration`, `executed_at`) VALUES
     ('001_core_identity_and_users.sql', CURRENT_TIMESTAMP),
     ('002_academic_and_planner.sql', CURRENT_TIMESTAMP),
@@ -144,4 +187,8 @@ INSERT IGNORE INTO `migrations` (`migration`, `executed_at`) VALUES
     ('004_attendance_and_tutoring.sql', CURRENT_TIMESTAMP),
     ('005_telegram_bot_threads_and_outbox.sql', CURRENT_TIMESTAMP),
     ('006_exam_comments_and_share_links.sql', CURRENT_TIMESTAMP),
-    ('007_appointment_sms_log.sql', CURRENT_TIMESTAMP);
+    ('007_appointment_sms_log.sql', CURRENT_TIMESTAMP),
+    ('008_tutoring_classroom_audit_log.sql', CURRENT_TIMESTAMP),
+    ('009_staff_activity_logs.sql', CURRENT_TIMESTAMP);
+
+

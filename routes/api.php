@@ -53,6 +53,7 @@ use App\Modules\Outbox\OutboxService;
 use App\Modules\Stats\ContentAccessMiddleware;
 use App\Modules\Stats\StatsController;
 use App\Modules\Stats\StatsService;
+use App\Modules\ActivityLogs\ActivityLogController;
 use App\Modules\Threads\SupporterThreadController;
 use App\Modules\Threads\ThreadController;
 use App\Modules\Threads\ThreadService;
@@ -95,6 +96,7 @@ return function (App $app) {
     $outboxController = new OutboxController(new OutboxService());
     $broadcastController = new BroadcastController(new BroadcastService());
     $statsController = new StatsController(new StatsService());
+    $activityLogController = new ActivityLogController();
     $requireContentAccess = new ContentAccessMiddleware();
 
     // Health
@@ -369,11 +371,17 @@ return function (App $app) {
     $app->get('/api/v1/tutoring/board', [$tutoringController, 'board'])->add($requireStaff)->add($authMiddleware);
     $app->get('/api/v1/tutoring/classrooms', [$tutoringController, 'listClassrooms'])->add($requireStaff)->add($authMiddleware);
     $app->post('/api/v1/tutoring/classrooms', [$tutoringController, 'createClassroom'])->add($requireStaff)->add($authMiddleware);
+    $app->get('/api/v1/tutoring/classrooms/audit-logs', [$tutoringController, 'listClassroomAuditLogs'])->add($requireStaff)->add($authMiddleware);
+    $app->get('/api/v1/tutoring/classrooms/{id:[0-9]+}/audit-logs', [$tutoringController, 'listClassroomAuditLogs'])->add($requireStaff)->add($authMiddleware);
     $app->map(['PUT', 'PATCH'], '/api/v1/tutoring/classrooms/{id:[0-9]+}', [$tutoringController, 'updateClassroom'])->add($requireStaff)->add($authMiddleware);
     $app->delete('/api/v1/tutoring/classrooms/{id:[0-9]+}', [$tutoringController, 'deleteClassroom'])->add($requireStaff)->add($authMiddleware);
 
+    // Admin activity logs (monitor actions of admins, supporters, and teachers)
+    $app->get('/api/v1/admin/activity-logs', [$activityLogController, 'list'])->add($requireAdmin)->add($authMiddleware);
+    $app->get('/api/v1/admin/activity-logs/stats', [$activityLogController, 'stats'])->add($requireAdmin)->add($authMiddleware);
+
     // Admin statistics (admin JWT). Content reading has a separate permission.
-    $app->group('/api/v1/admin/stats', function ($group) use ($statsController, $requireContentAccess) {
+    $app->group('/api/v1/admin/stats', function ($group) use ($statsController, $activityLogController, $requireContentAccess) {
         $group->get('/reports/overview', [$statsController, 'overview']);
         $group->get('/reports/by-major', [$statsController, 'byMajor']);
         $group->get('/reports/by-supporter', [$statsController, 'bySupporter']);
@@ -381,6 +389,8 @@ return function (App $app) {
         $group->get('/supporters/performance', [$statsController, 'performance']);
         $group->get('/students/{id:[0-9]+}/history', [$statsController, 'history']);
         $group->get('/students/{id:[0-9]+}/thread', [$statsController, 'thread'])->add($requireContentAccess);
+        $group->get('/activity-logs', [$activityLogController, 'list']);
+        $group->get('/activity-logs/stats', [$activityLogController, 'stats']);
     })->add($requireAdmin)->add($authMiddleware);
 
     // Preflight OPTIONS catch-all

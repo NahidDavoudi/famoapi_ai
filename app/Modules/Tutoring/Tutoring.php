@@ -99,9 +99,11 @@ class Tutoring
      * @param array<string, mixed> $data
      * @return array<string, mixed>
      */
-    public static function createClassroom(array $data): array
+    public static function createClassroom(array $data, ?object $actor = null): array
     {
         $db = Database::getConnection();
+        self::ensureAuditLogTable($db);
+
         $name = trim((string) ($data['name'] ?? $data['class_name'] ?? $data['classroom_name'] ?? ''));
         $teacherName = trim((string) ($data['teacher_name'] ?? ''));
         $field = trim((string) ($data['field'] ?? ''));
@@ -143,6 +145,7 @@ class Tutoring
             if ($existingRoom !== false) {
                 if ((int) $existingRoom['is_active'] === 0) {
                     $roomId = (int) $existingRoom['id'];
+                    $before = self::classroomDetailById($roomId);
                     $upd = $db->prepare(
                         'UPDATE tutoring_classrooms
                             SET name = :name, sort_order = :sort_order, is_active = 1
@@ -156,8 +159,10 @@ class Tutoring
                     if ($teacherName !== '' || $field !== '') {
                         self::updateInstructorMetadata($db, $instructorId, $teacherName, $field);
                     }
+                    $after = self::classroomDetailById($roomId);
+                    self::recordClassroomAuditLog($db, $roomId, $instructorId, $actor, 'reactivated', $before, $after);
                     $db->commit();
-                    return self::classroomDetailById($roomId);
+                    return $after;
                 }
 
                 // Active classroom already exists for this instructor_id: create a dedicated instructor entry
@@ -176,6 +181,8 @@ class Tutoring
                 'created_at'    => IranDay::nowUtc(),
             ]);
             $roomId = (int) $db->lastInsertId();
+            $after = self::classroomDetailById($roomId);
+            self::recordClassroomAuditLog($db, $roomId, $instructorId, $actor, 'created', null, $after);
             $db->commit();
         } catch (\Throwable $e) {
             if ($db->inTransaction()) {
@@ -184,7 +191,7 @@ class Tutoring
             throw $e;
         }
 
-        return self::classroomDetailById($roomId);
+        return $after;
     }
 
     /**
@@ -193,9 +200,10 @@ class Tutoring
      * @param array<string, mixed> $data
      * @return array<string, mixed>
      */
-    public static function updateClassroom(int $classroomId, array $data): array
+    public static function updateClassroom(int $classroomId, array $data, ?object $actor = null): array
     {
         $db = Database::getConnection();
+        self::ensureAuditLogTable($db);
         $existing = self::classroomDetailById($classroomId);
 
         $name = array_key_exists('name', $data) || array_key_exists('class_name', $data) || array_key_exists('classroom_name', $data)
@@ -228,6 +236,17 @@ class Tutoring
                 self::updateInstructorMetadata($db, (int) $existing['instructor_id'], $teacherName, $field);
             }
 
+            $updated = self::classroomDetailById($classroomId);
+            self::recordClassroomAuditLog(
+                $db,
+                $classroomId,
+                (int) $updated['instructor_id'],
+                $actor,
+                'updated',
+                $existing,
+                $updated
+            );
+
             $db->commit();
         } catch (\Throwable $e) {
             if ($db->inTransaction()) {
@@ -236,22 +255,17 @@ class Tutoring
             throw $e;
         }
 
-        return self::classroomDetailById($classroomId);
+        return $updated;
     }
 
     /**
      * Delete or deactivate a tutoring classroom column and close any open session in it.
      */
-    public static function deleteClassroom(int $classroomId): void
+    public static function deleteClassroom(int $classroomId, ?object $actor = null): void
     {
         $db = Database::getConnection();
-        $stmt = $db->prepare('SELECT id, is_active FROM tutoring_classrooms WHERE id = :id LIMIT 1');
-        $stmt->execute(['id' => $classroomId]);
-        $row = $stmt->fetch();
-
-        if ($row === false) {
-            throw new ApiException('کلاس درس یافت نشد', 404, 'NOT_FOUND');
-        }
+        self::ensureAuditLogTable($db);
+        $existing = self::classroomDetailById($classroomId);
 
         $now = IranDay::nowUtc();
         $db->beginTransaction();
@@ -276,9 +290,29 @@ class Tutoring
             if ($sessionCount === 0) {
                 $del = $db->prepare('DELETE FROM tutoring_classrooms WHERE id = :id');
                 $del->execute(['id' => $classroomId]);
+                self::recordClassroomAuditLog(
+                    $db,
+                    $classroomId,
+                    (int) $existing['instructor_id'],
+                    $actor,
+                    'deleted',
+                    $existing,
+                    null
+                );
             } else {
                 $deact = $db->prepare('UPDATE tutoring_classrooms SET is_active = 0 WHERE id = :id');
                 $deact->execute(['id' => $classroomId]);
+                $after = $existing;
+                $after['is_active'] = false;
+                self::recordClassroomAuditLog(
+                    $db,
+                    $classroomId,
+                    (int) $existing['instructor_id'],
+                    $actor,
+                    'deactivated',
+                    $existing,
+                    $after
+                );
             }
 
             $db->commit();
@@ -288,6 +322,58 @@ class Tutoring
             }
             throw $e;
         }
+    }
+
+    /**
+     * Query classroom configuration audit log entries.
+     *
+     * @param array<string, mixed> $filters
+     * @return array<int, array<string, mixed>>
+     */
+    public static function listClassroomAuditLogs(array $filters = []): array
+    {
+        $db = Database::getConnection();
+        self::ensureAuditLogTable($db);
+
+        $sql = 'SELECT id, classroom_id, instructor_id, actor_user_id, actor_role,
+                       actor_instructor_id, action, summary, changes_json, created_at
+                  FROM tutoring_classroom_audit_logs
+                 WHERE 1 = 1';
+        $params = [];
+
+        if (!empty($filters['classroom_id']) && (int) $filters['classroom_id'] > 0) {
+            $sql .= ' AND classroom_id = :classroom_id';
+            $params['classroom_id'] = (int) $filters['classroom_id'];
+        }
+        if (!empty($filters['instructor_id']) && (int) $filters['instructor_id'] > 0) {
+            $sql .= ' AND (instructor_id = :instructor_id OR actor_instructor_id = :actor_instructor_id)';
+            $params['instructor_id'] = (int) $filters['instructor_id'];
+            $params['actor_instructor_id'] = (int) $filters['instructor_id'];
+        }
+        if (!empty($filters['actor_user_id']) && (int) $filters['actor_user_id'] > 0) {
+            $sql .= ' AND actor_user_id = :actor_user_id';
+            $params['actor_user_id'] = (int) $filters['actor_user_id'];
+        }
+        if (!empty($filters['action']) && is_string($filters['action'])) {
+            $sql .= ' AND action = :action';
+            $params['action'] = trim($filters['action']);
+        }
+
+        $limit = isset($filters['limit']) && (int) $filters['limit'] > 0
+            ? min(200, (int) $filters['limit'])
+            : 50;
+
+        $sql .= ' ORDER BY id DESC LIMIT ' . (int) $limit;
+
+        $stmt = $db->prepare($sql);
+        $stmt->execute($params);
+
+        $logs = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $logs[] = self::shapeAuditLog($row);
+        }
+
+        return $logs;
     }
 
     /**
@@ -868,5 +954,155 @@ class Tutoring
         }
 
         return $a >= $b ? $a : $b;
+    }
+
+    private static function ensureAuditLogTable(PDO $db): void
+    {
+        $db->exec(
+            'CREATE TABLE IF NOT EXISTS tutoring_classroom_audit_logs (
+                id                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                classroom_id        INT             NOT NULL,
+                instructor_id       INT             DEFAULT NULL,
+                actor_user_id       INT             DEFAULT NULL,
+                actor_role          VARCHAR(30)     DEFAULT NULL,
+                actor_instructor_id INT             DEFAULT NULL,
+                action              VARCHAR(30)     NOT NULL,
+                summary             VARCHAR(500)    NOT NULL DEFAULT \'\',
+                changes_json        JSON            NOT NULL,
+                created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                KEY idx_tutoring_cls_audit_classroom (classroom_id, created_at),
+                KEY idx_tutoring_cls_audit_actor (actor_user_id, created_at),
+                KEY idx_tutoring_cls_audit_action (action, created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+        );
+    }
+
+    /**
+     * @param array<string, mixed>|null $before
+     * @param array<string, mixed>|null $after
+     */
+    private static function recordClassroomAuditLog(
+        PDO $db,
+        int $classroomId,
+        ?int $instructorId,
+        ?object $actor,
+        string $action,
+        ?array $before,
+        ?array $after
+    ): void {
+        $actorUserId = null;
+        $actorRole = null;
+        $actorInstructorId = null;
+
+        if ($actor !== null) {
+            $rawUserId = (int) ($actor->sub ?? $actor->id ?? 0);
+            $actorUserId = $rawUserId > 0 ? $rawUserId : null;
+            $actorRole = isset($actor->role) && is_string($actor->role) ? $actor->role : null;
+            $rawInstructorId = (int) ($actor->instructor_id ?? 0);
+            if ($rawInstructorId > 0) {
+                $actorInstructorId = $rawInstructorId;
+            }
+        }
+
+        $trackedFields = ['name', 'teacher_name', 'field', 'instructor_id', 'sort_order', 'is_active'];
+        $diff = [];
+
+        if ($before === null && $after !== null) {
+            foreach ($trackedFields as $field) {
+                $diff[$field] = [
+                    'from' => null,
+                    'to'   => $after[$field] ?? null,
+                ];
+            }
+        } elseif ($before !== null && $after === null) {
+            foreach ($trackedFields as $field) {
+                $diff[$field] = [
+                    'from' => $before[$field] ?? null,
+                    'to'   => null,
+                ];
+            }
+        } elseif ($before !== null && $after !== null) {
+            foreach ($trackedFields as $field) {
+                $fromVal = $before[$field] ?? null;
+                $toVal = $after[$field] ?? null;
+                if ($fromVal !== $toVal) {
+                    $diff[$field] = [
+                        'from' => $fromVal,
+                        'to'   => $toVal,
+                    ];
+                }
+            }
+        }
+
+        $targetName = (string) ($after['name'] ?? $before['name'] ?? "#{$classroomId}");
+        $changedKeys = array_keys($diff);
+        $summary = match ($action) {
+            'created'     => "کلاس «{$targetName}» ایجاد شد",
+            'reactivated' => "کلاس «{$targetName}» مجدداً فعال شد",
+            'updated'     => $changedKeys !== []
+                ? "پیکربندی کلاس «{$targetName}» ویرایش شد (" . implode(', ', $changedKeys) . ')'
+                : "پیکربندی کلاس «{$targetName}» بررسی/به‌روزرسانی شد",
+            'deleted'     => "کلاس «{$targetName}» حذف شد",
+            'deactivated' => "کلاس «{$targetName}» غیرفعال شد",
+            default       => "تغییر وضعیت کلاس «{$targetName}» ({$action})",
+        };
+
+        $payload = json_encode([
+            'before' => $before,
+            'after'  => $after,
+            'diff'   => $diff,
+        ], JSON_UNESCAPED_UNICODE);
+
+        $stmt = $db->prepare(
+            'INSERT INTO tutoring_classroom_audit_logs
+                (classroom_id, instructor_id, actor_user_id, actor_role, actor_instructor_id, action, summary, changes_json, created_at)
+             VALUES
+                (:classroom_id, :instructor_id, :actor_user_id, :actor_role, :actor_instructor_id, :action, :summary, :changes_json, :created_at)'
+        );
+        $stmt->bindValue(':classroom_id', $classroomId, PDO::PARAM_INT);
+        $stmt->bindValue(':instructor_id', $instructorId, $instructorId === null ? PDO::PARAM_NULL : PDO::PARAM_INT);
+        $stmt->bindValue(':actor_user_id', $actorUserId, $actorUserId === null ? PDO::PARAM_NULL : PDO::PARAM_INT);
+        $stmt->bindValue(':actor_role', $actorRole, $actorRole === null ? PDO::PARAM_NULL : PDO::PARAM_STR);
+        $stmt->bindValue(':actor_instructor_id', $actorInstructorId, $actorInstructorId === null ? PDO::PARAM_NULL : PDO::PARAM_INT);
+        $stmt->bindValue(':action', $action);
+        $stmt->bindValue(':summary', $summary);
+        $stmt->bindValue(':changes_json', $payload ?: '{}');
+        $stmt->bindValue(':created_at', IranDay::nowUtc());
+        $stmt->execute();
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private static function shapeAuditLog(array $row): array
+    {
+        $decoded = json_decode((string) ($row['changes_json'] ?? '{}'), true);
+        if (!is_array($decoded)) {
+            $decoded = ['before' => null, 'after' => null, 'diff' => []];
+        }
+
+        $actorUserId = $row['actor_user_id'] !== null ? (int) $row['actor_user_id'] : null;
+        $actorInstructorId = $row['actor_instructor_id'] !== null ? (int) $row['actor_instructor_id'] : null;
+
+        return [
+            'id'                     => (int) $row['id'],
+            'classroom_id'           => (int) $row['classroom_id'],
+            'instructor_id'          => $row['instructor_id'] !== null ? (int) $row['instructor_id'] : null,
+            'actor_user_id'          => $actorUserId,
+            'actor_role'             => $row['actor_role'],
+            'actor_instructor_id'    => $actorInstructorId,
+            'admin_or_instructor_id' => $actorInstructorId ?? $actorUserId,
+            'action'                 => $row['action'],
+            'summary'                => $row['summary'],
+            'changes'                => [
+                'before' => $decoded['before'] ?? null,
+                'after'  => $decoded['after'] ?? null,
+                'diff'   => $decoded['diff'] ?? [],
+            ],
+            'timestamp'              => $row['created_at'],
+            'created_at'             => $row['created_at'],
+        ];
     }
 }

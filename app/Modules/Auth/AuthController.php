@@ -83,6 +83,29 @@ class AuthController
 
         $status = !empty($result['requires_2fa']) ? 202 : 200;
         $token = $result['token'] ?? null;
+        if (is_string($token) && isset($result['user']) && is_array($result['user'])) {
+            $uRole = strtolower((string) ($result['user']['role'] ?? ''));
+            if (in_array($uRole, ['admin', 'supporter', 'teacher'], true)) {
+                try {
+                    \App\Modules\ActivityLogs\ActivityLog::record([
+                        'actor_user_id'   => (int) ($result['user']['id'] ?? 0),
+                        'actor_role'      => $uRole,
+                        'actor_linked_id' => isset($result['user']['linked_id']) ? (int) $result['user']['linked_id'] : null,
+                        'actor_name'      => $result['user']['name'] ?? $result['user']['username'] ?? null,
+                        'module'          => 'auth',
+                        'action'          => 'login',
+                        'target_type'     => 'session',
+                        'target_id'       => isset($result['user']['id']) ? (string) $result['user']['id'] : null,
+                        'summary'         => 'ورود موفق به پنل مدیریت/کاربری',
+                        'http_method'     => 'POST',
+                        'endpoint'        => '/api/v1/auth/login',
+                        'status_code'     => 200,
+                        'ip_address'      => $ip,
+                    ]);
+                } catch (\Throwable) {
+                }
+            }
+        }
         $cookieOnly = $request->getHeaderLine('X-Auth-Mode') === 'cookie';
         if ($cookieOnly) {
             unset($result['token']);
@@ -152,6 +175,29 @@ class AuthController
         }
 
         $token = $result['token'] ?? null;
+        if (is_string($token) && isset($result['user']) && is_array($result['user'])) {
+            $uRole = strtolower((string) ($result['user']['role'] ?? ''));
+            if (in_array($uRole, ['admin', 'supporter', 'teacher'], true)) {
+                try {
+                    \App\Modules\ActivityLogs\ActivityLog::record([
+                        'actor_user_id'   => (int) ($result['user']['id'] ?? $userId),
+                        'actor_role'      => $uRole,
+                        'actor_linked_id' => isset($result['user']['linked_id']) ? (int) $result['user']['linked_id'] : null,
+                        'actor_name'      => $result['user']['name'] ?? $result['user']['username'] ?? null,
+                        'module'          => 'auth',
+                        'action'          => 'verify_2fa',
+                        'target_type'     => 'session',
+                        'target_id'       => (string) ($result['user']['id'] ?? $userId),
+                        'summary'         => 'تأیید دو مرحله‌ای (2FA) و ورود به پنل',
+                        'http_method'     => 'POST',
+                        'endpoint'        => '/api/v1/auth/verify-2fa',
+                        'status_code'     => 200,
+                        'ip_address'      => ClientIp::fromRequest($request),
+                    ]);
+                } catch (\Throwable) {
+                }
+            }
+        }
         $cookieOnly = $request->getHeaderLine('X-Auth-Mode') === 'cookie';
         if ($cookieOnly) {
             unset($result['token']);

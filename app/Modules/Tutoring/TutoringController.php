@@ -183,7 +183,7 @@ class TutoringController
         }
 
         try {
-            return $this->ok($response, $this->service->createClassroom($body), 201);
+            return $this->ok($response, $this->service->createClassroom($body, $this->caller($request)), 201);
         } catch (ApiException $e) {
             return $this->fail($response, $e);
         }
@@ -214,7 +214,7 @@ class TutoringController
         }
 
         try {
-            return $this->ok($response, $this->service->updateClassroom((int) $args['id'], $body));
+            return $this->ok($response, $this->service->updateClassroom((int) $args['id'], $body, $this->caller($request)));
         } catch (ApiException $e) {
             return $this->fail($response, $e);
         }
@@ -223,9 +223,38 @@ class TutoringController
     public function deleteClassroom(Request $request, Response $response, array $args): Response
     {
         try {
-            $this->service->deleteClassroom((int) $args['id']);
+            $this->service->deleteClassroom((int) $args['id'], $this->caller($request));
 
             return $this->ok($response, ['id' => (int) $args['id'], 'deleted' => true]);
+        } catch (ApiException $e) {
+            return $this->fail($response, $e);
+        }
+    }
+
+    public function listClassroomAuditLogs(Request $request, Response $response, array $args = []): Response
+    {
+        $params = $request->getQueryParams();
+        if (isset($args['id']) && (int) $args['id'] > 0) {
+            $params['classroom_id'] = (int) $args['id'];
+        }
+
+        $validator = new Validator();
+        $validator
+            ->positiveInt('classroom_id', 'شناسه کلاس', $params['classroom_id'] ?? null)
+            ->positiveInt('instructor_id', 'شناسه مدرس', $params['instructor_id'] ?? null)
+            ->positiveInt('actor_user_id', 'شناسه کاربر', $params['actor_user_id'] ?? null)
+            ->integer('limit', 'تعداد', $params['limit'] ?? null, 1, 200);
+
+        if (isset($params['action']) && $params['action'] !== '') {
+            $validator->inArray('action', 'عملیات', $params['action'], ['created', 'reactivated', 'updated', 'deleted', 'deactivated']);
+        }
+
+        if (!$validator->passes()) {
+            return $this->fail($response, new ApiException($validator->firstError(), 422, 'VALIDATION_ERROR'));
+        }
+
+        try {
+            return $this->ok($response, $this->service->listClassroomAuditLogs($params));
         } catch (ApiException $e) {
             return $this->fail($response, $e);
         }

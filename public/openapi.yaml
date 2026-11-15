@@ -5026,6 +5026,107 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/tutoring/classrooms/audit-logs:
+    get:
+      tags: [Tutoring]
+      summary: List classroom configuration audit logs
+      operationId: tutoringListClassroomAuditLogs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: classroom_id
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: instructor_id
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: actor_user_id
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [created, reactivated, updated, deleted, deactivated]
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: Classroom configuration audit logs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/TutoringClassroomAuditLogItem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/tutoring/classrooms/{id}/audit-logs:
+    parameters:
+      - $ref: "#/components/parameters/IdParam"
+    get:
+      tags: [Tutoring]
+      summary: List configuration audit logs for a specific classroom
+      operationId: tutoringListClassroomAuditLogsById
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [created, reactivated, updated, deleted, deactivated]
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: Classroom configuration audit logs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/TutoringClassroomAuditLogItem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
   # ───────────────────── Bot Gateway ─────────────────────
   /api/v1/bot/ping:
     get:
@@ -6475,6 +6576,113 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/admin/activity-logs:
+    get:
+      tags: [AdminStats]
+      summary: فهرست لاگ فعالیت‌های ادمین‌ها، پشتیبان‌ها و اساتید در کل سامانه
+      description: >
+        رصد کامل فعالیت‌های انجام‌شده توسط ادمین‌ها (`admin`)، پشتیبان‌ها (`supporter`) و اساتید (`teacher`)
+        همراه با فیلتر بر اساس نقش، شناسه کاربر، ماژول، نوع عملیات، بازه زمانی و جستجوی متنی.
+      operationId: listStaffActivityLogs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: role
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [admin, supporter, teacher]
+          description: فیلتر بر اساس نقش انجام‌دهنده (admin | supporter | teacher)
+        - name: actor_user_id
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: فیلتر بر اساس شناسه کاربری (users.id)
+        - name: actor_linked_id
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: فیلتر بر اساس شناسه پروفایل (admins.id / supporters.id / instructors.id)
+        - name: module
+          in: query
+          required: false
+          schema:
+            type: string
+          description: فیلتر بر اساس ماژول (appointments, tutoring, attendance, students, exams, assignments, courses, ...)
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+          description: فیلتر بر اساس نوع عملیات (create, update, delete, start_session, end_session, ...)
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+          description: جستجو در شرح عملیات، نام کاربر، آدرس اندپوینت یا شناسه رکورد هدف
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+          description: از تاریخ (YYYY-MM-DD)
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+          description: تا تاریخ (YYYY-MM-DD)
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPageAlt"
+      responses:
+        "200":
+          description: لیست لاگ فعالیت‌های کادر آموزشی و اجرایی
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/StaffActivityLogItem"
+                      pagination:
+                        $ref: "#/components/schemas/Pagination"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/admin/activity-logs/stats:
+    get:
+      tags: [AdminStats]
+      summary: آمار تجمیعی فعالیت‌های ادمین‌ها، پشتیبان‌ها و اساتید به تفکیک نقش، ماژول و هر فرد
+      operationId: getStaffActivityLogStats
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: آمار کلی و تفکیکی فعالیت‌های پرسنل
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/StaffActivityLogStats"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -7693,6 +7901,150 @@ components:
           type: integer
         is_active:
           type: boolean
+
+    TutoringClassroomAuditLogItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        classroom_id:
+          type: integer
+        instructor_id:
+          type: integer
+          nullable: true
+        actor_user_id:
+          type: integer
+          nullable: true
+        actor_role:
+          type: string
+          nullable: true
+        actor_instructor_id:
+          type: integer
+          nullable: true
+        admin_or_instructor_id:
+          type: integer
+          nullable: true
+        action:
+          type: string
+          enum: [created, reactivated, updated, deleted, deactivated]
+        summary:
+          type: string
+        changes:
+          type: object
+          properties:
+            before:
+              $ref: "#/components/schemas/TutoringClassroomItem"
+              nullable: true
+            after:
+              $ref: "#/components/schemas/TutoringClassroomItem"
+              nullable: true
+            diff:
+              type: object
+              additionalProperties:
+                type: object
+                properties:
+                  from: {}
+                  to: {}
+        timestamp:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+
+    StaffActivityLogItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        actor_user_id:
+          type: integer
+        actor_role:
+          type: string
+          enum: [admin, supporter, teacher]
+        actor_role_label:
+          type: string
+        actor_linked_id:
+          type: integer
+          nullable: true
+        actor_name:
+          type: string
+          nullable: true
+        module:
+          type: string
+        action:
+          type: string
+        target_type:
+          type: string
+          nullable: true
+        target_id:
+          type: string
+          nullable: true
+        summary:
+          type: string
+        http_method:
+          type: string
+        endpoint:
+          type: string
+        status_code:
+          type: integer
+        ip_address:
+          type: string
+          nullable: true
+        details:
+          type: object
+          nullable: true
+        timestamp:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    StaffActivityLogStats:
+      type: object
+      properties:
+        total_logs:
+          type: integer
+        today_logs:
+          type: integer
+        by_role:
+          type: object
+          properties:
+            admin:
+              type: integer
+            supporter:
+              type: integer
+            teacher:
+              type: integer
+        by_module:
+          type: array
+          items:
+            type: object
+            properties:
+              module:
+                type: string
+              count:
+                type: integer
+        active_actors:
+          type: array
+          items:
+            type: object
+            properties:
+              actor_user_id:
+                type: integer
+              actor_role:
+                type: string
+              actor_linked_id:
+                type: integer
+                nullable: true
+              actor_name:
+                type: string
+                nullable: true
+              actions_count:
+                type: integer
+              last_activity_at:
+                type: string
+                format: date-time
 
     TutoringBoardClass:
       type: object

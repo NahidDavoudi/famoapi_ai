@@ -132,28 +132,62 @@ class TutoringService
      * @param array<string, mixed> $data
      * @return array<string, mixed>
      */
-    public function createClassroom(array $data): array
+    public function createClassroom(array $data, ?object $actor = null): array
     {
         $name = trim((string) ($data['name'] ?? $data['class_name'] ?? $data['classroom_name'] ?? $data['teacher_name'] ?? ''));
         if ($name === '') {
             throw new ApiException('نام کلاس الزامی است', 422, 'VALIDATION_ERROR');
         }
 
-        return Tutoring::createClassroom($data);
+        return Tutoring::createClassroom($data, $this->enrichActor($actor));
     }
 
     /**
      * @param array<string, mixed> $data
      * @return array<string, mixed>
      */
-    public function updateClassroom(int $classroomId, array $data): array
+    public function updateClassroom(int $classroomId, array $data, ?object $actor = null): array
     {
-        return Tutoring::updateClassroom($classroomId, $data);
+        return Tutoring::updateClassroom($classroomId, $data, $this->enrichActor($actor));
     }
 
-    public function deleteClassroom(int $classroomId): void
+    public function deleteClassroom(int $classroomId, ?object $actor = null): void
     {
-        Tutoring::deleteClassroom($classroomId);
+        Tutoring::deleteClassroom($classroomId, $this->enrichActor($actor));
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<int, array<string, mixed>>
+     */
+    public function listClassroomAuditLogs(array $filters = []): array
+    {
+        return Tutoring::listClassroomAuditLogs($filters);
+    }
+
+    private function enrichActor(?object $user): ?object
+    {
+        if ($user === null) {
+            return null;
+        }
+
+        $userId = (int) ($user->sub ?? $user->id ?? 0);
+        $role = (string) ($user->role ?? '');
+        $instructorId = (int) ($user->instructor_id ?? 0);
+
+        if ($instructorId <= 0 && $userId > 0 && in_array($role, ['teacher', 'admin'], true)) {
+            $record = User::findById($userId);
+            if ($record !== null && (int) ($record['linked_id'] ?? 0) > 0 && ($record['role'] ?? '') === 'teacher') {
+                $instructorId = (int) $record['linked_id'];
+            }
+        }
+
+        return (object) [
+            'sub'           => $userId > 0 ? $userId : null,
+            'id'            => $userId > 0 ? $userId : null,
+            'role'          => $role !== '' ? $role : null,
+            'instructor_id' => $instructorId > 0 ? $instructorId : null,
+        ];
     }
 
     /**

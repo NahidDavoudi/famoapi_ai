@@ -570,6 +570,20 @@ class TutoringTest extends TestCase
         $this->assertNotNull($entry);
         $this->assertSame('TUT_TST_Dr_Mohammadi', $entry['teacher_name']);
 
+        // Update classroom configuration as teacher
+        $teacher = $this->seedTeacher();
+        $updated = $this->handleRequest(
+            $this->teacherRequest('PUT', "/api/v1/tutoring/classrooms/{$classroomId}", $teacher, [
+                'name'         => 'TUT_TST_Column 1 Renamed',
+                'teacher_name' => 'TUT_TST_Dr_Hosseini',
+                'field'        => 'ریاضی',
+            ])
+        );
+        $updatedData = $this->assertJsonResponse($updated, 200);
+        $this->assertSame('TUT_TST_Column 1 Renamed', $updatedData['data']['name']);
+        $this->assertSame('TUT_TST_Dr_Hosseini', $updatedData['data']['teacher_name']);
+        $this->assertSame('ریاضی', $updatedData['data']['field']);
+
         $deleted = $this->handleRequest(
             $this->adminRequest('DELETE', "/api/v1/tutoring/classrooms/{$classroomId}", [], ['Origin' => 'http://localhost'])
         );
@@ -578,6 +592,26 @@ class TutoringTest extends TestCase
         $boardAfter = $this->handleRequest($this->supporterRequest('GET', '/api/v1/tutoring/board'));
         $boardAfterData = $this->assertJsonResponse($boardAfter, 200);
         $this->assertNull($this->findBoardEntry($boardAfterData['data'], $classroomId));
+
+        // Verify classroom configuration audit logs recorded created, updated, and deleted events
+        $auditRes = $this->handleRequest(
+            $this->adminRequest('GET', "/api/v1/tutoring/classrooms/{$classroomId}/audit-logs")
+        );
+        $auditData = $this->assertJsonResponse($auditRes, 200);
+        $this->assertCount(3, $auditData['data']);
+        $this->assertSame('deleted', $auditData['data'][0]['action']);
+        $this->assertSame(1, $auditData['data'][0]['actor_user_id']);
+        $this->assertSame('admin', $auditData['data'][0]['actor_role']);
+
+        $this->assertSame('updated', $auditData['data'][1]['action']);
+        $this->assertSame($teacher['user_id'], $auditData['data'][1]['actor_user_id']);
+        $this->assertSame($teacher['instructor_id'], $auditData['data'][1]['actor_instructor_id']);
+        $this->assertSame('TUT_TST_Column 1', $auditData['data'][1]['changes']['diff']['name']['from']);
+        $this->assertSame('TUT_TST_Column 1 Renamed', $auditData['data'][1]['changes']['diff']['name']['to']);
+
+        $this->assertSame('created', $auditData['data'][2]['action']);
+        $this->assertSame(1, $auditData['data'][2]['actor_user_id']);
+        $this->assertNotEmpty($auditData['data'][2]['timestamp']);
     }
 
     /**

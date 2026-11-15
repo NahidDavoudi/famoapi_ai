@@ -4,6 +4,7 @@ namespace App\Modules\Auth;
 
 use App\Core\Auth;
 use App\Core\AuthCookie;
+use App\Modules\ActivityLogs\ActivityLog;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Psr\Http\Server\MiddlewareInterface;
@@ -31,7 +32,15 @@ class AuthMiddleware implements MiddlewareInterface
 
         $request = $request->withAttribute('user', $decoded);
 
-        return $handler->handle($request);
+        $response = $handler->handle($request);
+
+        try {
+            ActivityLog::recordFromRequest($request, $response, $decoded);
+        } catch (\Throwable) {
+            // Never fail a user request if activity logging encounters an error
+        }
+
+        return $response;
     }
 
     private function unauthorized(string $message): Response
