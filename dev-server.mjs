@@ -804,7 +804,7 @@ export function createAppContext() {
       alias_field: 'exam_body_id',
       env_body_id: 500003,
       db_body_id: null,
-      pattern_text: 'کارنامه آزمون {0} در تاریخ {1}: {2}',
+      pattern_text: 'کارنامه آزمون {0} در تاریخ {1}:\n{2}\nآکادمی فامو',
       placeholders: ['نام و نام خانوادگی دانش‌آموز', 'تاریخ آزمون', 'لینک کارنامه'],
       updated_by: null,
       updated_at: null,
@@ -840,6 +840,9 @@ export function createAppContext() {
     smsIpHourlyMax: 20,
     appointmentSmsPhoneHourlyMax: 3,
     appointmentSmsUserHourlyMax: 200,
+    appEnv: 'development',
+    publicSiteUrl: 'http://localhost:3000',
+    shareLinkLogs: [],
   };
 }
 
@@ -1688,6 +1691,45 @@ export function handleExamEndpoint(ctx, method, urlObj, body = {}, authUser = nu
       ctx.rateLimiter.attempt(ipKey, ipMax, 3600, 3600);
     }
 
+    const appEnv = String(ctx.appEnv ?? process.env.APP_ENV ?? 'development').trim().toLowerCase();
+    const rawSiteUrl =
+      body?.public_site_url !== undefined
+        ? body.public_site_url
+        : ctx.publicSiteUrl !== undefined
+          ? ctx.publicSiteUrl
+          : (process.env.PUBLIC_SITE_URL ?? 'http://localhost:3000');
+    const trimmedSiteUrl = String(rawSiteUrl ?? '').trim();
+
+    if (trimmedSiteUrl === '' && (appEnv === '' || appEnv === 'production')) {
+      return {
+        status: 500,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: {
+            code: 'ENV_CONFIGURATION_ERROR',
+            message: 'متغیر محیطی الزامی PUBLIC_SITE_URL در محیط پروداکشن تنظیم نشده است',
+          },
+        },
+      };
+    }
+
+    if (trimmedSiteUrl !== '' && !/^https?:\/\/\S+$/i.test(trimmedSiteUrl)) {
+      return {
+        status: 500,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: {
+            code: 'ENV_CONFIGURATION_ERROR',
+            message: 'متغیر محیطی PUBLIC_SITE_URL باید یک آدرس اینترنتی (URL) معتبر باشد',
+          },
+        },
+      };
+    }
+
     const rawToken = crypto
       .randomBytes(32)
       .toString('base64')
@@ -1714,8 +1756,10 @@ export function handleExamEndpoint(ctx, method, urlObj, body = {}, authUser = nu
     };
     ctx.examResultLinks.push(record);
 
-    const sharePath = `/api/v1/public/exam-results/${rawToken}`;
-    const shareUrl = `http://localhost:3000${sharePath}`;
+    const baseUrl = trimmedSiteUrl.replace(/\/+$/, '');
+    const sharePath = `/r/${rawToken}`;
+    const apiPath = `/api/v1/public/exam-results/${rawToken}`;
+    const shareUrl = baseUrl !== '' ? `${baseUrl}${sharePath}` : sharePath;
 
     let smsSent = false;
     let smsSentAt = null;
@@ -1763,6 +1807,7 @@ export function handleExamEndpoint(ctx, method, urlObj, body = {}, authUser = nu
           token: rawToken,
           url: shareUrl,
           share_path: sharePath,
+          api_path: apiPath,
           share_url: shareUrl,
           expires_at: expiresAt,
           created_at: createdAt,
@@ -1799,6 +1844,7 @@ export function handlePublicExamResultEndpoint(ctx, token, clientIp = '127.0.0.1
     'Content-Type': 'application/json',
     'Cache-Control': 'no-store, no-cache, must-revalidate',
     'X-Robots-Tag': 'noindex, nofollow',
+    'Referrer-Policy': 'no-referrer',
     'X-RateLimit-Limit': String(maxAttempts),
     'X-RateLimit-Remaining': String(remaining),
     Vary: 'Origin',
@@ -1836,19 +1882,34 @@ export function handlePublicExamResultEndpoint(ctx, token, clientIp = '127.0.0.1
     },
   };
 
+  const logRejection = (reason, details = {}) => {
+    if (!Array.isArray(ctx.shareLinkLogs)) {
+      ctx.shareLinkLogs = [];
+    }
+    ctx.shareLinkLogs.push({ reason, ...details });
+  };
+
   const rawToken = typeof token === 'string' ? token.trim() : '';
-  if (!/^[A-Za-z0-9_-]{40,64}$/.test(rawToken)) {
+  if (!/^[A-Za-z0-9_-]{32,64}$/.test(rawToken)) {
+    logRejection('malformed', { token_length: rawToken.length });
     return uniformNotFound;
   }
 
   const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
   const link = ctx.examResultLinks.find((l) => l.token_hash === tokenHash);
-  if (!link || link.revoked_at !== null) {
+  if (!link) {
+    logRejection('unknown_token', { token_hash_prefix: tokenHash.slice(0, 12) });
+    return uniformNotFound;
+  }
+
+  if (link.revoked_at !== null) {
+    logRejection('revoked', { link_id: link.id, student_id: link.student_id });
     return uniformNotFound;
   }
 
   const expiresMs = Date.parse(link.expires_at.replace(' ', 'T') + 'Z');
   if (Number.isNaN(expiresMs) || expiresMs <= Date.now()) {
+    logRejection('expired', { link_id: link.id, student_id: link.student_id });
     return uniformNotFound;
   }
 
@@ -1866,6 +1927,7 @@ export function handlePublicExamResultEndpoint(ctx, token, clientIp = '127.0.0.1
     }));
 
   if (!student || subjects.length === 0) {
+    logRejection('result_missing', { link_id: link.id, student_id: link.student_id });
     return uniformNotFound;
   }
 

@@ -43,7 +43,7 @@ final class SmsPatternSettings
             'label'                => 'ارسال لینک کارنامه آزمون به والدین',
             'env_key'              => 'MELIPAYAMAK_EXAM_BODY_ID',
             'alias_field'          => 'exam_body_id',
-            'default_pattern_text' => 'کارنامه آزمون {0} در تاریخ {1}: {2}',
+            'default_pattern_text' => "کارنامه آزمون {0} در تاریخ {1}:\n{2}\nآکادمی فامو",
             'placeholders'         => ['نام و نام خانوادگی دانش‌آموز', 'تاریخ آزمون', 'لینک کارنامه'],
         ],
     ];
@@ -237,6 +237,16 @@ final class SmsPatternSettings
                     : self::DEFINITIONS[$key]['default_pattern_text'])
                 : ($existing['pattern_text'] ?? self::DEFINITIONS[$key]['default_pattern_text']);
 
+            if ($key === self::KEY_EXAM_RESULT && is_string($patternText) && str_contains($patternText, '{2}')) {
+                // Ensure a space or non-URL separator follows `{2}` so SMS clients never glue trailing chars to the token.
+                if (preg_match('/\{2\}(?:$|[^\s])/u', $patternText) === 1) {
+                    $patternText = preg_replace('/\{2\}(?=$|[^\s])/u', '{2} ', $patternText) ?? $patternText;
+                    if (str_ends_with($patternText, '{2} ')) {
+                        $patternText .= "\nآکادمی فامو";
+                    }
+                }
+            }
+
             if ($driver === 'pgsql') {
                 $stmt = $pdo->prepare(
                     'INSERT INTO sms_pattern_settings (pattern_key, body_id, pattern_text, updated_by, updated_at)
@@ -284,6 +294,23 @@ final class SmsPatternSettings
             '{0}' => trim($studentName),
             '{1}' => trim($dayAndDate),
             '{2}' => trim($time),
+        ]);
+    }
+
+    public static function renderExamResultMessage(
+        string $studentName,
+        string $examDate,
+        string $shareUrl,
+        ?string $template = null
+    ): string {
+        $tpl = ($template !== null && trim($template) !== '')
+            ? $template
+            : self::DEFINITIONS[self::KEY_EXAM_RESULT]['default_pattern_text'];
+
+        return strtr($tpl, [
+            '{0}' => trim($studentName),
+            '{1}' => trim($examDate),
+            '{2}' => trim($shareUrl),
         ]);
     }
 

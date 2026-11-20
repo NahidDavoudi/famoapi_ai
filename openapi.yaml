@@ -1022,9 +1022,9 @@ paths:
         - **Security & Privacy**:
           - Only SHA-256 (`token_hash`) is stored in PostgreSQL (`exam_result_links`), with a 14-day TTL.
           - Response excludes `national_id` and `phone`.
-          - Exempt from `PublicCacheMiddleware`; emits `Cache-Control: no-store, no-cache, must-revalidate` and `X-Robots-Tag: noindex, nofollow`.
+          - Exempt from `PublicCacheMiddleware`; emits `Cache-Control: no-store, no-cache, must-revalidate`, `X-Robots-Tag: noindex, nofollow`, and `Referrer-Policy: no-referrer`.
           - Stricter IP rate limit (`20` requests per `60` seconds).
-          - Invalid, expired, or revoked tokens always return an identical `404 NOT_FOUND` response.
+          - Links are multi-use within their 14-day TTL; invalid, expired, or revoked tokens always return an identical `404 NOT_FOUND` response.
       operationId: publicGetSharedExamResult
       parameters:
         - name: token
@@ -1048,6 +1048,11 @@ paths:
               schema:
                 type: string
                 example: "noindex, nofollow"
+            Referrer-Policy:
+              description: Prevents token leakage in HTTP Referer headers
+              schema:
+                type: string
+                example: "no-referrer"
             X-RateLimit-Limit:
               $ref: "#/components/headers/XRateLimitLimitHeader"
             X-RateLimit-Remaining:
@@ -1071,6 +1076,10 @@ paths:
               schema:
                 type: string
                 example: "noindex, nofollow"
+            Referrer-Policy:
+              schema:
+                type: string
+                example: "no-referrer"
           content:
             application/json:
               schema:
@@ -9142,13 +9151,16 @@ components:
           description: توکن base64url تولیدشده با random_bytes(32)
         url:
           type: string
-          description: آدرس عمومی مشاهده کارنامه
+          description: آدرس عمومی صفحه کارنامه در فرانت‌اند SPA (به فرمت `{PUBLIC_SITE_URL}/r/{token}`)
         share_path:
           type: string
-          description: مسیر نسبی مشاهده عمومی کارنامه
+          description: مسیر نسبی صفحه کارنامه در SPA (`/r/{token}`)
+        api_path:
+          type: string
+          description: مسیر نسبی API دریافت داده کارنامه (`/api/v1/public/exam-results/{token}`)
         share_url:
           type: string
-          description: آدرس عمومی مشاهده کارنامه
+          description: آدرس عمومی صفحه کارنامه در فرانت‌اند SPA (به فرمت `{PUBLIC_SITE_URL}/r/{token}`)
         student_id:
           type: integer
         exam_date:

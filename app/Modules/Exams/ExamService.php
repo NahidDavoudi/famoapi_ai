@@ -2,6 +2,7 @@
 
 namespace App\Modules\Exams;
 
+use App\Core\EnvValidator;
 use App\Core\Pagination;
 use App\Core\PhoneNumber;
 use App\Core\RateLimitedException;
@@ -12,10 +13,13 @@ use App\Modules\ParentContacts\ParentContact;
 class ExamService
 {
     private SmsService $sms;
+    /** @var callable|null */
+    private $shareLinkLogger;
 
-    public function __construct(?SmsService $sms = null)
+    public function __construct(?SmsService $sms = null, ?callable $shareLinkLogger = null)
     {
         $this->sms = $sms ?? new SmsService();
+        $this->shareLinkLogger = $shareLinkLogger;
     }
 
     public function getDates(int $page, int $perPage, ?int $studentId = null): array
@@ -145,8 +149,9 @@ class ExamService
 
         $linkId = ExamResult::createShareLink($studentId, $examDate, $tokenHash, $expiresAt, $createdBy);
 
-        $baseUrl = rtrim((string) ($_ENV['PUBLIC_SITE_URL'] ?? $_ENV['API_URL'] ?? ''), '/');
-        $publicPath = '/api/v1/public/exam-results/' . $rawToken;
+        $baseUrl = EnvValidator::requirePublicSiteUrl();
+        $publicPath = '/r/' . $rawToken;
+        $apiPath = '/api/v1/public/exam-results/' . $rawToken;
         $shareUrl = $baseUrl !== '' ? $baseUrl . $publicPath : $publicPath;
 
         $smsSent = false;
@@ -180,6 +185,7 @@ class ExamService
             'token'                => $rawToken,
             'url'                  => $shareUrl,
             'share_path'           => $publicPath,
+            'api_path'             => $apiPath,
             'share_url'            => $shareUrl,
             'student_id'           => $studentId,
             'exam_date'            => $examDate,
@@ -273,23 +279,82 @@ class ExamService
 
         $token = trim($rawToken);
         if ($token === '' || !preg_match('/^[A-Za-z0-9_-]{32,64}$/', $token)) {
+            $this->logShareLinkRejection('malformed', [
+                'token_length' => strlen($token),
+            ]);
             throw $uniformNotFound;
         }
 
         $tokenHash = hash('sha256', $token);
-        $link = ExamResult::findActiveShareLinkByHash($tokenHash);
+        $link = ExamResult::findShareLinkByHash($tokenHash);
         if (!$link) {
+            $this->logShareLinkRejection('unknown_token', [
+                'token_hash_prefix' => substr($tokenHash, 0, 12),
+            ]);
+            throw $uniformNotFound;
+        }
+
+        if (!empty($link['revoked_at'])) {
+            $this->logShareLinkRejection('revoked', [
+                'link_id'    => (int) $link['id'],
+                'student_id' => (int) $link['student_id'],
+                'revoked_at' => (string) $link['revoked_at'],
+            ]);
+            throw $uniformNotFound;
+        }
+
+        $isExpired = !empty($link['is_expired']);
+        if (!$isExpired && !empty($link['expires_at'])) {
+            $expiresTs = strtotime((string) $link['expires_at'] . ' UTC');
+            if ($expiresTs !== false && $expiresTs <= time()) {
+                $isExpired = true;
+            }
+        }
+        if ($isExpired) {
+            $this->logShareLinkRejection('expired', [
+                'link_id'    => (int) $link['id'],
+                'student_id' => (int) $link['student_id'],
+                'expires_at' => (string) ($link['expires_at'] ?? ''),
+            ]);
             throw $uniformNotFound;
         }
 
         $result = ExamResult::findPublicResult((int) $link['student_id'], (string) $link['exam_date']);
         if (!$result) {
+            $this->logShareLinkRejection('result_missing', [
+                'link_id'    => (int) $link['id'],
+                'student_id' => (int) $link['student_id'],
+                'exam_date'  => (string) $link['exam_date'],
+            ]);
             throw $uniformNotFound;
         }
 
+        // Links are multi-use within their 14-day validity window; only record last_viewed_at.
         ExamResult::touchShareLinkViewed((int) $link['id']);
 
         return $result;
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    private function logShareLinkRejection(string $reason, array $context = []): void
+    {
+        if ($this->shareLinkLogger !== null) {
+            ($this->shareLinkLogger)($reason, $context);
+            return;
+        }
+
+        $encoded = json_encode($context, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $line = '[' . gmdate('Y-m-d H:i:s') . '] [exam_share_link_404] reason=' . $reason . ' context=' . ($encoded ?: '{}');
+        $logPath = __DIR__ . '/../../storage/logs/app.log';
+        $logDir = dirname($logPath);
+        if (!is_dir($logDir)) {
+            @mkdir($logDir, 0750, true);
+        }
+        if (@file_put_contents($logPath, $line . PHP_EOL, FILE_APPEND | LOCK_EX) === false) {
+            error_log($line);
+        }
     }
 
     private function resolveParentMobile(int $studentId, array $options = []): string

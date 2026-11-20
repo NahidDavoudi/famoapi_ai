@@ -77,6 +77,7 @@ final class EnvValidator
     private const URL_KEYS = [
         'API_URL',
         'ASSET_URL',
+        'PUBLIC_SITE_URL',
         'TELEGRAM_BOT_URL',
     ];
 
@@ -172,6 +173,16 @@ final class EnvValidator
             }
         }
 
+        $isShareLinkCreateRoute = strtoupper($request->getMethod()) === 'POST'
+            && in_array($path, ['/api/v1/exams/share-links', '/api/v1/exams/share-links/send-sms'], true);
+        if ($isShareLinkCreateRoute && self::isProduction()) {
+            $publicSiteUrl = self::get('PUBLIC_SITE_URL');
+            if ($publicSiteUrl === null || trim($publicSiteUrl) === '') {
+                error_log('[EnvValidator] CRITICAL: PUBLIC_SITE_URL is missing in production environment.');
+                $errors[] = 'متغیر محیطی الزامی PUBLIC_SITE_URL در محیط پروداکشن تنظیم نشده است';
+            }
+        }
+
         // Format checks for optional environment variables when set and non-empty
         $formatErrors = self::validateOptionalFormats();
         if ($formatErrors !== []) {
@@ -215,7 +226,69 @@ final class EnvValidator
             }
         }
 
+        if (self::isProduction()) {
+            $publicSiteUrl = self::get('PUBLIC_SITE_URL');
+            if ($publicSiteUrl === null || trim($publicSiteUrl) === '') {
+                $errors[] = 'متغیر محیطی الزامی PUBLIC_SITE_URL در محیط پروداکشن تنظیم نشده است';
+            }
+        }
+
         return array_merge($errors, self::validateOptionalFormats());
+    }
+
+    public static function isProduction(): bool
+    {
+        $appEnv = strtolower(trim((string) (self::get('APP_ENV') ?? 'production')));
+        return $appEnv === '' || $appEnv === 'production';
+    }
+
+    /**
+     * Resolve and validate PUBLIC_SITE_URL for user-facing SPA links (e.g. /r/{token}).
+     * Fails loudly in production when missing or malformed.
+     *
+     * @throws ApiException
+     */
+    public static function requirePublicSiteUrl(): string
+    {
+        $raw = self::get('PUBLIC_SITE_URL');
+        $trimmed = $raw !== null ? trim($raw) : '';
+
+        if ($trimmed === '') {
+            if (self::isProduction()) {
+                error_log('[EnvValidator] CRITICAL: PUBLIC_SITE_URL is required in production to build exam share links.');
+                throw new ApiException(
+                    'متغیر محیطی الزامی PUBLIC_SITE_URL در محیط پروداکشن تنظیم نشده است',
+                    500,
+                    'ENV_CONFIGURATION_ERROR'
+                );
+            }
+
+            $fallback = self::get('API_URL');
+            $fallbackTrimmed = $fallback !== null ? trim($fallback) : '';
+            if ($fallbackTrimmed !== '' && self::isValidHttpUrl($fallbackTrimmed)) {
+                return rtrim($fallbackTrimmed, '/');
+            }
+
+            return '';
+        }
+
+        if (!self::isValidHttpUrl($trimmed)) {
+            error_log('[EnvValidator] CRITICAL: PUBLIC_SITE_URL has invalid URL format.');
+            throw new ApiException(
+                'متغیر محیطی PUBLIC_SITE_URL باید یک آدرس اینترنتی (URL) معتبر باشد',
+                500,
+                'ENV_CONFIGURATION_ERROR'
+            );
+        }
+
+        return rtrim($trimmed, '/');
+    }
+
+    private static function isValidHttpUrl(string $url): bool
+    {
+        $parts = parse_url($url);
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        return filter_var($url, FILTER_VALIDATE_URL) !== false && in_array($scheme, ['http', 'https'], true);
     }
 
     /**

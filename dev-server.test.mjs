@@ -521,6 +521,8 @@ test('Exam Comments & Share Links Stage 1 — Migration 006, PUT /api/v1/exams/c
 });
 
 test('Exam Comments & Share Links Stage 2 — POST /api/v1/exams/share-links and GET /api/v1/public/exam-results/{token}', () => {
+  const envExample = fs.readFileSync(new URL('./.env.example', import.meta.url), 'utf8');
+  const envValidatorPhp = fs.readFileSync(new URL('./app/Core/EnvValidator.php', import.meta.url), 'utf8');
   const pubCachePhp = fs.readFileSync(new URL('./app/Core/PublicCacheMiddleware.php', import.meta.url), 'utf8');
   const examResPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamResult.php', import.meta.url), 'utf8');
   const examSvcPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamService.php', import.meta.url), 'utf8');
@@ -529,17 +531,32 @@ test('Exam Comments & Share Links Stage 2 — POST /api/v1/exams/share-links and
   const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
   const publicSpec = fs.readFileSync(new URL('./public/openapi.yaml', import.meta.url), 'utf8');
   const readmeMd = fs.readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+  const examTestPhp = fs.readFileSync(new URL('./tests/Core/ExamServiceTest.php', import.meta.url), 'utf8');
 
-  // 1. Verify PHP Implementation
+  // 1. Verify PHP & Env Implementation (SPA route /r/{token}, PUBLIC_SITE_URL, headers, distinct internal 404 logs)
+  assert.match(envExample, /^PUBLIC_SITE_URL=/m);
+  assert.match(envValidatorPhp, /'PUBLIC_SITE_URL'/);
+  assert.match(envValidatorPhp, /public static function requirePublicSiteUrl\(\): string/);
   assert.match(pubCachePhp, /str_starts_with\(\$path,\s*'\/api\/v1\/public\/exam-results\/'\)/);
   assert.match(examResPhp, /public static function createShareLink\(/);
+  assert.match(examResPhp, /public static function findShareLinkByHash\(string \$tokenHash\): \?array/);
   assert.match(examResPhp, /public static function findActiveShareLinkByHash\(string \$tokenHash\): \?array/);
   assert.match(examResPhp, /public static function findPublicResult\(int \$studentId,\s*string \$examDate\): \?array/);
   assert.match(examSvcPhp, /random_bytes\(32\)/);
   assert.match(examSvcPhp, /hash\('sha256',\s*\$rawToken\)/);
   assert.match(examSvcPhp, /14\s*\*\s*86400/);
+  assert.match(examSvcPhp, /EnvValidator::requirePublicSiteUrl\(\)/);
+  assert.match(examSvcPhp, /'\/r\/'\s*\.\s*\$rawToken/);
+  assert.match(examSvcPhp, /logShareLinkRejection\('malformed'/);
+  assert.match(examSvcPhp, /logShareLinkRejection\('unknown_token'/);
+  assert.match(examSvcPhp, /logShareLinkRejection\('revoked'/);
+  assert.match(examSvcPhp, /logShareLinkRejection\('expired'/);
+  assert.match(examSvcPhp, /logShareLinkRejection\('result_missing'/);
   assert.match(examCtrlPhp, /'Cache-Control',\s*'no-store, no-cache, must-revalidate'/);
   assert.match(examCtrlPhp, /'X-Robots-Tag',\s*'noindex, nofollow'/);
+  assert.match(examCtrlPhp, /'Referrer-Policy',\s*'no-referrer'/);
+  assert.match(examTestPhp, /testCreateShareLinkUsesPublicSiteUrlSpaRouteAndRequiresEnvInProduction/);
+  assert.match(examTestPhp, /testPublicSharedResultIsMultiUseAndLogsDistinctInternal404Reasons/);
   assert.match(
     routesPhp,
     /\$app->post\('\/api\/v1\/exams\/share-links',\s*\[\$examController,\s*'createShareLink'\]\)->add\(\$smsShareIpLimit\)->add\(\$requireSupporter\)->add\(\$authRateLimit\)->add\(\$authMiddleware\)/
@@ -555,6 +572,7 @@ test('Exam Comments & Share Links Stage 2 — POST /api/v1/exams/share-links and
   assert.match(rootSpec, /operationId:\s*examCreateShareLink/);
   assert.match(rootSpec, /\/api\/v1\/public\/exam-results\/\{token\}:/);
   assert.match(rootSpec, /operationId:\s*publicGetSharedExamResult/);
+  assert.match(rootSpec, /Referrer-Policy:/);
   assert.match(rootSpec, /ExamShareLinkCreateRequest:/);
   assert.match(rootSpec, /ExamShareLinkResponse:/);
   assert.match(rootSpec, /PublicSharedExamResult:/);
@@ -563,6 +581,7 @@ test('Exam Comments & Share Links Stage 2 — POST /api/v1/exams/share-links and
 
   // 3. Behavioral verification via simulator
   const ctx = createAppContext();
+  ctx.publicSiteUrl = 'https://famoacademy.ir';
   const shareUrl = new URL('http://localhost:3000/api/v1/exams/share-links');
   const commentUrl = new URL('http://localhost:3000/api/v1/exams/comments');
 
@@ -600,7 +619,18 @@ test('Exam Comments & Share Links Stage 2 — POST /api/v1/exams/share-links and
   }, { sub: 2, role: 'supporter' });
   assert.equal(invalidShare.status, 422);
 
-  // 3d. Supporter creates share link -> 201 Created with 43-char base64url token, only SHA-256 stored in DB
+  // 3c-bis. Production fail-loud when PUBLIC_SITE_URL is missing
+  ctx.appEnv = 'production';
+  ctx.publicSiteUrl = '';
+  const missingSiteUrlRes = handleExamEndpoint(ctx, 'POST', shareUrl, {
+    student_id: 20,
+    exam_date: '2026-10-25',
+  }, { sub: 2, role: 'supporter' });
+  assert.equal(missingSiteUrlRes.status, 500);
+  assert.equal(missingSiteUrlRes.body.error.code, 'ENV_CONFIGURATION_ERROR');
+  ctx.publicSiteUrl = 'https://famoacademy.ir';
+
+  // 3d. Supporter creates share link -> 201 Created with SPA URL {PUBLIC_SITE_URL}/r/{token}, only SHA-256 stored in DB
   const createRes = handleExamEndpoint(ctx, 'POST', shareUrl, {
     student_id: 20,
     exam_date: '2026-10-25',
@@ -608,18 +638,22 @@ test('Exam Comments & Share Links Stage 2 — POST /api/v1/exams/share-links and
   assert.equal(createRes.status, 201);
   const rawToken = createRes.body.data.token;
   assert.match(rawToken, /^[A-Za-z0-9_-]{43}$/);
-  assert.equal(createRes.body.data.share_path, `/api/v1/public/exam-results/${rawToken}`);
+  assert.equal(createRes.body.data.share_path, `/r/${rawToken}`);
+  assert.equal(createRes.body.data.api_path, `/api/v1/public/exam-results/${rawToken}`);
+  assert.equal(createRes.body.data.url, `https://famoacademy.ir/r/${rawToken}`);
+  assert.equal(createRes.body.data.share_url, `https://famoacademy.ir/r/${rawToken}`);
   assert.equal(ctx.examResultLinks.length, 1);
   assert.notEqual(ctx.examResultLinks[0].token_hash, rawToken);
   assert.match(ctx.examResultLinks[0].token_hash, /^[a-f0-9]{64}$/);
   assert.equal(ctx.examResultLinks[0].sms_sent_at, null);
   assert.equal(ctx.examResultLinks[0].last_viewed_at, null);
 
-  // 3e. GET /api/v1/public/exam-results/{token} returns 200 with privacy-safe payload, no-store/noindex headers, and no Redis public cache
+  // 3e. GET /api/v1/public/exam-results/{token} returns 200 with privacy-safe payload, no-store/noindex/no-referrer headers, and is multi-use
   const pubRes = handlePublicExamResultEndpoint(ctx, rawToken, '198.51.100.25');
   assert.equal(pubRes.status, 200);
   assert.equal(pubRes.headers['Cache-Control'], 'no-store, no-cache, must-revalidate');
   assert.equal(pubRes.headers['X-Robots-Tag'], 'noindex, nofollow');
+  assert.equal(pubRes.headers['Referrer-Policy'], 'no-referrer');
   assert.equal(pubRes.headers['X-Cache'], undefined);
   assert.equal(pubRes.headers['X-RateLimit-Limit'], '20');
   assert.equal(pubRes.body.data.student_name, 'دانش‌آموز نمونه');
@@ -634,7 +668,12 @@ test('Exam Comments & Share Links Stage 2 — POST /api/v1/exams/share-links and
   assert.equal(pubRes.body.data.phone, undefined);
   assert.notEqual(ctx.examResultLinks[0].last_viewed_at, null);
 
-  // 3f. Uniform 404 for malformed, unknown, expired, or revoked tokens
+  // Multi-use: a second GET with the same token still succeeds and keeps revoked_at = null
+  const pubResSecond = handlePublicExamResultEndpoint(ctx, rawToken, '198.51.100.25');
+  assert.equal(pubResSecond.status, 200);
+  assert.equal(ctx.examResultLinks[0].revoked_at, null);
+
+  // 3f. Uniform 404 (with no-referrer/no-store/noindex) and distinct internal log reasons for malformed, unknown, expired, or revoked tokens
   const malformedRes = handlePublicExamResultEndpoint(ctx, 'short-token', '198.51.100.25');
   const unknownRes = handlePublicExamResultEndpoint(
     ctx,
@@ -643,22 +682,35 @@ test('Exam Comments & Share Links Stage 2 — POST /api/v1/exams/share-links and
   );
   assert.equal(malformedRes.status, 404);
   assert.equal(unknownRes.status, 404);
+  assert.equal(malformedRes.headers['Referrer-Policy'], 'no-referrer');
   assert.deepEqual(malformedRes.body, unknownRes.body);
+  assert.equal(ctx.shareLinkLogs.at(-2).reason, 'malformed');
+  assert.equal(ctx.shareLinkLogs.at(-1).reason, 'unknown_token');
 
-  // Expired token -> identical 404
+  // Expired token -> identical 404 + internal 'expired' reason
   const savedExpires = ctx.examResultLinks[0].expires_at;
   ctx.examResultLinks[0].expires_at = '2020-01-01 00:00:00';
   const expiredRes = handlePublicExamResultEndpoint(ctx, rawToken, '198.51.100.25');
   assert.equal(expiredRes.status, 404);
   assert.deepEqual(expiredRes.body, unknownRes.body);
+  assert.equal(ctx.shareLinkLogs.at(-1).reason, 'expired');
   ctx.examResultLinks[0].expires_at = savedExpires;
 
-  // Revoked token -> identical 404
+  // Revoked token -> identical 404 + internal 'revoked' reason
   ctx.examResultLinks[0].revoked_at = '2026-10-26 12:00:00';
   const revokedRes = handlePublicExamResultEndpoint(ctx, rawToken, '198.51.100.25');
   assert.equal(revokedRes.status, 404);
   assert.deepEqual(revokedRes.body, unknownRes.body);
+  assert.equal(ctx.shareLinkLogs.at(-1).reason, 'revoked');
   ctx.examResultLinks[0].revoked_at = null;
+
+  // Ensure client 404 response body never leaks internal rejection reason strings
+  for (const res of [malformedRes, unknownRes, expiredRes, revokedRes]) {
+    const serialized = JSON.stringify(res.body);
+    for (const leakedReason of ['malformed', 'unknown_token', 'expired', 'revoked', 'result_missing']) {
+      assert.equal(serialized.includes(leakedReason), false);
+    }
+  }
 
   // 3g. Stricter rate limit (maxAttempts = 20 per 60s window; attempts >= 20 locks out with 429)
   const testIp = '203.0.113.77';
@@ -674,6 +726,9 @@ test('Exam Comments & Share Links Stage 2 — POST /api/v1/exams/share-links and
 test('Exam Comments & Share Links Stage 3 — Melipayamak SMS dispatch, SMS rate limiting, and share link panel management', () => {
   const envExample = fs.readFileSync(new URL('./.env.example', import.meta.url), 'utf8');
   const smsPhp = fs.readFileSync(new URL('./app/Core/SmsService.php', import.meta.url), 'utf8');
+  const patternSettingsPhp = fs.readFileSync(new URL('./app/Core/SmsPatternSettings.php', import.meta.url), 'utf8');
+  const mig012 = fs.readFileSync(new URL('./database/migrations/012_sms_pattern_settings.sql', import.meta.url), 'utf8');
+  const upgradeSql = fs.readFileSync(new URL('./database/mysql_upgrade_from_dump.sql', import.meta.url), 'utf8');
   const examResPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamResult.php', import.meta.url), 'utf8');
   const examSvcPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamService.php', import.meta.url), 'utf8');
   const examCtrlPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamController.php', import.meta.url), 'utf8');
@@ -691,6 +746,10 @@ test('Exam Comments & Share Links Stage 3 — Melipayamak SMS dispatch, SMS rate
   );
   assert.match(smsPhp, /https:\/\/rest\.payamak-panel\.com\/api\/SendSMS\/BaseServiceNumber/);
   assert.match(smsPhp, /MELIPAYAMAK_EXAM_BODY_ID/);
+  // Verify SMS exam pattern text includes whitespace/non-URL separator after {2}
+  assert.match(patternSettingsPhp, /کارنامه آزمون \{0\} در تاریخ \{1\}:\\n\{2\}\\nآکادمی فامو/);
+  assert.match(mig012, /کارنامه آزمون \{0\} در تاریخ \{1\}:\\n\{2\}\\nآکادمی فامو/);
+  assert.match(upgradeSql, /کارنامه آزمون \{0\} در تاریخ \{1\}:\\n\{2\}\\nآکادمی فامو/);
 
   // 2. Verify ExamResult, ExamService, ExamController, and Routes
   assert.match(examResPhp, /public static function markShareLinkSmsSent\(int \$linkId/);
@@ -718,6 +777,8 @@ test('Exam Comments & Share Links Stage 3 — Melipayamak SMS dispatch, SMS rate
 
   // 4. Behavioral verification via simulator
   const ctx = createAppContext();
+  ctx.publicSiteUrl = 'https://famoacademy.ir';
+  assert.match(ctx.smsPatterns.exam_result.pattern_text, /\{2\}\s+\S/);
   const sendSmsUrl = new URL('http://localhost:3000/api/v1/exams/share-links/send-sms');
   const shareUrl = new URL('http://localhost:3000/api/v1/exams/share-links');
 
@@ -741,7 +802,7 @@ test('Exam Comments & Share Links Stage 3 — Melipayamak SMS dispatch, SMS rate
   assert.equal(ctx.smsDispatches.length, 1);
   assert.equal(ctx.smsDispatches[0].provider, 'melipayamak');
   assert.equal(ctx.smsDispatches[0].to, '09121112233');
-  assert.match(ctx.smsDispatches[0].text, /^دانش‌آموز نمونه;2026-10-25;http:\/\/localhost:3000\/api\/v1\/public\/exam-results\//);
+  assert.match(ctx.smsDispatches[0].text, /^دانش‌آموز نمونه;2026-10-25;https:\/\/famoacademy\.ir\/r\/[A-Za-z0-9_-]{43}$/);
 
   // 4c. Cooldown protection: immediate duplicate SMS to same (student_id, exam_date, mobile) -> 429 RATE_LIMITED
   const duplicateSms = handleExamEndpoint(ctx, 'POST', sendSmsUrl, {

@@ -363,7 +363,8 @@ class ExamController
                 ->withStatus($e->getHttpStatus())
                 ->withHeader('Content-Type', 'application/json; charset=utf-8')
                 ->withHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
-                ->withHeader('X-Robots-Tag', 'noindex, nofollow');
+                ->withHeader('X-Robots-Tag', 'noindex, nofollow')
+                ->withHeader('Referrer-Policy', 'no-referrer');
         }
 
         $response->getBody()->write(json_encode([
@@ -372,6 +373,7 @@ class ExamController
         return $response
             ->withHeader('Content-Type', 'application/json; charset=utf-8')
             ->withHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
-            ->withHeader('X-Robots-Tag', 'noindex, nofollow');
+            ->withHeader('X-Robots-Tag', 'noindex, nofollow')
+            ->withHeader('Referrer-Policy', 'no-referrer');
     }
 }

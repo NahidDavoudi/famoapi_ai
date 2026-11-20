@@ -276,6 +276,20 @@ class ExamResult
         return $stmt->rowCount() > 0;
     }
 
+    public static function findShareLinkByHash(string $tokenHash): ?array
+    {
+        $stmt = Database::getConnection()->prepare(
+            'SELECT id, token_hash, student_id, exam_date, expires_at, revoked_at, last_viewed_at, created_at,
+                    CASE WHEN expires_at <= CURRENT_TIMESTAMP THEN 1 ELSE 0 END AS is_expired
+             FROM exam_result_links
+             WHERE token_hash = :token_hash
+             LIMIT 1'
+        );
+        $stmt->execute(['token_hash' => $tokenHash]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
     public static function findActiveShareLinkByHash(string $tokenHash): ?array
     {
         $stmt = Database::getConnection()->prepare(
