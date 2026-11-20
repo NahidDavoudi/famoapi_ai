@@ -1312,6 +1312,22 @@ paths:
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PerPage"
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [published_at, title, views, status]
+            default: published_at
+          description: Sort field (unknown values fall back silently to `published_at`)
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Sort direction (`asc` or `desc`; invalid values fall back to `desc`)
       responses:
         "200":
           description: Paginated posts
@@ -1571,6 +1587,22 @@ paths:
           schema:
             type: integer
             enum: [0, 1]
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [created_at, name, grade, field, status]
+            default: created_at
+          description: Sort field (unknown values fall back silently to `created_at`)
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Sort direction (`asc` or `desc`; invalid values fall back to `desc`)
       responses:
         "200":
           description: Paginated students
@@ -3336,6 +3368,22 @@ paths:
           schema:
             type: integer
             default: 200
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [exam_date, student_name, percentage]
+            default: exam_date
+          description: Sort field (`percentage` uses the stored per-subject percentage column; unknown values fall back silently to `exam_date`)
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Sort direction (`asc` or `desc`; invalid values fall back to `desc`)
       responses:
         "200":
           description: Paginated exam results
@@ -3577,6 +3625,22 @@ paths:
             format: date
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PerPage"
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [name, avg_percentage]
+            default: name
+          description: Sort field (unknown values fall back silently to `name`)
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+          description: Sort direction (`asc` or `desc`; invalid values fall back to `asc`)
       responses:
         "200":
           description: Students for exam date
@@ -4602,6 +4666,22 @@ paths:
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PerPage"
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [appointment_date, time, student, status]
+            default: appointment_date
+          description: Sort field (`time` orders by appointment_date and start_time; unknown values fall back silently to `appointment_date`)
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Sort direction (`asc` or `desc`; invalid values fall back to `desc`)
       responses:
         "200":
           description: Paginated appointments
@@ -7558,6 +7638,13 @@ components:
           type: integer
         total_pages:
           type: integer
+        sort:
+          type: string
+          description: Active resolved sort key (included when sort or order query parameters are provided)
+        order:
+          type: string
+          enum: [asc, desc]
+          description: Active resolved sort direction (included when sort or order query parameters are provided)
       required: [page, per_page, total, total_pages]
 
     WithPagination:

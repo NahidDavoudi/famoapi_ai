@@ -3,9 +3,33 @@
 namespace App\Modules\Exams;
 
 use App\Core\Database;
+use App\Core\Sorting;
 
 class ExamResult
 {
+    public const LIST_SORT_WHITELIST = [
+        'exam_date' => [
+            'expr'      => 'er.exam_date',
+            'secondary' => [['expr' => 's.name', 'dir' => 'ASC', 'collate' => 'utf8mb4_persian_ci']],
+        ],
+        'student_name' => ['expr' => 's.name', 'collate' => 'utf8mb4_persian_ci'],
+        'percentage'   => ['expr' => 'er.percentage'],
+    ];
+
+    public const STUDENTS_BY_DATE_SORT_WHITELIST = [
+        'name'           => ['expr' => 's.name', 'collate' => 'utf8mb4_persian_ci'],
+        'avg_percentage' => ['expr' => 'ROUND(AVG(er.percentage), 1)'],
+    ];
+
+    public static function resolveListSort(array $sortParams = []): array
+    {
+        return Sorting::resolve($sortParams, self::LIST_SORT_WHITELIST, 'exam_date', 'DESC', 'er.id');
+    }
+
+    public static function resolveStudentsByDateSort(array $sortParams = []): array
+    {
+        return Sorting::resolve($sortParams, self::STUDENTS_BY_DATE_SORT_WHITELIST, 'name', 'ASC', 's.id');
+    }
     public static function findDates(?int $studentId, int $page, int $perPage): array
     {
         $perPage = max(1, min(100, $perPage));
@@ -40,21 +64,22 @@ class ExamResult
         return (int) $stmt->fetchColumn();
     }
 
-    public static function findStudentsByDate(string $examDate, int $page, int $perPage): array
+    public static function findStudentsByDate(string $examDate, int $page, int $perPage, ?string $orderBy = null): array
     {
         $perPage = max(1, min(100, $perPage));
         $page = max(1, $page);
         $offset = ($page - 1) * $perPage;
+        $orderSql = ($orderBy !== null && $orderBy !== '') ? $orderBy : self::resolveStudentsByDateSort()['order_by'];
         $stmt = Database::getConnection()->prepare(
-            'SELECT s.id as student_id, s.name, s.grade, s.field,
+            "SELECT s.id as student_id, s.name, s.grade, s.field,
                     COUNT(er.id) as subject_count,
                     ROUND(AVG(er.percentage), 1) as avg_percentage
              FROM students s
              INNER JOIN exam_results er ON s.id = er.student_id
              WHERE er.exam_date = ?
              GROUP BY s.id, s.name, s.grade, s.field
-             ORDER BY s.name
-             LIMIT ? OFFSET ?'
+             {$orderSql}
+             LIMIT ? OFFSET ?"
         );
         $stmt->execute([$examDate, $perPage, $offset]);
         return $stmt->fetchAll();
@@ -404,7 +429,7 @@ class ExamResult
         ];
     }
 
-    public static function findAll(array $filters, int $page, int $perPage): array
+    public static function findAll(array $filters, int $page, int $perPage, ?string $orderBy = null): array
     {
         $conditions = ['1=1'];
         $params = [];
@@ -425,13 +450,15 @@ class ExamResult
             $params[] = $filters['date_to'];
         }
 
+        $orderSql = ($orderBy !== null && $orderBy !== '') ? $orderBy : self::resolveListSort()['order_by'];
+
         $sql = 'SELECT er.*, s.name as student_name, s.field, s.grade, f.file_path
                 FROM exam_results er
                 JOIN students s ON er.student_id = s.id
                 LEFT JOIN files f ON er.file_id = f.id
-                WHERE ' . implode(' AND ', $conditions) . '
-                ORDER BY er.exam_date DESC, s.name
-                LIMIT ? OFFSET ?';
+                WHERE ' . implode(' AND ', $conditions) . "
+                {$orderSql}
+                LIMIT ? OFFSET ?";
 
         $stmt = Database::getConnection()->prepare($sql);
         array_push($params, $perPage, $offset);

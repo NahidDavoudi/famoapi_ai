@@ -6,6 +6,7 @@ use App\Core\ApiException;
 use App\Core\AssetUrl;
 use App\Core\Cache;
 use App\Core\Pagination;
+use App\Core\Sorting;
 use App\Core\Storage;
 
 class BlogService
@@ -93,15 +94,16 @@ class BlogService
         });
     }
 
-    public function getAllPosts(int $page, int $perPage): array
+    public function getAllPosts(int $page, int $perPage, array $sortParams = []): array
     {
         $total = BlogPost::countAll();
         $pagination = Pagination::build($page, $perPage, $total);
-        $posts = BlogPost::findAll($pagination['page'], $pagination['per_page']);
+        $sort = BlogPost::resolveAdminSort($sortParams);
+        $posts = BlogPost::findAll($pagination['page'], $pagination['per_page'], $sort['order_by']);
         $posts = array_map([$this, 'hydratePost'], $posts);
         return [
             'posts' => $posts,
-            'pagination' => $pagination,
+            'pagination' => Sorting::attachToPagination($pagination, $sort),
         ];
     }
 

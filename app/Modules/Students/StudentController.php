@@ -37,7 +37,7 @@ class StudentController
             'status' => isset($params['status']) ? (int) $params['status'] : null,
         ];
 
-        $result = $this->service->list($filters, $page, $perPage);
+        $result = $this->service->list($filters, $page, $perPage, $params);
 
         $response->getBody()->write(json_encode([
             'success'    => true,

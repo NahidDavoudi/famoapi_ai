@@ -7,20 +7,22 @@ use App\Core\Database;
 use App\Core\JwtRevocation;
 use App\Core\Pagination;
 use App\Core\PhoneNumber;
+use App\Core\Sorting;
 use App\Modules\Supporters\Supporter;
 
 class StudentService
 {
-    public function list(array $filters, int $page, int $perPage): array
+    public function list(array $filters, int $page, int $perPage, array $sortParams = []): array
     {
         $total      = Student::countAll($filters);
         $pagination = Pagination::build($page, $perPage, $total);
+        $sort       = Student::resolveSort($sortParams);
 
-        $items = Student::findAll($filters, $pagination['page'], $pagination['per_page']);
+        $items = Student::findAll($filters, $pagination['page'], $pagination['per_page'], $sort['order_by']);
 
         return [
             'items'      => $items,
-            'pagination' => $pagination,
+            'pagination' => Sorting::attachToPagination($pagination, $sort),
         ];
     }
 

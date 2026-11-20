@@ -4,10 +4,24 @@ namespace App\Modules\Students;
 
 use App\Core\Database;
 use App\Core\PhoneNumber;
+use App\Core\Sorting;
 
 class Student
 {
-    public static function findAll(array $filters, int $page, int $perPage): array
+    public const SORT_WHITELIST = [
+        'created_at' => ['expr' => 's.created_at'],
+        'name'       => ['expr' => 's.name', 'collate' => 'utf8mb4_persian_ci'],
+        'grade'      => ['expr' => 's.grade'],
+        'field'      => ['expr' => 's.field', 'collate' => 'utf8mb4_persian_ci'],
+        'status'     => ['expr' => 's.is_active'],
+    ];
+
+    public static function resolveSort(array $sortParams = []): array
+    {
+        return Sorting::resolve($sortParams, self::SORT_WHITELIST, 'created_at', 'DESC', 's.id');
+    }
+
+    public static function findAll(array $filters, int $page, int $perPage, ?string $orderBy = null): array
     {
         $conditions = [];
         $params = [];
@@ -41,12 +55,13 @@ class Student
         $perPage = max(1, min(100, $perPage));
         $page    = max(1, $page);
         $offset  = ($page - 1) * $perPage;
+        $orderSql = ($orderBy !== null && $orderBy !== '') ? $orderBy : self::resolveSort()['order_by'];
 
         $stmt = Database::getConnection()->prepare(
             "SELECT s.*, u.id AS user_id
              FROM students s
              LEFT JOIN users u ON u.linked_id = s.id AND u.role = 'student'
-             {$where} ORDER BY s.created_at DESC LIMIT :limit OFFSET :offset"
+             {$where} {$orderSql} LIMIT :limit OFFSET :offset"
         );
         foreach ($params as $key => $value) {
             $stmt->bindValue(':' . $key, $value);

@@ -20,7 +20,7 @@ class AppointmentController
         $page = (int) ($params['page'] ?? 1);
         $perPage = (int) ($params['perPage'] ?? 20);
 
-        $result = $this->service->list($page, $perPage);
+        $result = $this->service->list($page, $perPage, $params);
 
         $response->getBody()->write(json_encode([
             'success'    => true,

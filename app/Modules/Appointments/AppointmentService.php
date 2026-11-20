@@ -10,6 +10,7 @@ use App\Core\RateLimiter;
 use App\Core\RedisClient;
 use App\Core\SmsPatternSettings;
 use App\Core\SmsService;
+use App\Core\Sorting;
 use App\Modules\Bot\IranDay;
 
 class AppointmentService
@@ -22,15 +23,16 @@ class AppointmentService
         $this->sms ??= new SmsService();
     }
 
-    public function list(int $page, int $perPage): array
+    public function list(int $page, int $perPage, array $sortParams = []): array
     {
         $total = Appointment::countAll();
         $pagination = Pagination::build($page, $perPage, $total);
-        $items = Appointment::findAll($pagination['page'], $pagination['per_page']);
+        $sort = Appointment::resolveSort($sortParams);
+        $items = Appointment::findAll($pagination['page'], $pagination['per_page'], $sort['order_by']);
 
         return [
             'items'      => $items,
-            'pagination' => $pagination,
+            'pagination' => Sorting::attachToPagination($pagination, $sort),
         ];
     }
 

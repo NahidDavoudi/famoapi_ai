@@ -41,7 +41,7 @@ class ExamController
         }
         $page = (int) ($params['page'] ?? 1);
         $perPage = (int) ($params['per_page'] ?? 20);
-        $result = $this->service->getStudentsByDate($examDate, $page, $perPage);
+        $result = $this->service->getStudentsByDate($examDate, $page, $perPage, $params);
 
         $response->getBody()->write(json_encode([
             'success' => true, 'data' => ['students' => $result['students']],
@@ -95,7 +95,7 @@ class ExamController
         ];
         $page = (int) ($params['page'] ?? 1);
         $perPage = (int) ($params['per_page'] ?? 20);
-        $result = $this->service->getAll($filters, $page, $perPage);
+        $result = $this->service->getAll($filters, $page, $perPage, $params);
 
         $response->getBody()->write(json_encode([
             'success' => true, 'data' => ['exams' => $result['exams']],

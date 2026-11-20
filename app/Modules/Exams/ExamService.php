@@ -8,6 +8,7 @@ use App\Core\PhoneNumber;
 use App\Core\RateLimitedException;
 use App\Core\RateLimiter;
 use App\Core\SmsService;
+use App\Core\Sorting;
 use App\Modules\ParentContacts\ParentContact;
 
 class ExamService
@@ -30,12 +31,16 @@ class ExamService
         return ['dates' => $dates, 'pagination' => $pagination];
     }
 
-    public function getStudentsByDate(string $examDate, int $page, int $perPage): array
+    public function getStudentsByDate(string $examDate, int $page, int $perPage, array $sortParams = []): array
     {
         $total = ExamResult::countStudentsByDate($examDate);
         $pagination = Pagination::build($page, $perPage, $total);
-        $students = ExamResult::findStudentsByDate($examDate, $pagination['page'], $pagination['per_page']);
-        return ['students' => $students, 'pagination' => $pagination];
+        $sort = ExamResult::resolveStudentsByDateSort($sortParams);
+        $students = ExamResult::findStudentsByDate($examDate, $pagination['page'], $pagination['per_page'], $sort['order_by']);
+        return [
+            'students'   => $students,
+            'pagination' => Sorting::attachToPagination($pagination, $sort),
+        ];
     }
 
     public function getDetails(string $examDate, int $studentId): array
@@ -45,12 +50,16 @@ class ExamService
         return $result;
     }
 
-    public function getAll(array $filters, int $page, int $perPage): array
+    public function getAll(array $filters, int $page, int $perPage, array $sortParams = []): array
     {
         $total = ExamResult::countAll($filters);
         $pagination = Pagination::build($page, $perPage, $total);
-        $exams = ExamResult::findAll($filters, $pagination['page'], $pagination['per_page']);
-        return ['exams' => $exams, 'pagination' => $pagination];
+        $sort = ExamResult::resolveListSort($sortParams);
+        $exams = ExamResult::findAll($filters, $pagination['page'], $pagination['per_page'], $sort['order_by']);
+        return [
+            'exams'      => $exams,
+            'pagination' => Sorting::attachToPagination($pagination, $sort),
+        ];
     }
 
     public function save(int $studentId, string $examDate, array $subjects): array

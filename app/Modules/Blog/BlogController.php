@@ -152,7 +152,7 @@ class BlogController
         $page = (int) ($params['page'] ?? 1);
         $perPage = (int) ($params['per_page'] ?? 20);
 
-        $result = $this->service->getAllPosts($page, $perPage);
+        $result = $this->service->getAllPosts($page, $perPage, $params);
 
         $response->getBody()->write(json_encode([
             'success' => true,

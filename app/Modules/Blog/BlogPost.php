@@ -4,9 +4,21 @@ namespace App\Modules\Blog;
 
 use App\Core\Database;
 use App\Core\Pagination;
+use App\Core\Sorting;
 
 class BlogPost
 {
+    public const ADMIN_SORT_WHITELIST = [
+        'published_at' => ['expr' => 'bp.published_at'],
+        'title'        => ['expr' => 'bp.title', 'collate' => 'utf8mb4_persian_ci'],
+        'views'        => ['expr' => 'bp.views'],
+        'status'       => ['expr' => 'bp.is_published'],
+    ];
+
+    public static function resolveAdminSort(array $sortParams = []): array
+    {
+        return Sorting::resolve($sortParams, self::ADMIN_SORT_WHITELIST, 'published_at', 'DESC', 'bp.id');
+    }
     private const SELECT_WITH_CATEGORY =
         'SELECT bp.*, bc.name AS category_name, bc.slug AS category_slug
          FROM blog_posts bp
@@ -76,15 +88,16 @@ class BlogPost
         return (int) $stmt->fetchColumn();
     }
 
-    public static function findAll(int $page, int $perPage): array
+    public static function findAll(int $page, int $perPage, ?string $orderBy = null): array
     {
         $db = Database::getConnection();
         $perPage = max(1, min(100, $perPage));
         $page = max(1, $page);
         $offset = Pagination::offset($page, $perPage);
+        $orderSql = ($orderBy !== null && $orderBy !== '') ? $orderBy : self::resolveAdminSort()['order_by'];
         $stmt = $db->prepare(
-            self::SELECT_WITH_CATEGORY . '
-             ORDER BY bp.published_at DESC, bp.id DESC LIMIT ? OFFSET ?'
+            self::SELECT_WITH_CATEGORY . "
+             {$orderSql} LIMIT ? OFFSET ?"
         );
         $stmt->execute([$perPage, $offset]);
         return $stmt->fetchAll();
