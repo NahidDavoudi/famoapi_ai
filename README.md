@@ -187,9 +187,9 @@ npm run dev
 
 ### 3. Running with Docker (`api.Dockerfile`)
 
-The repository ships with [`api.Dockerfile`](./api.Dockerfile) (and [`Dockerfile`](./Dockerfile) for CI/CD pipelines), a multi-stage production image built on `composer:2` and `php:8.4-apache`:
+The repository ships with [`api.Dockerfile`](./api.Dockerfile) (and [`Dockerfile`](./Dockerfile) for CI/CD pipelines), a multi-stage production image built on `php:8.4-apache`:
 
-- **Stage 1 (`vendor`)**: Runs `composer install --no-dev --optimize-autoloader` in an isolated `composer:2` layer.
+- **Stage 1 (`vendor`)**: Runs `composer install --no-dev --optimize-autoloader` using the Composer 2 binary on `php:8.4-apache` (matching runtime PHP 8.4).
 - **Stage 2 (`runtime`)**:
   - Compiles & enables PHP extensions: `gd` (with WebP, JPEG, and FreeType), `pdo_pgsql`, `pgsql`, `zip`, `intl`, `opcache`, `bcmath`, and `redis` (`pecl`).
   - Applies production PHP settings from [`docker/custom.ini`](./docker/custom.ini) (`date.timezone = Asia/Tehran`, `memory_limit = 192M`, `upload_max_filesize = 20M`, and `opcache` tuning).

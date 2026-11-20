@@ -2180,11 +2180,25 @@ test('Redis JWT revocation, configurable rate limiting, ClientIp right-to-left p
   assert.equal(oldActorAttempt.status, 401);
 });
 
+test('Dockerfiles pin Composer vendor stage to php:8.4-apache matching runtime PHP version', () => {
+  const dockerfile = fs.readFileSync(new URL('./Dockerfile', import.meta.url), 'utf8');
+  const apiDockerfile = fs.readFileSync(new URL('./api.Dockerfile', import.meta.url), 'utf8');
 
-
-
-
-
-
-
-
+  for (const [name, content] of [
+    ['Dockerfile', dockerfile],
+    ['api.Dockerfile', apiDockerfile],
+  ]) {
+    assert.doesNotMatch(
+      content,
+      /^FROM composer:2 AS vendor/m,
+      `${name} must not use unpinned composer:2 as the vendor base image (drifts to unsupported PHP 8.6+)`
+    );
+    assert.match(content, /^FROM php:8\.4-apache AS vendor/m, `${name} vendor stage must pin php:8.4-apache`);
+    assert.match(content, /^COPY --from=composer:2 \/usr\/bin\/composer \/usr\/bin\/composer/m);
+    assert.match(content, /^FROM php:8\.4-apache AS runtime/m, `${name} runtime stage must pin php:8.4-apache`);
+    assert.match(
+      content,
+      /composer install --no-dev --no-interaction --no-scripts --prefer-dist --optimize-autoloader/
+    );
+  }
+});

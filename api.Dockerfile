@@ -1,7 +1,11 @@
 # syntax=docker/dockerfile:1
 # Build context: ریشه‌ی همین ریپو (famo-api)
 
-FROM composer:2 AS vendor
+FROM php:8.4-apache AS vendor
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+ENV COMPOSER_ALLOW_SUPERUSER=1
+RUN apt-get update && apt-get install -y --no-install-recommends unzip git \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY composer.json composer.lock* ./
 RUN composer install --no-dev --no-interaction --no-scripts --prefer-dist --optimize-autoloader
