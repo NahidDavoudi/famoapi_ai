@@ -2202,3 +2202,123 @@ test('Dockerfiles pin Composer vendor stage to php:8.4-apache matching runtime P
     );
   }
 });
+
+test('Exam Result Update — PUT/PATCH /api/v1/exams/{id} (teacher/admin RBAC, validation, recomputed percentage)', () => {
+  const examResPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamResult.php', import.meta.url), 'utf8');
+  const examSvcPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamService.php', import.meta.url), 'utf8');
+  const examCtrlPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamController.php', import.meta.url), 'utf8');
+  const routesPhp = fs.readFileSync(new URL('./routes/api.php', import.meta.url), 'utf8');
+  const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
+  const publicSpec = fs.readFileSync(new URL('./public/openapi.yaml', import.meta.url), 'utf8');
+  const readmeMd = fs.readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+  const examTestPhp = fs.readFileSync(new URL('./tests/Core/ExamServiceTest.php', import.meta.url), 'utf8');
+
+  // 1. Verify PHP Model, Service, Controller, Routes, Unit Tests
+  assert.match(examResPhp, /public static function findById\(int \$id\): \?array/);
+  assert.match(examResPhp, /public static function updateById\(int \$id, array \$data\): \?array/);
+  assert.doesNotMatch(
+    examResPhp.slice(examResPhp.indexOf('public static function updateById')),
+    /'percentage'/,
+    'ExamResult::updateById must never write to MySQL generated percentage column'
+  );
+  assert.match(examSvcPhp, /public function update\(int \$id, array \$data\): array/);
+  assert.match(examCtrlPhp, /public function update\(Request \$request, Response \$response, array \$args\): Response/);
+  assert.match(
+    routesPhp,
+    /\$app->map\(\['PUT',\s*'PATCH'\],\s*'\/api\/v1\/exams\/\{id:\[0-9\]\+\}',\s*\[\$examController,\s*'update'\]\)->add\(\$requireTeacher\)->add\(\$authRateLimit\)->add\(\$authMiddleware\)/
+  );
+  assert.match(examTestPhp, /testUpdateExamResultUpdatesMetricsAndRecomputesPercentage/);
+  assert.match(examTestPhp, /testUpdateExamResultRejectsInvalidMetricsAndMissingRecord/);
+
+  // 2. Verify OpenAPI & README
+  assert.equal(rootSpec, publicSpec);
+  assert.match(rootSpec, /\/api\/v1\/exams\/\{id\}:/);
+  assert.match(rootSpec, /operationId:\s*examUpdate/);
+  assert.match(rootSpec, /operationId:\s*examPatch/);
+  assert.match(rootSpec, /ExamResultUpdateRequest:/);
+  assert.match(readmeMd, /\/api\/v1\/exams\/\{id\}/);
+
+  // 3. Behavioral verification via simulator
+  const ctx = createAppContext();
+  const examUrl = new URL('http://localhost:3000/api/v1/exams/1');
+  const missingUrl = new URL('http://localhost:3000/api/v1/exams/9999');
+
+  // 3a. Unauthenticated -> 401
+  const unauth = handleExamEndpoint(ctx, 'PATCH', examUrl, { correct: 16 }, null);
+  assert.equal(unauth.status, 401);
+
+  // 3b. Student & Supporter roles -> 403 FORBIDDEN (teacher/admin only)
+  const studentForbidden = handleExamEndpoint(ctx, 'PATCH', examUrl, { correct: 16 }, { sub: 3, role: 'student' });
+  assert.equal(studentForbidden.status, 403);
+  assert.equal(studentForbidden.body.error.code, 'FORBIDDEN');
+
+  const supporterForbidden = handleExamEndpoint(ctx, 'PUT', examUrl, { correct: 16 }, { sub: 2, role: 'supporter' });
+  assert.equal(supporterForbidden.status, 403);
+  assert.equal(supporterForbidden.body.error.code, 'FORBIDDEN');
+
+  // 3c. Missing exam result -> 404 NOT_FOUND
+  const missing = handleExamEndpoint(ctx, 'PATCH', missingUrl, { correct: 16 }, { sub: 4, role: 'teacher' });
+  assert.equal(missing.status, 404);
+  assert.equal(missing.body.error.code, 'NOT_FOUND');
+
+  // 3d. Validation failures -> 422 VALIDATION_ERROR
+  const invalidPayloads = [
+    {},
+    { total_q: 0 },
+    { correct: -1 },
+    { wrong: 1.5 },
+    { skipped: 'abc' },
+    { correct: 17 }, // merged with existing wrong=3, skipped=2 => 22 > total_q(20)
+    { total_q: 15 }, // merged existing 15+3+2=20 > 15
+    { subject: '   ' },
+    { exam_date: '2026-02-30' },
+    { correct: 10, percentage: 105 },
+  ];
+
+  for (const payload of invalidPayloads) {
+    const res = handleExamEndpoint(ctx, 'PATCH', examUrl, payload, { sub: 4, role: 'teacher' });
+    assert.equal(res.status, 422, `Expected 422 for payload ${JSON.stringify(payload)}`);
+    assert.equal(res.body.error.code, 'VALIDATION_ERROR');
+  }
+
+  // 3e. Teacher PATCH updates partial metrics and recomputes percentage server-side
+  const teacherPatch = handleExamEndpoint(ctx, 'PATCH', examUrl, {
+    correct: 16,
+    wrong: 2,
+    skipped: 2,
+  }, { sub: 4, role: 'teacher' });
+  assert.equal(teacherPatch.status, 200);
+  assert.equal(teacherPatch.body.data.exam.id, 1);
+  assert.equal(teacherPatch.body.data.exam.correct, 16);
+  assert.equal(teacherPatch.body.data.exam.wrong, 2);
+  assert.equal(teacherPatch.body.data.exam.skipped, 2);
+  assert.equal(teacherPatch.body.data.exam.percentage, 80);
+
+  // 3f. Admin PUT full update recomputes percentage & updates subject/chapter/date
+  const adminPut = handleExamEndpoint(ctx, 'PUT', examUrl, {
+    student_id: 20,
+    exam_date: '2026-11-01',
+    subject: 'ریاضی گسسته',
+    chapter: 'گراف',
+    total_q: 25,
+    correct: 21,
+    wrong: 2,
+    skipped: 2,
+    percentage: 50,
+  }, { sub: 1, role: 'admin' });
+  assert.equal(adminPut.status, 200);
+  assert.equal(adminPut.body.data.exam.subject, 'ریاضی گسسته');
+  assert.equal(adminPut.body.data.exam.chapter, 'گراف');
+  assert.equal(adminPut.body.data.exam.exam_date, '2026-11-01');
+  assert.equal(adminPut.body.data.exam.total_q, 25);
+  assert.equal(adminPut.body.data.exam.percentage, 84);
+
+  // 3g. GET /api/v1/exams/details exposes exam row id alongside updated metrics
+  const detailsUrl = new URL('http://localhost:3000/api/v1/exams/details?student_id=20&exam_date=2026-11-01');
+  const detailsRes = handleExamEndpoint(ctx, 'GET', detailsUrl, {}, { sub: 4, role: 'teacher' });
+  assert.equal(detailsRes.status, 200);
+  assert.equal(detailsRes.body.data.subjects.length, 1);
+  assert.equal(detailsRes.body.data.subjects[0].id, 1);
+  assert.equal(detailsRes.body.data.subjects[0].percentage, 84);
+});
+

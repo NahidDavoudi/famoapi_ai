@@ -3282,6 +3282,101 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  /api/v1/exams/{id}:
+    put:
+      tags: [Exams]
+      summary: Update an existing exam result (teacher/admin)
+      description: |
+        Updates an existing student exam result row by ID. Accessible to `teacher` and `admin` roles.
+        Validates non-negative counts (`correct`, `wrong`, `skipped`), requires `total_q >= 1`,
+        and enforces `correct + wrong + skipped <= total_q` against the merged record.
+        The `percentage` metric is automatically recomputed server-side as `ROUND((correct / total_q) * 100, 2)`.
+      operationId: examUpdate
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExamResultUpdateRequest"
+      responses:
+        "200":
+          description: Exam result updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          exam:
+                            $ref: "#/components/schemas/ExamResult"
+                        required: [exam]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    patch:
+      tags: [Exams]
+      summary: Partially update an existing exam result (teacher/admin)
+      description: |
+        Partially updates an existing student exam result row by ID. Accessible to `teacher` and `admin` roles.
+        Merged performance metrics are validated (`total_q >= 1`, `correct/wrong/skipped >= 0`,
+        and `correct + wrong + skipped <= total_q`), and `percentage` is recomputed server-side.
+      operationId: examPatch
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExamResultUpdateRequest"
+      responses:
+        "200":
+          description: Exam result updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          exam:
+                            $ref: "#/components/schemas/ExamResult"
+                        required: [exam]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
   /api/v1/exams/dates:
     get:
       tags: [Exams]
@@ -3436,6 +3531,8 @@ paths:
                             items:
                               type: object
                               properties:
+                                id:
+                                  type: integer
                                 subject:
                                   type: string
                                 chapter:
@@ -7905,6 +8002,44 @@ components:
             file_path:
               type: string
               nullable: true
+
+    ExamResultUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        student_id:
+          type: integer
+          minimum: 1
+        exam_date:
+          type: string
+          format: date
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 50
+        chapter:
+          type: string
+          maxLength: 100
+          nullable: true
+        total_q:
+          type: integer
+          minimum: 1
+          description: تعداد کل سوالات (حداقل ۱)
+        correct:
+          type: integer
+          minimum: 0
+        wrong:
+          type: integer
+          minimum: 0
+        skipped:
+          type: integer
+          minimum: 0
+        percentage:
+          type: number
+          minimum: 0
+          maximum: 100
+          nullable: true
+          description: اختیاری — برای بررسی بازه ۰ تا ۱۰۰؛ مقدار نهایی توسط سرور از نسبت correct / total_q محاسبه می‌شود
 
     StudentPlannerStat:
       type: object

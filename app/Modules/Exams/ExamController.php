@@ -144,6 +144,110 @@ class ExamController
         return $response;
     }
 
+    public function update(Request $request, Response $response, array $args): Response
+    {
+        $id = (int) ($args['id'] ?? 0);
+        $body = $request->getParsedBody();
+
+        $validator = new \App\Core\Validator();
+        $validator->requireBody($body);
+
+        $updatableKeys = ['student_id', 'exam_date', 'subject', 'chapter', 'total_q', 'correct', 'wrong', 'skipped'];
+        $payload = [];
+
+        if (is_array($body)) {
+            if (array_key_exists('student_id', $body)) {
+                $validator
+                    ->required('student_id', 'شناسه دانش‌آموز', $body['student_id'])
+                    ->positiveInt('student_id', 'شناسه دانش‌آموز', $body['student_id']);
+                $payload['student_id'] = $body['student_id'];
+            }
+            if (array_key_exists('exam_date', $body)) {
+                $validator
+                    ->required('exam_date', 'تاریخ آزمون', $body['exam_date'])
+                    ->date('exam_date', 'تاریخ آزمون', $body['exam_date']);
+                $payload['exam_date'] = $body['exam_date'];
+            }
+            if (array_key_exists('subject', $body)) {
+                $validator
+                    ->required('subject', 'نام درس', $body['subject'])
+                    ->string('subject', 'نام درس', $body['subject'])
+                    ->maxLength('subject', 'نام درس', $body['subject'], 50);
+                $payload['subject'] = $body['subject'];
+            }
+            if (array_key_exists('chapter', $body)) {
+                if ($body['chapter'] !== null) {
+                    $validator
+                        ->string('chapter', 'نام مبحث', $body['chapter'])
+                        ->maxLength('chapter', 'نام مبحث', $body['chapter'], 100);
+                }
+                $payload['chapter'] = $body['chapter'];
+            }
+            if (array_key_exists('total_q', $body)) {
+                $validator
+                    ->required('total_q', 'تعداد کل سوالات', $body['total_q'])
+                    ->integer('total_q', 'تعداد کل سوالات', $body['total_q'], 1);
+                $payload['total_q'] = $body['total_q'];
+            }
+            if (array_key_exists('correct', $body)) {
+                $validator
+                    ->required('correct', 'تعداد پاسخ‌های صحیح', $body['correct'])
+                    ->integer('correct', 'تعداد پاسخ‌های صحیح', $body['correct'], 0);
+                $payload['correct'] = $body['correct'];
+            }
+            if (array_key_exists('wrong', $body)) {
+                $validator
+                    ->required('wrong', 'تعداد پاسخ‌های غلط', $body['wrong'])
+                    ->integer('wrong', 'تعداد پاسخ‌های غلط', $body['wrong'], 0);
+                $payload['wrong'] = $body['wrong'];
+            }
+            if (array_key_exists('skipped', $body)) {
+                $validator
+                    ->required('skipped', 'تعداد سوالات نزده', $body['skipped'])
+                    ->integer('skipped', 'تعداد سوالات نزده', $body['skipped'], 0);
+                $payload['skipped'] = $body['skipped'];
+            }
+            if (array_key_exists('percentage', $body) && $body['percentage'] !== null) {
+                $validator->numeric('percentage', 'درصد', $body['percentage']);
+                $payload['percentage'] = $body['percentage'];
+            }
+
+            $hasUpdatable = false;
+            foreach ($updatableKeys as $key) {
+                if (array_key_exists($key, $body)) {
+                    $hasUpdatable = true;
+                    break;
+                }
+            }
+            if (!$hasUpdatable && $validator->passes()) {
+                $validator->addError('حداقل یک فیلد معتبر برای ویرایش نتیجه آزمون الزامی است');
+            }
+        }
+
+        if (!$validator->passes()) {
+            $response->getBody()->write(json_encode([
+                'success' => false, 'data' => null, 'pagination' => null,
+                'error' => ['code' => 'VALIDATION_ERROR', 'message' => $validator->firstError()],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        try {
+            $updated = $this->service->update($id, $payload);
+        } catch (\App\Core\ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success' => false, 'data' => null, 'pagination' => null,
+                'error' => ['code' => $e->getErrorCode(), 'message' => $e->getMessage()],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success' => true, 'data' => ['exam' => $updated], 'pagination' => null, 'error' => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+
     public function upsertComment(Request $request, Response $response): Response
     {
         $decoded = $request->getAttribute('user');

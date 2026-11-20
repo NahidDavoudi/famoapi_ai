@@ -67,6 +67,13 @@ class ExamServiceTest extends TestCase
             percentage REAL NOT NULL DEFAULT 60.0
         )');
 
+        $this->db->exec('CREATE TRIGGER trg_exam_results_pct_update AFTER UPDATE OF total_q, correct ON exam_results
+        BEGIN
+            UPDATE exam_results
+            SET percentage = ROUND((CAST(NEW.correct AS REAL) / NULLIF(NEW.total_q, 0)) * 100, 2)
+            WHERE id = NEW.id;
+        END');
+
         $this->db->exec('CREATE TABLE exam_comments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             student_id INTEGER NOT NULL,
@@ -149,6 +156,86 @@ class ExamServiceTest extends TestCase
                 self::fail('Expected invalid exam input to be rejected');
             } catch (ApiException $exception) {
                 self::assertSame(422, $exception->getHttpStatus());
+            }
+        }
+    }
+
+    public function testUpdateExamResultUpdatesMetricsAndRecomputesPercentage(): void
+    {
+        $this->seedStudentAndExam(17, '2026-09-01');
+        $examId = (int) $this->db->query('SELECT id FROM exam_results LIMIT 1')->fetchColumn();
+
+        // Full update: percentage is recomputed server-side from correct / total_q * 100
+        $updated = $this->service->update($examId, [
+            'subject'    => 'ریاضی',
+            'chapter'    => 'انتگرال',
+            'exam_date'  => '2026-09-10',
+            'total_q'    => 25,
+            'correct'    => 20,
+            'wrong'      => 3,
+            'skipped'    => 2,
+            'percentage' => 75.0,
+        ]);
+
+        self::assertSame($examId, $updated['id']);
+        self::assertSame(17, $updated['student_id']);
+        self::assertSame('ریاضی', $updated['subject']);
+        self::assertSame('انتگرال', $updated['chapter']);
+        self::assertSame('2026-09-10', $updated['exam_date']);
+        self::assertSame(25, $updated['total_q']);
+        self::assertSame(20, $updated['correct']);
+        self::assertSame(3, $updated['wrong']);
+        self::assertSame(2, $updated['skipped']);
+        self::assertSame(80.0, $updated['percentage']);
+
+        // Partial update merges existing metrics and clears blank chapter to null
+        $patched = $this->service->update($examId, [
+            'chapter' => '   ',
+            'correct' => 15,
+            'wrong'   => 5,
+            'skipped' => 5,
+        ]);
+
+        self::assertSame(25, $patched['total_q']);
+        self::assertSame(15, $patched['correct']);
+        self::assertNull($patched['chapter']);
+        self::assertSame(60.0, $patched['percentage']);
+    }
+
+    public function testUpdateExamResultRejectsInvalidMetricsAndMissingRecord(): void
+    {
+        $this->seedStudentAndExam(17, '2026-09-01');
+        $examId = (int) $this->db->query('SELECT id FROM exam_results LIMIT 1')->fetchColumn();
+
+        // Unknown exam ID -> 404
+        try {
+            $this->service->update(999999, ['correct' => 10]);
+            self::fail('Expected missing exam result to throw 404');
+        } catch (ApiException $e) {
+            self::assertSame(404, $e->getHttpStatus());
+            self::assertSame('NOT_FOUND', $e->getErrorCode());
+        }
+
+        // Partial update exceeding existing total_q (20): wrong=2 -> 18+2+4=24 > 20
+        $invalidCases = [
+            [],
+            ['total_q' => 0],
+            ['correct' => -1],
+            ['wrong' => 1.5],
+            ['correct' => 18],
+            ['total_q' => 10],
+            ['subject' => '   '],
+            ['exam_date' => '2026-02-30'],
+            ['correct' => 10, 'percentage' => 120],
+        ];
+
+        foreach ($invalidCases as $payload) {
+            try {
+                $this->service->update($examId, $payload);
+                self::fail('Expected invalid update payload to be rejected with 422');
+            } catch (ApiException $e) {
+                self::assertSame(422, $e->getHttpStatus());
+                self::assertSame('VALIDATION_ERROR', $e->getErrorCode());
             }
         }
     }

@@ -327,6 +327,7 @@ return function (App $app) {
     $app->delete('/api/v1/exams/share-links/{id:[0-9]+}', [$examController, 'revokeShareLink'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
     $app->post('/api/v1/exams/share-links/{id:[0-9]+}/revoke', [$examController, 'revokeShareLink'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
     $app->post('/api/v1/exams', [$examController, 'save'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->map(['PUT', 'PATCH'], '/api/v1/exams/{id:[0-9]+}', [$examController, 'update'])->add($requireTeacher)->add($authRateLimit)->add($authMiddleware);
 
     // Weekly Plans (temporary: admin-only while the planner is being migrated)
     $app->get('/api/v1/plans', [$planController, 'get'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);

@@ -81,7 +81,7 @@ class ExamResult
         }
 
         $stmt = $db->prepare(
-            'SELECT subject, chapter, total_q, correct, wrong, skipped, percentage
+            'SELECT id, subject, chapter, total_q, correct, wrong, skipped, percentage
              FROM exam_results WHERE student_id = ? AND exam_date = ? ORDER BY subject'
         );
         $stmt->execute([$studentId, $examDate]);
@@ -101,6 +101,38 @@ class ExamResult
             'avg_percentage' => $avg ?: 0,
             'comments'       => $comments,
         ];
+    }
+
+    public static function findById(int $id): ?array
+    {
+        $stmt = Database::getConnection()->prepare(
+            'SELECT er.* FROM exam_results er WHERE er.id = ? LIMIT 1'
+        );
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
+    public static function updateById(int $id, array $data): ?array
+    {
+        $allowed = ['student_id', 'exam_date', 'subject', 'chapter', 'total_q', 'correct', 'wrong', 'skipped'];
+        $sets = [];
+        $params = ['id' => $id];
+
+        foreach ($allowed as $col) {
+            if (array_key_exists($col, $data)) {
+                $sets[] = "{$col} = :{$col}";
+                $params[$col] = $data[$col];
+            }
+        }
+
+        if ($sets !== []) {
+            $sql = 'UPDATE exam_results SET ' . implode(', ', $sets) . ' WHERE id = :id';
+            $stmt = Database::getConnection()->prepare($sql);
+            $stmt->execute($params);
+        }
+
+        return self::findById($id);
     }
 
     public static function studentExists(int $studentId): bool

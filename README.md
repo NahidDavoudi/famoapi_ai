@@ -394,6 +394,7 @@ The repository maintains two OpenAPI 3.1.0 specifications:
 | Method | Endpoint | Access / Role | Description |
 | :---: | :--- | :--- | :--- |
 | `GET` | `/api/v1/exams/details` | Authenticated (`StudentScope`) | Per-subject exam breakdown + `avg_percentage` + teacher/staff `comments` array |
+| `PUT` / `PATCH` | `/api/v1/exams/{id}` | Teacher / Admin | Update an existing exam result (`exam_date`, `subject`, `chapter`, `total_q`, `correct`, `wrong`, `skipped`) with merged metric validation & server-recomputed `percentage` |
 | `PUT` | `/api/v1/exams/comments` | Teacher / Supporter / Admin | Upsert comment (`student_id`, `exam_date`, `body`) on `(student_id, exam_date, teacher_user_id)` |
 | `GET` | `/api/v1/exams/share-links` | Supporter / Admin | List generated share links (`student_id`, `exam_date`) with `status`, `sms_sent_at`, and `last_viewed_at` |
 | `POST` | `/api/v1/exams/share-links` | Supporter / Admin | Generate 14-day base64url share link (`random_bytes(32)`, SHA-256 hash stored in PostgreSQL) with optional `send_sms` |

@@ -1255,6 +1255,7 @@ export function handleExamEndpoint(ctx, method, urlObj, body = {}, authUser = nu
     const subjects = ctx.examResults
       .filter((r) => r.student_id === studentId && r.exam_date === examDate)
       .map((r) => ({
+        id: r.id,
         subject: r.subject,
         chapter: r.chapter,
         total_q: r.total_q,
@@ -1283,6 +1284,233 @@ export function handleExamEndpoint(ctx, method, urlObj, body = {}, authUser = nu
           subjects,
           avg_percentage: avg,
           comments: formatCommentsFor(studentId, examDate),
+        },
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  const updateExamMatch = pathname.match(/^\/api\/v1\/exams\/(\d+)$/);
+  if (updateExamMatch && (method === 'PUT' || method === 'PATCH')) {
+    if (!['admin', 'teacher'].includes(user.role)) {
+      return {
+        status: 403,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'FORBIDDEN', message: 'دسترسی محدود به مدرسان و مدیران' },
+        },
+      };
+    }
+
+    const examId = Number(updateExamMatch[1]);
+    if (!Number.isInteger(examId) || examId <= 0) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'شناسه نتیجه آزمون نامعتبر است' },
+        },
+      };
+    }
+
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length === 0) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'بدنه درخواست الزامی است و باید یک شیء معتبر باشد' },
+        },
+      };
+    }
+
+    const existing = ctx.examResults.find((r) => r.id === examId);
+    if (!existing) {
+      return {
+        status: 404,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'NOT_FOUND', message: 'نتیجه آزمون یافت نشد' },
+        },
+      };
+    }
+
+    const validationError = (message) => ({
+      status: 422,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'VALIDATION_ERROR', message },
+      },
+    });
+
+    const parseStrictInt = (val) => {
+      if (typeof val === 'boolean' || val === null || val === undefined || typeof val === 'object') {
+        return null;
+      }
+      const str = String(val).trim();
+      if (!/^-?\d+$/.test(str)) {
+        return null;
+      }
+      return Number(str);
+    };
+
+    const isValidCalendarDate = (dateStr) => {
+      if (typeof dateStr !== 'string') return false;
+      const trimmed = dateStr.trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return false;
+      const [y, m, d] = trimmed.split('-').map(Number);
+      const dt = new Date(Date.UTC(y, m - 1, d));
+      return (
+        dt.getUTCFullYear() === y &&
+        dt.getUTCMonth() === m - 1 &&
+        dt.getUTCDate() === d
+      );
+    };
+
+    const updates = {};
+
+    if (Object.prototype.hasOwnProperty.call(body, 'student_id')) {
+      const sid = parseStrictInt(body.student_id);
+      if (sid === null || sid <= 0) {
+        return validationError('شناسه دانش‌آموز باید یک عدد صحیح مثبت باشد');
+      }
+      if (sid !== existing.student_id && !ctx.students.some((s) => s.id === sid)) {
+        return {
+          status: 404,
+          body: {
+            success: false,
+            data: null,
+            pagination: null,
+            error: { code: 'NOT_FOUND', message: 'دانش‌آموز یافت نشد' },
+          },
+        };
+      }
+      updates.student_id = sid;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, 'exam_date')) {
+      if (!isValidCalendarDate(body.exam_date)) {
+        return validationError('فرمت تاریخ آزمون باید به صورت YYYY-MM-DD باشد');
+      }
+      updates.exam_date = body.exam_date.trim();
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, 'subject')) {
+      if (typeof body.subject !== 'string' || body.subject.trim() === '') {
+        return validationError('نام درس الزامی است');
+      }
+      const subj = body.subject.trim();
+      if (subj.length > 50) {
+        return validationError('نام درس نمی‌تواند بیشتر از ۵۰ کاراکتر باشد');
+      }
+      updates.subject = subj;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, 'chapter')) {
+      if (body.chapter === null) {
+        updates.chapter = null;
+      } else if (typeof body.chapter !== 'string') {
+        return validationError('نام مبحث باید رشته متنی باشد');
+      } else {
+        const ch = body.chapter.trim();
+        if (ch.length > 100) {
+          return validationError('نام مبحث نمی‌تواند بیشتر از ۱۰۰ کاراکتر باشد');
+        }
+        updates.chapter = ch === '' ? null : ch;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, 'total_q')) {
+      const totalQ = parseStrictInt(body.total_q);
+      if (totalQ === null || totalQ < 1) {
+        return validationError('تعداد کل سوالات باید حداقل ۱ باشد');
+      }
+      updates.total_q = totalQ;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, 'correct')) {
+      const correct = parseStrictInt(body.correct);
+      if (correct === null || correct < 0) {
+        return validationError('تعداد پاسخ‌های صحیح باید حداقل ۰ باشد');
+      }
+      updates.correct = correct;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, 'wrong')) {
+      const wrong = parseStrictInt(body.wrong);
+      if (wrong === null || wrong < 0) {
+        return validationError('تعداد پاسخ‌های غلط باید حداقل ۰ باشد');
+      }
+      updates.wrong = wrong;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, 'skipped')) {
+      const skipped = parseStrictInt(body.skipped);
+      if (skipped === null || skipped < 0) {
+        return validationError('تعداد سوالات نزده باید حداقل ۰ باشد');
+      }
+      updates.skipped = skipped;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, 'percentage') && body.percentage !== null) {
+      if (typeof body.percentage === 'boolean' || typeof body.percentage === 'object' || body.percentage === '' || Number.isNaN(Number(body.percentage))) {
+        return validationError('درصد باید مقدار عددی بین ۰ تا ۱۰۰ باشد');
+      }
+      const pct = Number(body.percentage);
+      if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+        return validationError('درصد باید بین ۰ تا ۱۰۰ باشد');
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return validationError('حداقل یک فیلد معتبر برای ویرایش نتیجه آزمون الزامی است');
+    }
+
+    const effectiveTotal = updates.total_q ?? existing.total_q;
+    const effectiveCorrect = updates.correct ?? existing.correct;
+    const effectiveWrong = updates.wrong ?? existing.wrong;
+    const effectiveSkipped = updates.skipped ?? existing.skipped;
+
+    if (effectiveTotal < 1) {
+      return validationError('تعداد کل سوالات باید حداقل ۱ باشد');
+    }
+
+    if (effectiveCorrect + effectiveWrong + effectiveSkipped > effectiveTotal) {
+      return validationError('مجموع پاسخ‌های صحیح، غلط و نزده نمی‌تواند از تعداد کل سوالات بیشتر باشد');
+    }
+
+    Object.assign(existing, updates);
+    existing.percentage = Number(((existing.correct / existing.total_q) * 100).toFixed(2));
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: {
+          exam: {
+            id: existing.id,
+            student_id: existing.student_id,
+            file_id: existing.file_id ?? null,
+            exam_date: existing.exam_date,
+            subject: existing.subject,
+            chapter: existing.chapter,
+            total_q: existing.total_q,
+            correct: existing.correct,
+            wrong: existing.wrong,
+            skipped: existing.skipped,
+            percentage: existing.percentage,
+            created_at: existing.created_at ?? null,
+          },
         },
         pagination: null,
         error: null,

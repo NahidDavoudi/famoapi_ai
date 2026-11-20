@@ -87,6 +87,141 @@ class ExamService
         return ['inserted' => $inserted];
     }
 
+    public function update(int $id, array $data): array
+    {
+        if ($id <= 0) {
+            throw new \App\Core\ApiException('شناسه نتیجه آزمون نامعتبر است', 422, 'VALIDATION_ERROR');
+        }
+
+        $existing = ExamResult::findById($id);
+        if (!$existing) {
+            throw new \App\Core\ApiException('نتیجه آزمون یافت نشد', 404, 'NOT_FOUND');
+        }
+
+        $updates = [];
+
+        if (array_key_exists('student_id', $data)) {
+            $studentId = $this->parseStrictInt($data['student_id'], 'شناسه دانش‌آموز', 1);
+            if ($studentId !== (int) $existing['student_id'] && !ExamResult::studentExists($studentId)) {
+                throw new \App\Core\ApiException('دانش‌آموز یافت نشد', 404, 'NOT_FOUND');
+            }
+            $updates['student_id'] = $studentId;
+        }
+
+        if (array_key_exists('exam_date', $data)) {
+            if (!is_string($data['exam_date']) || !$this->isValidDate(trim($data['exam_date']))) {
+                throw new \App\Core\ApiException('فرمت تاریخ آزمون باید به صورت YYYY-MM-DD باشد', 422, 'VALIDATION_ERROR');
+            }
+            $updates['exam_date'] = trim($data['exam_date']);
+        }
+
+        if (array_key_exists('subject', $data)) {
+            if (!is_string($data['subject']) || trim($data['subject']) === '') {
+                throw new \App\Core\ApiException('نام درس الزامی است', 422, 'VALIDATION_ERROR');
+            }
+            $subject = trim($data['subject']);
+            if (mb_strlen($subject) > 50) {
+                throw new \App\Core\ApiException('نام درس نمی‌تواند بیشتر از ۵۰ کاراکتر باشد', 422, 'VALIDATION_ERROR');
+            }
+            $updates['subject'] = $subject;
+        }
+
+        if (array_key_exists('chapter', $data)) {
+            if ($data['chapter'] === null) {
+                $updates['chapter'] = null;
+            } elseif (!is_string($data['chapter'])) {
+                throw new \App\Core\ApiException('نام مبحث باید رشته متنی باشد', 422, 'VALIDATION_ERROR');
+            } else {
+                $chapter = trim($data['chapter']);
+                if ($chapter !== '' && mb_strlen($chapter) > 100) {
+                    throw new \App\Core\ApiException('نام مبحث نمی‌تواند بیشتر از ۱۰۰ کاراکتر باشد', 422, 'VALIDATION_ERROR');
+                }
+                $updates['chapter'] = $chapter === '' ? null : $chapter;
+            }
+        }
+
+        if (array_key_exists('total_q', $data)) {
+            $updates['total_q'] = $this->parseStrictInt($data['total_q'], 'تعداد کل سوالات', 1);
+        }
+
+        if (array_key_exists('correct', $data)) {
+            $updates['correct'] = $this->parseStrictInt($data['correct'], 'تعداد پاسخ‌های صحیح', 0);
+        }
+
+        if (array_key_exists('wrong', $data)) {
+            $updates['wrong'] = $this->parseStrictInt($data['wrong'], 'تعداد پاسخ‌های غلط', 0);
+        }
+
+        if (array_key_exists('skipped', $data)) {
+            $updates['skipped'] = $this->parseStrictInt($data['skipped'], 'تعداد سوالات نزده', 0);
+        }
+
+        if (array_key_exists('percentage', $data) && $data['percentage'] !== null) {
+            if (!is_scalar($data['percentage']) || is_bool($data['percentage']) || !is_numeric($data['percentage'])) {
+                throw new \App\Core\ApiException('درصد باید مقدار عددی بین ۰ تا ۱۰۰ باشد', 422, 'VALIDATION_ERROR');
+            }
+            $pct = (float) $data['percentage'];
+            if (!is_finite($pct) || $pct < 0 || $pct > 100) {
+                throw new \App\Core\ApiException('درصد باید بین ۰ تا ۱۰۰ باشد', 422, 'VALIDATION_ERROR');
+            }
+        }
+
+        if ($updates === []) {
+            throw new \App\Core\ApiException('حداقل یک فیلد معتبر برای ویرایش نتیجه آزمون الزامی است', 422, 'VALIDATION_ERROR');
+        }
+
+        $effectiveTotal = $updates['total_q'] ?? (int) $existing['total_q'];
+        $effectiveCorrect = $updates['correct'] ?? (int) $existing['correct'];
+        $effectiveWrong = $updates['wrong'] ?? (int) $existing['wrong'];
+        $effectiveSkipped = $updates['skipped'] ?? (int) $existing['skipped'];
+
+        if ($effectiveTotal < 1) {
+            throw new \App\Core\ApiException('تعداد کل سوالات باید حداقل ۱ باشد', 422, 'VALIDATION_ERROR');
+        }
+
+        if ($effectiveCorrect < 0 || $effectiveWrong < 0 || $effectiveSkipped < 0) {
+            throw new \App\Core\ApiException('تعداد پاسخ‌ها باید عدد صحیح نامنفی باشد', 422, 'VALIDATION_ERROR');
+        }
+
+        if ($effectiveCorrect + $effectiveWrong + $effectiveSkipped > $effectiveTotal) {
+            throw new \App\Core\ApiException('مجموع پاسخ‌های صحیح، غلط و نزده نمی‌تواند از تعداد کل سوالات بیشتر باشد', 422, 'VALIDATION_ERROR');
+        }
+
+        $updated = ExamResult::updateById($id, $updates);
+        if (!$updated) {
+            throw new \App\Core\ApiException('نتیجه آزمون یافت نشد', 404, 'NOT_FOUND');
+        }
+
+        $computedPercentage = round(($effectiveCorrect / $effectiveTotal) * 100, 2);
+
+        return [
+            'id'         => (int) $updated['id'],
+            'student_id' => (int) $updated['student_id'],
+            'file_id'    => isset($updated['file_id']) && $updated['file_id'] !== null ? (int) $updated['file_id'] : null,
+            'exam_date'  => (string) $updated['exam_date'],
+            'subject'    => (string) $updated['subject'],
+            'chapter'    => $updated['chapter'] !== null ? (string) $updated['chapter'] : null,
+            'total_q'    => (int) $updated['total_q'],
+            'correct'    => (int) $updated['correct'],
+            'wrong'      => (int) $updated['wrong'],
+            'skipped'    => (int) $updated['skipped'],
+            'percentage' => isset($updated['percentage']) ? round((float) $updated['percentage'], 2) : $computedPercentage,
+            'created_at' => $updated['created_at'] ?? null,
+        ];
+    }
+
+    private function parseStrictInt(mixed $value, string $label, int $min): int
+    {
+        if (is_bool($value) || !is_scalar($value) || preg_match('/^-?\d+$/', trim((string) $value)) !== 1) {
+            throw new \App\Core\ApiException("{$label} باید عدد صحیح باشد", 422, 'VALIDATION_ERROR');
+        }
+        $intVal = (int) trim((string) $value);
+        if ($intVal < $min) {
+            throw new \App\Core\ApiException("{$label} باید حداقل {$min} باشد", 422, 'VALIDATION_ERROR');
+        }
+        return $intVal;
+    }
+
     public function upsertComment(int $studentId, string $examDate, int $teacherUserId, string $body): array
     {
         $trimmedBody = trim($body);
