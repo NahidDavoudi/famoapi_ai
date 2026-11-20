@@ -5,18 +5,25 @@ namespace App\Modules\Auth;
 use App\Core\Auth;
 use App\Core\Database;
 use App\Core\JwtRevocation;
+use App\Core\OtpService;
 use App\Core\PhoneNumber;
 use App\Core\RateLimitedException;
 use App\Core\RateLimiter;
+use App\Core\RedisClient;
 use App\Core\SmsService;
+use App\Core\TrustedDevice;
 
 class AuthService
 {
-    private SmsService $sms;
+    private const PASSWORD_RESET_TOKEN_TTL = 600;
 
-    public function __construct(?SmsService $sms = null)
+    private SmsService $sms;
+    private OtpService $otp;
+
+    public function __construct(?SmsService $sms = null, ?OtpService $otp = null)
     {
         $this->sms = $sms ?? new SmsService();
+        $this->otp = $otp ?? new OtpService();
     }
 
     /**
@@ -169,7 +176,7 @@ class AuthService
         ];
     }
 
-    public function login(string $username, string $password, ?string $ip = null): array
+    public function login(string $username, string $password, ?string $ip = null, ?string $trustedDeviceToken = null): array
     {
         $candidates = User::findCandidatesForLogin($username);
         if ($candidates === []) {
@@ -198,53 +205,9 @@ class AuthService
         $role = $user['role'];
 
         if ($role === 'admin' || $role === 'supporter' || $role === 'teacher') {
-            // TODO: برای فعال‌سازی روی سایر نقش‌ها (مثلاً student)، این شرط را گسترش دهید
             $rawMobile = !empty($user['phone']) ? (string) $user['phone'] : (string) $user['username'];
             $mobile = PhoneNumber::normalize($rawMobile) ?? $rawMobile;
-            $cfg = RateLimiter::config();
-
-            $fwPhone = RateLimiter::attemptFixedWindow(
-                RateLimiter::key('sms:phone_win', $mobile),
-                (int) ($cfg['sms_phone_max'] ?? 3),
-                (int) ($cfg['sms_phone_window'] ?? 600)
-            );
-            if (!$fwPhone['allowed']) {
-                throw new RateLimitedException($fwPhone['retry_after'] > 0 ? $fwPhone['retry_after'] : (int) ($cfg['sms_phone_window'] ?? 600));
-            }
-
-            if ($ip !== null && $ip !== '') {
-                $fwIp = RateLimiter::attemptFixedWindow(
-                    RateLimiter::key('sms:ip_win', $ip),
-                    (int) ($cfg['sms_ip_max'] ?? 10),
-                    (int) ($cfg['sms_ip_window'] ?? 3600)
-                );
-                if (!$fwIp['allowed']) {
-                    throw new RateLimitedException($fwIp['retry_after'] > 0 ? $fwIp['retry_after'] : (int) ($cfg['sms_ip_window'] ?? 3600));
-                }
-            }
-
-            $smsWindow = 3600;
-            $phoneMax = max(1, (int) ($_ENV['AUTH_SMS_PHONE_HOURLY_MAX'] ?? 5));
-            $phoneKey = RateLimiter::key('sms:phone', $mobile);
-            $phoneStatus = RateLimiter::status($phoneKey, $phoneMax);
-            if (!$phoneStatus['allowed']) {
-                throw new RateLimitedException($phoneStatus['retry_after'] > 0 ? $phoneStatus['retry_after'] : $smsWindow);
-            }
-
-            $ipMax = max(1, (int) ($_ENV['AUTH_SMS_IP_HOURLY_MAX'] ?? 20));
-            $ipKey = null;
-            if ($ip !== null) {
-                $ipKey = RateLimiter::key('sms:ip', $ip);
-                $ipStatus = RateLimiter::status($ipKey, $ipMax);
-                if (!$ipStatus['allowed']) {
-                    throw new RateLimitedException($ipStatus['retry_after'] > 0 ? $ipStatus['retry_after'] : $smsWindow);
-                }
-            }
-
-            RateLimiter::attempt($phoneKey, $phoneMax, $smsWindow, $smsWindow);
-            if ($ipKey !== null) {
-                RateLimiter::attempt($ipKey, $ipMax, $smsWindow, $smsWindow);
-            }
+            $this->enforceSmsRateLimits($mobile, $ip);
 
             $code = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
             $expiresAt = gmdate('Y-m-d H:i:s', time() + 300); // 5 minutes
@@ -273,6 +236,49 @@ class AuthService
             ];
         }
 
+        if ($role === 'student') {
+            $student2faMode = TrustedDevice::mode();
+            $needsStudent2fa = $student2faMode === TrustedDevice::MODE_ALWAYS
+                || ($student2faMode === TrustedDevice::MODE_NEW_DEVICE && !TrustedDevice::isTrusted((int) $user['id'], $trustedDeviceToken));
+
+            if ($needsStudent2fa) {
+                $rawMobile = !empty($user['phone']) ? (string) $user['phone'] : (string) $user['username'];
+                $mobile = PhoneNumber::normalize($rawMobile);
+                if ($mobile === null || $mobile === '09000000000') {
+                    throw new \App\Core\ApiException(
+                        'برای ورود دو مرحله‌ای ثبت شماره موبایل معتبر در حساب کاربری الزامی است',
+                        422,
+                        '2FA_PHONE_REQUIRED'
+                    );
+                }
+
+                $this->enforceSmsRateLimits($mobile, $ip);
+
+                $issued = $this->otp->issue(
+                    OtpService::PURPOSE_LOGIN_2FA,
+                    $mobile,
+                    OtpService::DEFAULT_TTL,
+                    OtpService::DEFAULT_MAX_ATTEMPTS,
+                    ['user_id' => (int) $user['id']]
+                );
+
+                $sent = $this->sms->sendVerificationCode($mobile, $issued['code']);
+                if (!$sent) {
+                    $this->otp->invalidate(OtpService::PURPOSE_LOGIN_2FA, $mobile);
+                    error_log('[' . date('Y-m-d H:i:s') . '] AuthService: Failed to send student 2FA code for user ' . $user['id'] . PHP_EOL, 3, __DIR__ . '/../../../storage/logs/app.log');
+                    throw new \App\Core\ApiException('ارسال کد تأیید با مشکل مواجه شد. لطفاً دقایقی بعد تلاش کنید.', 500, 'AUTH_ERROR');
+                }
+
+                return [
+                    'requires_2fa' => true,
+                    'user_id'      => (int) $user['id'],
+                    'username'     => $user['username'],
+                    'role'         => $role,
+                    'phone_mask'   => PhoneNumber::mask($mobile),
+                ];
+            }
+        }
+
         $studentId = $this->studentIdFor($user);
 
         $token = Auth::encode([
@@ -295,9 +301,391 @@ class AuthService
 
     public function verify2fa(int $userId, string $code): array
     {
+        $user = User::findById($userId);
+
+        if ($user && ($user['role'] ?? '') === 'student') {
+            if (isset($user['is_active']) && (int) $user['is_active'] === 0) {
+                throw new \App\Core\ApiException('حساب کاربری غیرفعال است', 403, 'FORBIDDEN');
+            }
+
+            $rawMobile = !empty($user['phone']) ? (string) $user['phone'] : (string) $user['username'];
+            $mobile = PhoneNumber::normalize($rawMobile);
+            if ($mobile === null || $mobile === '09000000000') {
+                throw new \App\Core\ApiException('کد تأیید نامعتبر یا منقضی شده است', 401, '2FA_ERROR');
+            }
+
+            $meta = $this->otp->verify(OtpService::PURPOSE_LOGIN_2FA, $mobile, $code);
+            if (isset($meta['user_id']) && (int) $meta['user_id'] !== $userId) {
+                throw new \App\Core\ApiException('کد تأیید نامعتبر یا منقضی شده است', 401, '2FA_ERROR');
+            }
+
+            return $this->sessionForUser($userId);
+        }
+
         $this->consume2faCode($userId, $code);
 
         return $this->sessionForUser($userId);
+    }
+
+    /**
+     * Step 1 of SMS-OTP password reset: issue & send a purpose-bound `password_reset` OTP.
+     * Returns an identical response regardless of phone existence or SMS outcome (anti-enumeration)
+     * and equalizes timing across branches.
+     *
+     * @return array{message: string, expires_in: int}
+     */
+    public function forgotPassword(string $rawPhone, ?string $username = null): array
+    {
+        $startNs = hrtime(true);
+        $phone = PhoneNumber::normalizeOrFail($rawPhone, 'شماره تلفن همراه معتبر نیست');
+
+        if (!RedisClient::isAvailable()) {
+            throw new \App\Core\ApiException(
+                'سرویس کد تأیید موقتاً در دسترس نیست. لطفاً دقایقی بعد تلاش کنید.',
+                503,
+                'OTP_SERVICE_UNAVAILABLE'
+            );
+        }
+
+        $otpIdentifier = $this->passwordResetIdentifier($phone, $username);
+        $user = $this->resolveSingleActiveUserForReset($phone, $username);
+
+        if ($user !== null) {
+            $issued = $this->otp->issue(
+                OtpService::PURPOSE_PASSWORD_RESET,
+                $otpIdentifier,
+                OtpService::DEFAULT_TTL,
+                OtpService::DEFAULT_MAX_ATTEMPTS,
+                ['user_id' => (int) $user['id']]
+            );
+
+            $sent = $this->sms->sendVerificationCode($phone, $issued['code']);
+            if (!$sent) {
+                $this->otp->invalidate(OtpService::PURPOSE_PASSWORD_RESET, $otpIdentifier);
+                error_log(
+                    '[' . date('Y-m-d H:i:s') . '] AuthService: Failed to send password reset OTP for user ' . $user['id'] . PHP_EOL,
+                    3,
+                    __DIR__ . '/../../../storage/logs/app.log'
+                );
+            }
+        } else {
+            $this->otp->simulateIssueWork(OtpService::PURPOSE_PASSWORD_RESET, $otpIdentifier);
+        }
+
+        $this->equalizeForgotTiming($startNs);
+
+        return [
+            'message'    => 'در صورت وجود حساب کاربری فعال، کد تأیید به شماره موبایل شما ارسال شد.',
+            'expires_in' => OtpService::DEFAULT_TTL,
+        ];
+    }
+
+    /**
+     * Step 2 of SMS-OTP password reset: verify the `password_reset` OTP (fail closed if Redis is down)
+     * and mint a short-lived (10 min), single-use signed reset token.
+     *
+     * @return array{reset_token: string, expires_in: int}
+     */
+    public function verifyPasswordResetOtp(string $rawPhone, string $code, ?string $username = null): array
+    {
+        $phone = PhoneNumber::normalizeOrFail($rawPhone, 'شماره تلفن همراه معتبر نیست');
+
+        if (!RedisClient::isAvailable()) {
+            throw new \App\Core\ApiException(
+                'سرویس تأیید کد موقتاً در دسترس نیست. لطفاً دقایقی بعد تلاش کنید.',
+                503,
+                'OTP_SERVICE_UNAVAILABLE'
+            );
+        }
+
+        if ($phone === '09000000000') {
+            throw new \App\Core\ApiException('کد تأیید نامعتبر یا منقضی شده است', 401, 'OTP_INVALID');
+        }
+
+        $otpIdentifier = $this->passwordResetIdentifier($phone, $username);
+        $meta = $this->otp->verify(OtpService::PURPOSE_PASSWORD_RESET, $otpIdentifier, $code);
+
+        $user = $this->resolveSingleActiveUserForReset($phone, $username);
+        if (!$user) {
+            throw new \App\Core\ApiException('کد تأیید نامعتبر یا منقضی شده است', 401, 'OTP_INVALID');
+        }
+        if (isset($meta['user_id']) && (int) $meta['user_id'] !== (int) $user['id']) {
+            throw new \App\Core\ApiException('کد تأیید نامعتبر یا منقضی شده است', 401, 'OTP_INVALID');
+        }
+
+        $jti = bin2hex(random_bytes(16));
+        $ttl = self::PASSWORD_RESET_TOKEN_TTL;
+        $stored = RedisClient::setex(self::passwordResetTokenRedisKey($jti), $ttl, (string) $user['id']);
+        if (!$stored) {
+            throw new \App\Core\ApiException(
+                'سرویس بازنشانی رمز عبور موقتاً در دسترس نیست. لطفاً دقایقی بعد تلاش کنید.',
+                503,
+                'OTP_SERVICE_UNAVAILABLE'
+            );
+        }
+
+        $resetToken = Auth::encodeWithKey([
+            'jti' => $jti,
+            'typ' => 'password_reset',
+            'sub' => (int) $user['id'],
+        ], self::passwordResetSigningKey(), $ttl);
+
+        return [
+            'reset_token' => $resetToken,
+            'expires_in'  => $ttl,
+        ];
+    }
+
+    /**
+     * Step 3 of SMS-OTP password reset: validate & consume single-use reset token, update password,
+     * clear `must_change_password` if present in DB schema, and revoke all existing JWT sessions.
+     *
+     * @return array{message: string}
+     */
+    public function resetPasswordWithToken(string $token, string $newPassword): array
+    {
+        if (!RedisClient::isAvailable()) {
+            throw new \App\Core\ApiException(
+                'سرویس بازنشانی رمز عبور موقتاً در دسترس نیست. لطفاً دقایقی بعد تلاش کنید.',
+                503,
+                'OTP_SERVICE_UNAVAILABLE'
+            );
+        }
+
+        if (mb_strlen($newPassword) < 4) {
+            throw new \App\Core\ApiException('رمز عبور جدید باید حداقل ۴ کاراکتر باشد', 422, 'VALIDATION_ERROR');
+        }
+
+        $trimmedToken = trim($token);
+        if ($trimmedToken === '') {
+            throw new \App\Core\ApiException('توکن بازنشانی رمز عبور نامعتبر یا منقضی شده است', 401, 'INVALID_RESET_TOKEN');
+        }
+
+        try {
+            $claims = Auth::decodeWithKey($trimmedToken, self::passwordResetSigningKey());
+        } catch (\Throwable) {
+            throw new \App\Core\ApiException('توکن بازنشانی رمز عبور نامعتبر یا منقضی شده است', 401, 'INVALID_RESET_TOKEN');
+        }
+
+        $typ = isset($claims->typ) && is_string($claims->typ) ? $claims->typ : '';
+        $jti = isset($claims->jti) && is_string($claims->jti) ? $claims->jti : '';
+        $userId = isset($claims->sub) ? (int) $claims->sub : 0;
+
+        if ($typ !== 'password_reset' || preg_match('/^[0-9a-f]{32}$/', $jti) !== 1 || $userId <= 0) {
+            throw new \App\Core\ApiException('توکن بازنشانی رمز عبور نامعتبر یا منقضی شده است', 401, 'INVALID_RESET_TOKEN');
+        }
+
+        $redisKey = self::passwordResetTokenRedisKey($jti);
+        $storedUserId = RedisClient::get($redisKey);
+        if (!RedisClient::isAvailable()) {
+            throw new \App\Core\ApiException(
+                'سرویس بازنشانی رمز عبور موقتاً در دسترس نیست. لطفاً دقایقی بعد تلاش کنید.',
+                503,
+                'OTP_SERVICE_UNAVAILABLE'
+            );
+        }
+        if ($storedUserId === null || !hash_equals((string) $userId, $storedUserId)) {
+            throw new \App\Core\ApiException('توکن بازنشانی رمز عبور نامعتبر، منقضی یا قبلاً استفاده شده است', 401, 'INVALID_RESET_TOKEN');
+        }
+
+        $deleted = RedisClient::del($redisKey);
+        if (!RedisClient::isAvailable()) {
+            throw new \App\Core\ApiException(
+                'سرویس بازنشانی رمز عبور موقتاً در دسترس نیست. لطفاً دقایقی بعد تلاش کنید.',
+                503,
+                'OTP_SERVICE_UNAVAILABLE'
+            );
+        }
+        if ($deleted !== 1) {
+            throw new \App\Core\ApiException('توکن بازنشانی رمز عبور نامعتبر، منقضی یا قبلاً استفاده شده است', 401, 'INVALID_RESET_TOKEN');
+        }
+
+        $user = User::findById($userId);
+        if (!$user) {
+            throw new \App\Core\ApiException('کاربر یافت نشد', 404, 'NOT_FOUND');
+        }
+        if (isset($user['is_active']) && (int) $user['is_active'] === 0) {
+            throw new \App\Core\ApiException('حساب کاربری غیرفعال است', 403, 'FORBIDDEN');
+        }
+
+        User::update($userId, ['password' => $newPassword]);
+        $this->clearMustChangePasswordIfPresent($userId);
+        JwtRevocation::revokeAllForUser($userId);
+
+        return [
+            'message' => 'رمز عبور با موفقیت بازنشانی شد',
+        ];
+    }
+
+    private function enforceSmsRateLimits(string $mobile, ?string $ip): void
+    {
+        $cfg = RateLimiter::config();
+
+        $fwPhone = RateLimiter::attemptFixedWindow(
+            RateLimiter::key('sms:phone_win', $mobile),
+            (int) ($cfg['sms_phone_max'] ?? 3),
+            (int) ($cfg['sms_phone_window'] ?? 600)
+        );
+        if (!$fwPhone['allowed']) {
+            throw new RateLimitedException($fwPhone['retry_after'] > 0 ? $fwPhone['retry_after'] : (int) ($cfg['sms_phone_window'] ?? 600));
+        }
+
+        if ($ip !== null && $ip !== '') {
+            $fwIp = RateLimiter::attemptFixedWindow(
+                RateLimiter::key('sms:ip_win', $ip),
+                (int) ($cfg['sms_ip_max'] ?? 10),
+                (int) ($cfg['sms_ip_window'] ?? 3600)
+            );
+            if (!$fwIp['allowed']) {
+                throw new RateLimitedException($fwIp['retry_after'] > 0 ? $fwIp['retry_after'] : (int) ($cfg['sms_ip_window'] ?? 3600));
+            }
+        }
+
+        $smsWindow = 3600;
+        $phoneMax = max(1, (int) ($_ENV['AUTH_SMS_PHONE_HOURLY_MAX'] ?? 5));
+        $phoneKey = RateLimiter::key('sms:phone', $mobile);
+        $phoneStatus = RateLimiter::status($phoneKey, $phoneMax);
+        if (!$phoneStatus['allowed']) {
+            throw new RateLimitedException($phoneStatus['retry_after'] > 0 ? $phoneStatus['retry_after'] : $smsWindow);
+        }
+
+        $ipMax = max(1, (int) ($_ENV['AUTH_SMS_IP_HOURLY_MAX'] ?? 20));
+        $ipKey = null;
+        if ($ip !== null) {
+            $ipKey = RateLimiter::key('sms:ip', $ip);
+            $ipStatus = RateLimiter::status($ipKey, $ipMax);
+            if (!$ipStatus['allowed']) {
+                throw new RateLimitedException($ipStatus['retry_after'] > 0 ? $ipStatus['retry_after'] : $smsWindow);
+            }
+        }
+
+        RateLimiter::attempt($phoneKey, $phoneMax, $smsWindow, $smsWindow);
+        if ($ipKey !== null) {
+            RateLimiter::attempt($ipKey, $ipMax, $smsWindow, $smsWindow);
+        }
+    }
+
+    private function resolveSingleActiveUserForReset(string $canonicalPhone, ?string $username): ?array
+    {
+        if ($canonicalPhone === '09000000000') {
+            return null;
+        }
+
+        $db = Database::getConnection();
+        $stmt = $db->prepare(
+            'SELECT * FROM users WHERE (phone = :phone OR username = :username) AND is_active = 1 ORDER BY id ASC'
+        );
+        $stmt->execute([
+            'phone'    => $canonicalPhone,
+            'username' => $canonicalPhone,
+        ]);
+        $rows = $stmt->fetchAll();
+        if (!$rows) {
+            return null;
+        }
+
+        $trimmedUsername = $username !== null ? trim($username) : '';
+        if ($trimmedUsername !== '') {
+            $normUsername = PhoneNumber::normalize($trimmedUsername);
+            $filtered = array_values(array_filter($rows, static function (array $row) use ($trimmedUsername, $normUsername): bool {
+                $rowUser = (string) ($row['username'] ?? '');
+                if (strcasecmp($rowUser, $trimmedUsername) === 0) {
+                    return true;
+                }
+                if ($normUsername !== null) {
+                    $normRowUser = PhoneNumber::normalize($rowUser);
+                    return $normRowUser === $normUsername;
+                }
+                return false;
+            }));
+            $rows = $filtered;
+        }
+
+        // Refuse ambiguous shared phones unless uniquely narrowed to one active user
+        if (count($rows) !== 1) {
+            return null;
+        }
+
+        return $rows[0];
+    }
+
+    private function passwordResetIdentifier(string $canonicalPhone, ?string $username): string
+    {
+        $trimmed = $username !== null ? trim($username) : '';
+        if ($trimmed === '') {
+            return $canonicalPhone;
+        }
+        $normUsername = PhoneNumber::normalize($trimmed);
+        if ($normUsername === $canonicalPhone) {
+            return $canonicalPhone;
+        }
+
+        return $canonicalPhone . '|' . strtolower($trimmed);
+    }
+
+    private function equalizeForgotTiming(int $startNs): void
+    {
+        $rawFloor = $_ENV['PASSWORD_FORGOT_TIMING_FLOOR_MS'] ?? getenv('PASSWORD_FORGOT_TIMING_FLOOR_MS');
+        $floorMs = is_numeric($rawFloor) ? max(0, min(2000, (int) $rawFloor)) : 120;
+        if ($floorMs === 0) {
+            return;
+        }
+
+        $targetUs = ($floorMs + random_int(0, 25)) * 1000;
+        $elapsedUs = (int) ((hrtime(true) - $startNs) / 1000);
+        if ($elapsedUs < $targetUs) {
+            usleep($targetUs - $elapsedUs);
+        }
+    }
+
+    private static function passwordResetSigningKey(): string
+    {
+        $secret = trim((string) ($_ENV['JWT_SECRET'] ?? getenv('JWT_SECRET') ?: ''));
+        if ($secret === '') {
+            throw new \RuntimeException('JWT_SECRET is not configured', 500);
+        }
+
+        return hash_hmac('sha256', 'famo:password_reset:jwt:v1', $secret);
+    }
+
+    private static function passwordResetTokenRedisKey(string $jti): string
+    {
+        return 'pwd_reset:jti:' . $jti;
+    }
+
+    private function clearMustChangePasswordIfPresent(int $userId): void
+    {
+        try {
+            $db = Database::getConnection();
+            $driver = strtolower((string) $db->getAttribute(\PDO::ATTR_DRIVER_NAME));
+            if ($driver === 'pgsql') {
+                $colStmt = $db->prepare(
+                    "SELECT data_type FROM information_schema.columns
+                     WHERE table_name = 'users' AND column_name = 'must_change_password'
+                     LIMIT 1"
+                );
+                $colStmt->execute();
+                $dataType = $colStmt->fetchColumn();
+                if ($dataType === false) {
+                    return;
+                }
+                $valSql = strtolower((string) $dataType) === 'boolean' ? 'FALSE' : '0';
+                $db->prepare("UPDATE users SET must_change_password = {$valSql} WHERE id = :id")
+                   ->execute(['id' => $userId]);
+                return;
+            }
+
+            if ($driver === 'mysql') {
+                $colStmt = $db->query("SHOW COLUMNS FROM users LIKE 'must_change_password'");
+                if ($colStmt === false || $colStmt->fetch() === false) {
+                    return;
+                }
+                $db->prepare('UPDATE users SET must_change_password = 0 WHERE id = :id')
+                   ->execute(['id' => $userId]);
+            }
+        } catch (\Throwable) {
+            // Column does not exist or cannot be inspected; safe no-op
+        }
     }
 
     public function register(array $data): array

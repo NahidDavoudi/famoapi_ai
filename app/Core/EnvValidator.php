@@ -315,6 +315,11 @@ final class EnvValidator
             }
         }
 
+        $student2faMode = self::get('STUDENT_2FA_MODE');
+        if ($student2faMode !== null && $student2faMode !== '' && !in_array(strtolower(trim($student2faMode)), TrustedDevice::VALID_MODES, true)) {
+            $errors[] = 'متغیر محیطی STUDENT_2FA_MODE باید یکی از مقادیر off، new_device یا always باشد';
+        }
+
         foreach (self::BOOLEAN_KEYS as $key) {
             $val = self::get($key);
             if ($val !== null && $val !== '') {

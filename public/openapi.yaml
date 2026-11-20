@@ -195,7 +195,7 @@ paths:
                                 nullable: true
                                 description: شناسه دانش‌آموز متصل (فقط برای نقش student)
         "202":
-          description: 2FA required (admin/supporter/teacher)
+          description: 2FA required (always for admin/supporter/teacher; optional for student according to STUDENT_2FA_MODE=off|new_device|always)
           content:
             application/json:
               schema:
@@ -220,11 +220,18 @@ paths:
           $ref: "#/components/responses/ValidationError"
         "429":
           $ref: "#/components/responses/RateLimited"
+        "503":
+          description: OTP verification service unavailable (Redis offline while student 2FA is active)
 
   /api/v1/auth/verify-2fa:
     post:
       tags: [Auth]
       summary: Verify 2FA code and complete login
+      description: >
+        Verifies the 6-digit SMS OTP for staff (always) or students (when `STUDENT_2FA_MODE`
+        is `new_device` or `always`). For students under `STUDENT_2FA_MODE=new_device`, sets a
+        30-day `HttpOnly` per-user trusted-device cookie (`famo_td`) stored hashed in Redis.
+        Fails closed (`503`) for student OTP verification if Redis is unavailable.
       operationId: authVerify2fa
       requestBody:
         required: true
@@ -274,6 +281,132 @@ paths:
           $ref: "#/components/responses/ValidationError"
         "429":
           $ref: "#/components/responses/RateLimited"
+        "503":
+          description: OTP verification service unavailable (fail-closed when Redis is down)
+
+  /api/v1/auth/password/forgot:
+    post:
+      tags: [Auth]
+      summary: Request SMS-OTP code for password reset
+      description: >
+        Issues a single-use, purpose-bound (`password_reset`, TTL 300s, max 5 verify attempts)
+        6-digit OTP via the existing `auth_2fa` SMS pattern when an unambiguous active account matches.
+        Protected by SMS per-phone/per-IP limits and auth attempt limits. Always returns the same
+        200 response with equalized timing regardless of whether the phone number exists.
+      operationId: authPasswordForgot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthPasswordForgotRequest"
+      responses:
+        "200":
+          description: Uniform acknowledgment (prevents phone enumeration)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          message:
+                            type: string
+                            example: در صورت وجود حساب کاربری فعال، کد تأیید به شماره موبایل شما ارسال شد.
+                          expires_in:
+                            type: integer
+                            example: 300
+                        required: [message, expires_in]
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          description: OTP service unavailable (Redis offline)
+
+  /api/v1/auth/password/verify:
+    post:
+      tags: [Auth]
+      summary: Verify password-reset SMS OTP and obtain short-lived single-use reset token
+      description: >
+        Verifies a `password_reset` OTP in Redis (`famo:otp:password_reset:{identifier}`).
+        Codes issued for `login_2fa` are rejected. Fails closed (`503`) if Redis is unavailable.
+        Returns a signed single-use reset token (TTL 600s).
+      operationId: authPasswordVerify
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthPasswordVerifyRequest"
+      responses:
+        "200":
+          description: OTP verified; short-lived signed reset token returned
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          reset_token:
+                            type: string
+                          expires_in:
+                            type: integer
+                            example: 600
+                        required: [reset_token, expires_in]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          description: OTP verification service unavailable (fail-closed when Redis is down)
+
+  /api/v1/auth/password/reset:
+    post:
+      tags: [Auth]
+      summary: Reset password using verified single-use reset token
+      description: >
+        Consumes the single-use `password_reset` token (TTL 10 min), updates `users.password_hash`,
+        clears `must_change_password` if present in the schema, and revokes all active JWT sessions
+        via `JwtRevocation::revokeAllForUser`. Fails closed (`503`) if Redis is unavailable.
+      operationId: authPasswordReset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthPasswordResetRequest"
+      responses:
+        "200":
+          description: Password reset completed and prior JWTs revoked
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          message:
+                            type: string
+                            example: رمز عبور با موفقیت بازنشانی شد
+                        required: [message]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          description: Password reset service unavailable (fail-closed when Redis is down)
 
   /api/v1/auth/register:
     post:
@@ -9181,6 +9314,46 @@ components:
           minLength: 4
           description: رمز عبور جدید (حداقل ۴ کاراکتر)
       required: [current_password, new_password]
+
+    AuthPasswordForgotRequest:
+      type: object
+      properties:
+        phone:
+          type: string
+          description: شماره موبایل کاربر (فرمت ایرانی 09XXXXXXXXX)
+        username:
+          type: string
+          maxLength: 100
+          description: نام کاربری اختیاری جهت رفع ابهام در شماره‌های اشتراکی دانش‌آموزان
+      required: [phone]
+
+    AuthPasswordVerifyRequest:
+      type: object
+      properties:
+        phone:
+          type: string
+          description: شماره موبایل کاربر
+        code:
+          type: string
+          description: کد ۶ رقمی دریافت شده از پیامک
+        username:
+          type: string
+          maxLength: 100
+          description: نام کاربری اختیاری در صورت استفاده در مرحله درخواست کد
+      required: [phone, code]
+
+    AuthPasswordResetRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          description: توکن کوتاه‌مدت یک‌بارمصرف بازنشانی رمز عبور دریافت‌شده از مرحله verify
+        new_password:
+          type: string
+          format: password
+          minLength: 4
+          description: رمز عبور جدید (حداقل ۴ کاراکتر)
+      required: [token, new_password]
 
     AuthProfileUpdateRequest:
       type: object

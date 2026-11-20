@@ -258,6 +258,7 @@ Copy `.env.example` to `.env` and configure the variables for your environment. 
 | | `JWT_COOKIE_DOMAIN` | No | — | Cookie domain (e.g., `.famoacademy.ir`) |
 | | `JWT_COOKIE_SECURE` | No | `true` | Restrict cookie to HTTPS |
 | | `JWT_COOKIE_SAMESITE` | No | `Lax` | Cookie SameSite policy (`Lax`, `Strict`, `None`) |
+| | `STUDENT_2FA_MODE` | No | `off` | Student SMS 2FA mode (`off`, `new_device`, `always`); `new_device` uses 30-day `HttpOnly` cookie `famo_td` (stored HMAC-hashed per user in Redis) |
 | **Redis & Cache** | `REDIS_ENABLED` | No | `true` (if host/url set) | Enable Redis for caching and rate limiting |
 | | `REDIS_URL` | No | — | Full Redis URI (`redis://[:password@]host:port[/db]`) |
 | | `REDIS_HOST` | No | `127.0.0.1` | Redis server hostname |
@@ -365,9 +366,12 @@ The repository maintains two OpenAPI 3.1.0 specifications:
 | `GET` | `/api/v1/public/blog/posts/{slug}` | Single blog post by slug + atomic Redis view increment | Service Redis Cache + Rate Limit |
 | `GET` | `/api/v1/public/blog/categories` | Blog categories with published post counts | Redis Cache (300s) + Rate Limit |
 | `GET` | `/api/v1/public/blog/categories/{category}/posts` | Paginated posts filtered by category | Redis Cache (300s) + Rate Limit |
-| `POST` | `/api/v1/auth/login` | User login (returns JWT or `202` 2FA challenge) | Auth Rate Limit |
+| `POST` | `/api/v1/auth/login` | User login (returns JWT or `202` 2FA challenge; supports `STUDENT_2FA_MODE=off|new_device|always`) | Auth Rate Limit |
 | `POST` | `/api/v1/auth/register` | Student self-registration | Auth Rate Limit |
-| `POST` | `/api/v1/auth/verify-2fa` | Verify 6-digit OTP (`code`, `user_id`) | 2FA Rate Limit |
+| `POST` | `/api/v1/auth/verify-2fa` | Verify 6-digit OTP (`code`, `user_id`; sets 30-day `HttpOnly` `famo_td` cookie for students in `new_device` mode) | 2FA Rate Limit (fail-closed Redis for student OTP) |
+| `POST` | `/api/v1/auth/password/forgot` | Request purpose-bound `password_reset` SMS OTP (uniform response, equalized timing) | Auth Attempt + SMS Rate Limit |
+| `POST` | `/api/v1/auth/password/verify` | Verify `password_reset` OTP and return 10-minute single-use signed reset token | Auth Attempt Rate Limit (fail-closed Redis) |
+| `POST` | `/api/v1/auth/password/reset` | Consume single-use reset token, update password, clear `must_change_password` if present, revoke all JWTs | Auth Attempt Rate Limit (fail-closed Redis) |
 | `GET` | `/api/v1/auth/me` | Get authenticated user's profile from JWT | Authenticated |
 | `POST` | `/api/v1/auth/change-password` | Change password (`current_password`, `new_password` >= 4 chars) | Authenticated |
 | `PUT` | `/api/v1/auth/profile` | Update `full_name`/`name` & `phone` with transactional role sync & 2FA password guard | Authenticated |

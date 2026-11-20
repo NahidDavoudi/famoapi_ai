@@ -169,7 +169,13 @@ final class RateLimitMiddleware implements MiddlewareInterface
         $body = $request->getParsedBody();
         $identifier = '';
         if (is_array($body)) {
-            $rawId = $body['username'] ?? $body['phone'] ?? $body['user_id'] ?? $body['challenge_id'] ?? '';
+            $rawId = $body['username']
+                ?? $body['phone']
+                ?? $body['user_id']
+                ?? $body['challenge_id']
+                ?? $body['token']
+                ?? $body['reset_token']
+                ?? '';
             if (is_scalar($rawId) && trim((string) $rawId) !== '') {
                 $trimmed = trim((string) $rawId);
                 $identifier = PhoneNumber::normalize($trimmed) ?? strtolower($trimmed);
@@ -207,8 +213,9 @@ final class RateLimitMiddleware implements MiddlewareInterface
         }
 
         $body = $request->getParsedBody();
-        if (is_array($body) && !empty($body['phone']) && is_string($body['phone'])) {
-            $normalizedPhone = PhoneNumber::normalize($body['phone']) ?? trim($body['phone']);
+        if (is_array($body) && isset($body['phone']) && is_scalar($body['phone']) && trim((string) $body['phone']) !== '') {
+            $rawPhone = trim((string) $body['phone']);
+            $normalizedPhone = PhoneNumber::normalize($rawPhone) ?? $rawPhone;
             $phoneMax = (int) ($cfg['sms_phone_max'] ?? 3);
             $phoneWindow = (int) ($cfg['sms_phone_window'] ?? 600);
             $phoneStatus = RateLimiter::attemptFixedWindow(

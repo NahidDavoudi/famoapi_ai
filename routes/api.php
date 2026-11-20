@@ -143,6 +143,13 @@ return function (App $app) {
     $app->post('/api/v1/auth/login', [$authController, 'login'])->add($authAttemptLimit);
     $app->post('/api/v1/auth/register', [$authController, 'register'])->add($publicIpLimit);
     $app->post('/api/v1/auth/verify-2fa', [$authController, 'verify2fa'])->add($authAttemptLimit);
+    $app->post('/api/v1/auth/password/forgot', [$authController, 'forgotPassword'])
+        ->add($smsIpLimit)
+        ->add($authAttemptLimit);
+    $app->post('/api/v1/auth/password/verify', [$authController, 'verifyPasswordReset'])
+        ->add($authAttemptLimit);
+    $app->post('/api/v1/auth/password/reset', [$authController, 'resetPassword'])
+        ->add($authAttemptLimit);
     $app->get('/api/v1/auth/me', [$authController, 'me'])->add($authRateLimit)->add($authMiddleware);
     $app->post('/api/v1/auth/change-password', [$authController, 'changePassword'])->add($authRateLimit)->add($authMiddleware);
     $app->put('/api/v1/auth/profile', [$authController, 'updateProfile'])->add($authRateLimit)->add($authMiddleware);

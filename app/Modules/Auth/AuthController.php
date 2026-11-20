@@ -8,6 +8,7 @@ use App\Core\ClientIp;
 use App\Core\JwtRevocation;
 use App\Core\RateLimitedException;
 use App\Core\RateLimiter;
+use App\Core\TrustedDevice;
 use App\Core\Validator;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -53,7 +54,8 @@ class AuthController
         try {
             $this->assertLoginAllowed($userIpKey, $ipKey, $userKey, $window);
 
-            $result = $this->service->login($username, (string) $body['password'], $ip);
+            $trustedDeviceToken = TrustedDevice::tokenFromRequest($request);
+            $result = $this->service->login($username, (string) $body['password'], $ip, $trustedDeviceToken);
 
             if ($userIpKey !== null) {
                 RateLimiter::clear($userIpKey);
@@ -62,13 +64,15 @@ class AuthController
         } catch (RateLimitedException $e) {
             return $this->rateLimitedResponse($response, $e);
         } catch (\App\Core\ApiException $e) {
-            if ($userIpKey !== null) {
-                RateLimiter::attempt($userIpKey, $this->envInt('AUTH_LOGIN_MAX_ATTEMPTS', 5), $window, $lockout);
+            if ($e->getErrorCode() !== 'OTP_SERVICE_UNAVAILABLE') {
+                if ($userIpKey !== null) {
+                    RateLimiter::attempt($userIpKey, $this->envInt('AUTH_LOGIN_MAX_ATTEMPTS', 5), $window, $lockout);
+                }
+                if ($ipKey !== null) {
+                    RateLimiter::attempt($ipKey, $this->envInt('AUTH_LOGIN_IP_MAX_ATTEMPTS', 30), $window, $window);
+                }
+                RateLimiter::attempt($userKey, $this->envInt('AUTH_LOGIN_USER_SOFT_MAX', 20), $window, $window);
             }
-            if ($ipKey !== null) {
-                RateLimiter::attempt($ipKey, $this->envInt('AUTH_LOGIN_IP_MAX_ATTEMPTS', 30), $window, $window);
-            }
-            RateLimiter::attempt($userKey, $this->envInt('AUTH_LOGIN_USER_SOFT_MAX', 20), $window, $window);
 
             $response->getBody()->write(json_encode([
                 'success'    => false,
@@ -161,7 +165,9 @@ class AuthController
         } catch (RateLimitedException $e) {
             return $this->rateLimitedResponse($response, $e);
         } catch (\App\Core\ApiException $e) {
-            RateLimiter::attempt($twoFaKey, $this->envInt('AUTH_2FA_MAX_ATTEMPTS', 5), $ttl, $ttl);
+            if ($e->getErrorCode() !== 'OTP_SERVICE_UNAVAILABLE') {
+                RateLimiter::attempt($twoFaKey, $this->envInt('AUTH_2FA_MAX_ATTEMPTS', 5), $ttl, $ttl);
+            }
 
             $response->getBody()->write(json_encode([
                 'success'    => false,
@@ -210,7 +216,180 @@ class AuthController
             'error'      => null,
         ], JSON_UNESCAPED_UNICODE));
         $response = $response->withHeader('Content-Type', 'application/json; charset=utf-8');
-        return is_string($token) ? AuthCookie::issue($response, $request, $token) : $response;
+        if (is_string($token)) {
+            $response = AuthCookie::issue($response, $request, $token);
+        }
+        $verifiedRole = strtolower((string) ($result['user']['role'] ?? ''));
+        $verifiedUserId = (int) ($result['user']['id'] ?? $userId);
+        if ($verifiedRole === 'student' && TrustedDevice::mode() === TrustedDevice::MODE_NEW_DEVICE) {
+            $response = TrustedDevice::issueForUser($verifiedUserId, $response, $request);
+        }
+        return $response;
+    }
+
+    public function forgotPassword(Request $request, Response $response): Response
+    {
+        $body = $request->getParsedBody() ?? [];
+        $username = isset($body['username']) && is_scalar($body['username']) ? (string) $body['username'] : null;
+
+        $validator = new Validator();
+        $validator
+            ->required('phone', 'شماره تلفن', $body['phone'] ?? null)
+            ->phone('phone', 'شماره تلفن', $body['phone'] ?? null);
+
+        if ($username !== null) {
+            $validator->maxLength('username', 'نام کاربری', $username, 100);
+        }
+
+        if (!$validator->passes()) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => 'VALIDATION_ERROR',
+                    'message' => $validator->firstError(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        try {
+            $result = $this->service->forgotPassword((string) $body['phone'], $username);
+        } catch (RateLimitedException $e) {
+            return $this->rateLimitedResponse($response, $e);
+        } catch (\App\Core\ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => $e->getErrorCode(),
+                    'message' => $e->getMessage(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success'    => true,
+            'data'       => $result,
+            'pagination' => null,
+            'error'      => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withStatus(200)->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+
+    public function verifyPasswordReset(Request $request, Response $response): Response
+    {
+        $body = $request->getParsedBody() ?? [];
+        $username = isset($body['username']) && is_scalar($body['username']) ? (string) $body['username'] : null;
+
+        $validator = new Validator();
+        $validator
+            ->required('phone', 'شماره تلفن', $body['phone'] ?? null)
+            ->phone('phone', 'شماره تلفن', $body['phone'] ?? null)
+            ->required('code', 'کد تأیید', $body['code'] ?? null)
+            ->string('code', 'کد تأیید', $body['code'] ?? null);
+
+        if ($username !== null) {
+            $validator->maxLength('username', 'نام کاربری', $username, 100);
+        }
+
+        if (!$validator->passes()) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => 'VALIDATION_ERROR',
+                    'message' => $validator->firstError(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        try {
+            $result = $this->service->verifyPasswordResetOtp(
+                (string) $body['phone'],
+                (string) $body['code'],
+                $username
+            );
+        } catch (RateLimitedException $e) {
+            return $this->rateLimitedResponse($response, $e);
+        } catch (\App\Core\ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => $e->getErrorCode(),
+                    'message' => $e->getMessage(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success'    => true,
+            'data'       => $result,
+            'pagination' => null,
+            'error'      => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withStatus(200)->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+
+    public function resetPassword(Request $request, Response $response): Response
+    {
+        $body = $request->getParsedBody() ?? [];
+        $token = $body['token'] ?? $body['reset_token'] ?? null;
+        $newPassword = $body['new_password'] ?? $body['password'] ?? null;
+
+        $validator = new Validator();
+        $validator
+            ->required('token', 'توکن بازنشانی', $token)
+            ->string('token', 'توکن بازنشانی', $token)
+            ->required('new_password', 'رمز عبور جدید', $newPassword)
+            ->string('new_password', 'رمز عبور جدید', $newPassword)
+            ->minLength('new_password', 'رمز عبور جدید', $newPassword, 4);
+
+        if (!$validator->passes()) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => 'VALIDATION_ERROR',
+                    'message' => $validator->firstError(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        try {
+            $result = $this->service->resetPasswordWithToken((string) $token, (string) $newPassword);
+        } catch (RateLimitedException $e) {
+            return $this->rateLimitedResponse($response, $e);
+        } catch (\App\Core\ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => $e->getErrorCode(),
+                    'message' => $e->getMessage(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success'    => true,
+            'data'       => $result,
+            'pagination' => null,
+            'error'      => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withStatus(200)->withHeader('Content-Type', 'application/json; charset=utf-8');
     }
 
     public function register(Request $request, Response $response): Response
