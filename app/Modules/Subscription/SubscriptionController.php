@@ -36,11 +36,12 @@ class SubscriptionController
         }
 
         $filters = [
-            'student_id' => $scopedStudentId,
-            'course_id'  => $params['course_id'] ?? null,
-            'status'     => $params['status'] ?? null,
-            'is_active'  => isset($params['is_active']) && $params['is_active'] !== '' ? (int) $params['is_active'] : null,
-            'search'     => $params['search'] ?? null,
+            'student_id'     => $scopedStudentId,
+            'course_id'      => $params['course_id'] ?? null,
+            'status'         => $params['status'] ?? null,
+            'tuition_status' => $params['tuition_status'] ?? null,
+            'is_active'      => isset($params['is_active']) && $params['is_active'] !== '' ? (int) $params['is_active'] : null,
+            'search'         => $params['search'] ?? null,
         ];
 
         $result = $this->service->list($filters, $page, $perPage);
@@ -105,6 +106,20 @@ class SubscriptionController
     }
 
     /**
+     * POST /api/v1/courses/{id}/enroll
+     * Student enrolls directly into a specific course (or staff enrolls a student).
+     */
+    public function enrollCourse(Request $request, Response $response, array $args): Response
+    {
+        $courseId = (int) $args['id'];
+        $body = (array) ($request->getParsedBody() ?? []);
+        $body['course_id'] = $courseId;
+
+        $request = $request->withParsedBody($body);
+        return $this->create($request, $response);
+    }
+
+    /**
      * POST /api/v1/subscriptions
      * Students can subscribe themselves (status = 'pending'); staff/admin can create for any student.
      */
@@ -144,21 +159,36 @@ class SubscriptionController
             $validator->inArray('is_active', 'وضعیت فعال بودن', (int) $body['is_active'], [0, 1]);
         }
 
+        if (isset($body['tuition_status']) && $body['tuition_status'] !== '') {
+            $validator
+                ->string('tuition_status', 'وضعیت شهریه', $body['tuition_status'])
+                ->inArray('tuition_status', 'وضعیت شهریه', $body['tuition_status'], SubscriptionService::VALID_TUITION_STATUSES);
+        }
+
+        if (isset($body['monthly_fee']) && $body['monthly_fee'] !== '') {
+            $validator->numeric('monthly_fee', 'شهریه ماهانه', $body['monthly_fee']);
+        }
+
         if (!$validator->passes()) {
             return $this->validationErrorResponse($response, $validator->firstError());
         }
 
         try {
             $payload = [
-                'student_id' => (int) $studentId,
-                'course_id'  => (int) $body['course_id'],
-                'note'       => $body['note'] ?? null,
-                'status'     => !$isStudent && !empty($body['status']) ? (string) $body['status'] : 'pending',
-                'is_active'  => !$isStudent && isset($body['is_active']) && $body['is_active'] !== ''
+                'student_id'        => (int) $studentId,
+                'course_id'         => (int) $body['course_id'],
+                'note'              => $body['note'] ?? null,
+                'status'            => !$isStudent && !empty($body['status']) ? (string) $body['status'] : 'pending',
+                'is_active'         => !$isStudent && isset($body['is_active']) && $body['is_active'] !== ''
                     ? (int) $body['is_active']
                     : null,
-                'started_at' => !$isStudent ? ($body['started_at'] ?? null) : null,
-                'end_at'     => !$isStudent ? ($body['end_at'] ?? null) : null,
+                'monthly_fee'       => isset($body['monthly_fee']) && $body['monthly_fee'] !== '' ? (int) $body['monthly_fee'] : null,
+                'tuition_status'    => isset($body['tuition_status']) && $body['tuition_status'] !== '' ? (string) $body['tuition_status'] : null,
+                'tuition_due_date'  => !empty($body['tuition_due_date']) ? (string) $body['tuition_due_date'] : null,
+                'last_payment_date' => !empty($body['last_payment_date']) ? (string) $body['last_payment_date'] : null,
+                'tuition_notes'     => $body['tuition_notes'] ?? null,
+                'started_at'        => !$isStudent ? ($body['started_at'] ?? null) : null,
+                'end_at'            => !$isStudent ? ($body['end_at'] ?? null) : null,
             ];
 
             $result = $this->service->create($payload);
@@ -201,6 +231,35 @@ class SubscriptionController
             $data['is_active'] = (int) $body['is_active'];
         }
 
+        if (array_key_exists('monthly_fee', $body) && $body['monthly_fee'] !== null && $body['monthly_fee'] !== '') {
+            $validator->numeric('monthly_fee', 'شهریه ماهانه', $body['monthly_fee']);
+            $data['monthly_fee'] = (int) $body['monthly_fee'];
+        }
+
+        if (array_key_exists('tuition_status', $body) && $body['tuition_status'] !== null && $body['tuition_status'] !== '') {
+            $validator
+                ->string('tuition_status', 'وضعیت شهریه', $body['tuition_status'])
+                ->inArray('tuition_status', 'وضعیت شهریه', $body['tuition_status'], SubscriptionService::VALID_TUITION_STATUSES);
+            $data['tuition_status'] = (string) $body['tuition_status'];
+        }
+
+        if (array_key_exists('tuition_due_date', $body)) {
+            $validator->string('tuition_due_date', 'تاریخ سررسید شهریه', $body['tuition_due_date']);
+            $data['tuition_due_date'] = $body['tuition_due_date'];
+        }
+
+        if (array_key_exists('last_payment_date', $body)) {
+            $validator->string('last_payment_date', 'تاریخ آخرین پرداخت', $body['last_payment_date']);
+            $data['last_payment_date'] = $body['last_payment_date'];
+        }
+
+        if (array_key_exists('tuition_notes', $body)) {
+            $validator
+                ->string('tuition_notes', 'توضیحات شهریه', $body['tuition_notes'])
+                ->maxLength('tuition_notes', 'توضیحات شهریه', $body['tuition_notes'], 1000);
+            $data['tuition_notes'] = $body['tuition_notes'];
+        }
+
         if (array_key_exists('note', $body)) {
             $validator
                 ->string('note', 'یادداشت', $body['note'])
@@ -228,6 +287,56 @@ class SubscriptionController
 
         try {
             $result = $this->service->update((int) $args['id'], $data);
+        } catch (ApiException $e) {
+            return $this->errorResponse($response, $e);
+        }
+
+        return ResponseHelper::json($response, $result);
+    }
+
+    /**
+     * PATCH|PUT /api/v1/subscriptions/{id}/tuition
+     * Staff/Admin updates monthly tuition and payment status.
+     */
+    public function updateTuition(Request $request, Response $response, array $args): Response
+    {
+        $body = (array) ($request->getParsedBody() ?? []);
+        $validator = new Validator();
+
+        if (array_key_exists('tuition_status', $body) && $body['tuition_status'] !== null && $body['tuition_status'] !== '') {
+            $validator
+                ->string('tuition_status', 'وضعیت شهریه', $body['tuition_status'])
+                ->inArray('tuition_status', 'وضعیت شهریه', $body['tuition_status'], SubscriptionService::VALID_TUITION_STATUSES);
+        }
+
+        if (array_key_exists('monthly_fee', $body) && $body['monthly_fee'] !== null && $body['monthly_fee'] !== '') {
+            $validator->numeric('monthly_fee', 'شهریه ماهانه', $body['monthly_fee']);
+        }
+
+        if (array_key_exists('tuition_due_date', $body) && $body['tuition_due_date'] !== null && $body['tuition_due_date'] !== '') {
+            $validator->string('tuition_due_date', 'تاریخ سررسید شهریه', $body['tuition_due_date']);
+        }
+
+        if (array_key_exists('last_payment_date', $body) && $body['last_payment_date'] !== null && $body['last_payment_date'] !== '') {
+            $validator->string('last_payment_date', 'تاریخ آخرین پرداخت', $body['last_payment_date']);
+        }
+
+        if (array_key_exists('tuition_notes', $body)) {
+            $validator
+                ->string('tuition_notes', 'توضیحات شهریه', $body['tuition_notes'])
+                ->maxLength('tuition_notes', 'توضیحات شهریه', $body['tuition_notes'], 1000);
+        }
+
+        if (empty($body)) {
+            $validator->addError('حداقل یک فیلد مربوط به شهریه برای ویرایش الزامی است');
+        }
+
+        if (!$validator->passes()) {
+            return $this->validationErrorResponse($response, $validator->firstError());
+        }
+
+        try {
+            $result = $this->service->updateTuition((int) $args['id'], $body);
         } catch (ApiException $e) {
             return $this->errorResponse($response, $e);
         }

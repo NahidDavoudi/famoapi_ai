@@ -4,6 +4,7 @@ namespace App\Modules\Students;
 
 use App\Core\ApiException;
 use App\Core\Database;
+use App\Core\JwtRevocation;
 use App\Core\Pagination;
 use App\Core\PhoneNumber;
 use App\Modules\Supporters\Supporter;
@@ -165,15 +166,23 @@ class StudentService
             throw new ApiException('این دانش‌آموز حساب کاربری ندارد', 400, 'RESET_ERROR');
         }
 
+        $tempPassword = self::generateTemporaryPassword(10);
+        $userId = (int) $student['user_id'];
+
         $stmt = Database::getConnection()->prepare(
             'UPDATE users SET password_hash = :password WHERE id = :id'
         );
         $stmt->execute([
-            'password' => password_hash('1234', PASSWORD_DEFAULT),
-            'id'       => $student['user_id'],
+            'password' => password_hash($tempPassword, PASSWORD_DEFAULT),
+            'id'       => $userId,
         ]);
 
-        return $this->get($studentId);
+        JwtRevocation::revokeAllForUser($userId);
+
+        $updated = $this->get($studentId);
+        $updated['temporary_password'] = $tempPassword;
+
+        return $updated;
     }
 
     public function getList(): array
@@ -193,9 +202,56 @@ class StudentService
             throw new ApiException('دانش‌آموز یافت نشد', 404, 'NOT_FOUND');
         }
 
-        Student::toggleStatus($id);
+        $newActive = ((int) ($student['is_active'] ?? 1) === 1) ? 0 : 1;
+
+        $db = Database::getConnection();
+        $startedTransaction = !$db->inTransaction();
+        if ($startedTransaction) {
+            $db->beginTransaction();
+        }
+
+        try {
+            $stmtStudent = $db->prepare('UPDATE students SET is_active = :is_active WHERE id = :id');
+            $stmtStudent->execute([
+                'is_active' => $newActive,
+                'id'        => $id,
+            ]);
+
+            $stmtUser = $db->prepare(
+                'UPDATE users SET is_active = :is_active WHERE linked_id = :linked_id AND role = :role'
+            );
+            $stmtUser->execute([
+                'is_active' => $newActive,
+                'linked_id' => $id,
+                'role'      => 'student',
+            ]);
+
+            if ($startedTransaction) {
+                $db->commit();
+            }
+        } catch (\Throwable $e) {
+            if ($startedTransaction && $db->inTransaction()) {
+                $db->rollBack();
+            }
+            throw $e;
+        }
+
+        if ($newActive === 0 && !empty($student['user_id'])) {
+            JwtRevocation::revokeAllForUser((int) $student['user_id']);
+        }
 
         return $this->get($id);
+    }
+
+    private static function generateTemporaryPassword(int $length = 10): string
+    {
+        $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+        $maxIndex = strlen($alphabet) - 1;
+        $out = '';
+        for ($i = 0; $i < $length; $i++) {
+            $out .= $alphabet[random_int(0, $maxIndex)];
+        }
+        return $out;
     }
 
     public function getAnalyticsSummary(int $studentId): array

@@ -218,6 +218,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "422":
           $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api/v1/auth/verify-2fa:
     post:
@@ -270,6 +272,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "422":
           $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api/v1/auth/register:
     post:
@@ -337,6 +341,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api/v1/auth/me:
     get:
@@ -360,11 +366,18 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api/v1/auth/change-password:
     post:
       tags: [Auth]
       summary: Change current user's password
+      description: >
+        Verifies `current_password`, updates the user's password hash, revokes all prior JWT
+        sessions for the user via Redis epoch (`jwt:user_epoch:{user_id}`), and issues a fresh
+        JWT + `Set-Cookie` for the current session (unless `X-Auth-Mode: cookie` omits `token`
+        from the JSON body).
       operationId: authChangePassword
       security:
         - bearerAuth: []
@@ -376,7 +389,7 @@ paths:
               $ref: "#/components/schemas/AuthChangePasswordRequest"
       responses:
         "200":
-          description: Password changed successfully
+          description: Password changed successfully; prior tokens revoked and fresh session issued
           content:
             application/json:
               schema:
@@ -389,6 +402,25 @@ paths:
                           message:
                             type: string
                             example: رمز عبور با موفقیت تغییر یافت
+                          token:
+                            type: string
+                            description: Fresh JWT for the current session (omitted when X-Auth-Mode is cookie)
+                          user:
+                            type: object
+                            properties:
+                              id:
+                                type: integer
+                              username:
+                                type: string
+                              role:
+                                type: string
+                                enum: [admin, supporter, student, teacher]
+                              student_id:
+                                type: integer
+                                nullable: true
+                              instructor_id:
+                                type: integer
+                                nullable: true
                         required: [message]
         "401":
           description: Unauthorized or wrong current password (INVALID_PASSWORD)
@@ -407,6 +439,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api/v1/auth/profile:
     put:
@@ -468,14 +502,18 @@ paths:
                   message: این شماره تلفن قبلاً برای کاربر دیگری ثبت شده است
         "422":
           $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api/v1/auth/logout:
     post:
       tags: [Auth]
-      summary: Logout (invalidate session)
+      summary: Logout (clear cookie and blacklist active JWT)
+      description: >
+        Clears the shared auth cookie and blacklists the presented JWT (`jwt:bl:{jti}`) in Redis
+        for its remaining lifetime. Succeeds even if the token is missing or already expired so
+        browsers can always clear cookies.
       operationId: authLogout
-      security:
-        - bearerAuth: []
       responses:
         "200":
           description: Logged out successfully
@@ -483,8 +521,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SuccessResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   # ───────────────────── Telegram Login ─────────────────────
   # Public endpoints (no JWT, no bot service key). The Telegram flow only BINDS
@@ -1598,6 +1636,10 @@ paths:
     post:
       tags: [Students]
       summary: Reset student user account password (admin only)
+      description: >
+        Generates a cryptographically random temporary password (`temporary_password`, shown once
+        to the admin), updates the student's `password_hash`, and revokes all prior JWT sessions
+        for the linked user via Redis (`jwt:user_epoch:{user_id}`).
       operationId: studentResetPassword
       security:
         - bearerAuth: []
@@ -1609,7 +1651,7 @@ paths:
             type: integer
       responses:
         "200":
-          description: Password reset
+          description: Password reset; returns student profile with one-time `temporary_password`
           content:
             application/json:
               schema:
@@ -1619,12 +1661,21 @@ paths:
                       data:
                         type: object
                         properties:
-                          new_password:
+                          id:
+                            type: integer
+                          name:
                             type: string
+                          phone:
+                            type: string
+                          temporary_password:
+                            type: string
+                            description: One-time random temporary password generated for this reset
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1632,6 +1683,9 @@ paths:
     post:
       tags: [Students]
       summary: Toggle student active status
+      description: >
+        Toggles `students.is_active` and synchronizes `users.is_active` in both directions
+        (`0` and `1`). When deactivated (`0`), revokes all active JWT sessions via Redis.
       operationId: studentToggleStatus
       security:
         - bearerAuth: []
@@ -1660,6 +1714,8 @@ paths:
                             enum: [0, 1]
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -2109,6 +2165,75 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/courses/{id}/enroll:
+    post:
+      tags: [Courses, Subscriptions]
+      summary: Enroll a student into a specific course
+      description: |
+        Registers the student into the course specified by `{id}` in the URL.
+        - **Student**: Registers themselves (`student_id` resolved from JWT) with `status: "pending"`, default monthly tuition set from course price.
+        - **Admin / Supporter**: Can enroll any student and specify custom `monthly_fee`, `tuition_status`, `tuition_due_date`, or `note`.
+      operationId: courseEnrollStudent
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: شناسه دوره مورد نظر
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                student_id:
+                  type: integer
+                  description: شناسه دانش‌آموز (برای نقش دانش‌آموز خودکار از توکن خوانده می‌شود)
+                monthly_fee:
+                  type: integer
+                  description: مبلغ شهریه ماهانه اختصاصی (اختیاری؛ پیش‌فرض از دوره خوانده می‌شود)
+                tuition_status:
+                  type: string
+                  enum: [unpaid, paid, pending, exempt, partial]
+                  description: وضعیت پرداخت اولیه شهریه
+                tuition_due_date:
+                  type: string
+                  format: date
+                  description: تاریخ سررسید شهریه (YYYY-MM-DD)
+                note:
+                  type: string
+                  maxLength: 1000
+                  description: یادداشت یا توضیحات تکمیلی
+      responses:
+        "201":
+          description: Student successfully enrolled
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/Subscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Already enrolled or pending subscription exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
   # ───────────────────── Subscriptions ─────────────────────
   /api/v1/subscriptions:
     get:
@@ -2140,6 +2265,12 @@ paths:
             type: string
             enum: [pending, active, expired, cancelled, rejected]
           description: فیلتر بر اساس وضعیت اشتراک
+        - name: tuition_status
+          in: query
+          schema:
+            type: string
+            enum: [unpaid, paid, pending, exempt, partial]
+          description: فیلتر بر اساس وضعیت شهریه (پرداخت شده، پرداخت نشده، در انتظار بررسی، معاف، بیعانه/ناقص)
         - name: is_active
           in: query
           schema:
@@ -2427,6 +2558,86 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/subscriptions/{id}/tuition:
+    patch:
+      tags: [Subscriptions]
+      summary: Update subscription tuition status and monthly fee (supporter or admin)
+      description: |
+        Updates tuition payment status, monthly fee amount, due date, last payment date, or tuition notes.
+      operationId: subscriptionUpdateTuition
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: شناسه اشتراک دوره
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubscriptionTuitionUpdateRequest"
+      responses:
+        "200":
+          description: Tuition details updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/Subscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      tags: [Subscriptions]
+      summary: Update subscription tuition status and monthly fee (alias)
+      operationId: subscriptionPutTuition
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: شناسه اشتراک دوره
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubscriptionTuitionUpdateRequest"
+      responses:
+        "200":
+          description: Tuition details updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/Subscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
 
@@ -4390,7 +4601,8 @@ paths:
       tags: [Appointments]
       summary: Bulk-send weekly appointment reminder SMS to primary parents via Melipayamak (admin only)
       description: |
-        Dispatches weekly appointment reminder SMS via Melipayamak (`MELIPAYAMAK_APPOINTMENT_BODY_ID`) to each eligible student's primary parent (`recipient_type = 'parent'`).
+        Dispatches weekly appointment reminder SMS via Melipayamak (`appointment_reminder` pattern — resolved from request `body_id`, DB `sms_pattern_settings`, or `MELIPAYAMAK_APPOINTMENT_BODY_ID`; never falls back to the 2FA login pattern `MELIPAYAMAK_PATTERN_BODY_ID`) to each eligible student's primary parent (`recipient_type = 'parent'`).
+        - Fails fast with `422 APPOINTMENT_PATTERN_NOT_CONFIGURED` if no appointment pattern `body_id` is configured.
         - Supports `mode`: `unsent` (not yet sent for this week), `failed` (retry failed logs), `changed` (send updated time when `appointment_at` changed after `status=sent`).
         - Each student is processed in an isolated `try/catch` block so one failure does not abort the batch.
         - Protected by a concurrent/double-click lock per `week_date` (`409 CONCURRENT_SEND_LOCKED`) and dedicated rate limits (`appointment_sms:phone` default 3/hr, `appointment_sms:user` default 200/hr).
@@ -6814,6 +7026,90 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  /api/v1/admin/sms/patterns:
+    get:
+      tags: [AdminStats]
+      summary: دریافت تنظیمات کد پترن‌های ملی‌پیامک به تفکیک کاربرد (لاگین ۲مرحله‌ای، یادآوری نوبت، کارنامه آزمون)
+      operationId: getAdminSmsPatterns
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: فهرست پترن‌های ملی‌پیامک و منبع مقداردهی هر پترن (database / env / unset)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SmsPatternsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      tags: [AdminStats]
+      summary: ثبت یا ویرایش کد پترن (bodyId) و متن الگو در ملی‌پیامک برای نوبت‌دهی، کارنامه یا لاگین (ادمین)
+      operationId: updateAdminSmsPatterns
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmsPatternsUpdateRequest"
+      responses:
+        "200":
+          description: تنظیمات بروزرسانی‌شده پترن‌های ملی‌پیامک
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SmsPatternsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    patch:
+      tags: [AdminStats]
+      summary: بروزرسانی جزئی تنظیمات کد پترن‌های ملی‌پیامک (ادمین)
+      operationId: patchAdminSmsPatterns
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmsPatternsUpdateRequest"
+      responses:
+        "200":
+          description: تنظیمات بروزرسانی‌شده پترن‌های ملی‌پیامک
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SmsPatternsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -7162,6 +7458,35 @@ components:
           type: integer
           enum: [0, 1]
           example: 1
+        monthly_fee:
+          type: integer
+          description: مبلغ شهریه ماهانه به تومان
+          example: 450000
+        tuition_status:
+          type: string
+          enum: [unpaid, paid, pending, exempt, partial]
+          description: وضعیت پرداخت شهریه (پرداخت شده، پرداخت نشده، در انتظار بررسی، معاف، بیعانه/ناقص)
+          example: unpaid
+        tuition_status_label:
+          type: string
+          description: برچسب فارسی وضعیت شهریه
+          example: پرداخت نشده
+        tuition_due_date:
+          type: string
+          format: date
+          nullable: true
+          description: تاریخ سررسید قسط شهریه ماهانه
+          example: "2026-12-15"
+        last_payment_date:
+          type: string
+          format: date
+          nullable: true
+          description: تاریخ آخرین پرداخت شهریه
+          example: "2026-11-15"
+        tuition_notes:
+          type: string
+          nullable: true
+          description: توضیحات و یادداشت‌های شهریه
         note:
           type: string
           nullable: true
@@ -7212,7 +7537,7 @@ components:
             field:
               type: string
               nullable: true
-      required: [id, course_id, student_id, status, is_active, course, student]
+      required: [id, course_id, student_id, status, is_active, monthly_fee, tuition_status, course, student]
 
     SubscriptionCreateRequest:
       type: object
@@ -7231,6 +7556,22 @@ components:
           type: integer
           enum: [0, 1]
           description: وضعیت فعال بودن (فقط برای پشتیبان/ادمین)
+        monthly_fee:
+          type: integer
+          description: مبلغ شهریه ماهانه اختصاصی به تومان (اختیاری؛ پیش‌فرض از دوره خوانده می‌شود)
+        tuition_status:
+          type: string
+          enum: [unpaid, paid, pending, exempt, partial]
+          description: وضعیت پرداخت اولیه شهریه
+        tuition_due_date:
+          type: string
+          format: date
+          description: تاریخ سررسید شهریه (YYYY-MM-DD)
+        tuition_notes:
+          type: string
+          maxLength: 1000
+          nullable: true
+          description: توضیحات و یادداشت‌های اولیه شهریه
         note:
           type: string
           maxLength: 1000
@@ -7261,6 +7602,26 @@ components:
         is_active:
           type: integer
           enum: [0, 1]
+        monthly_fee:
+          type: integer
+          description: مبلغ شهریه ماهانه به تومان
+        tuition_status:
+          type: string
+          enum: [unpaid, paid, pending, exempt, partial]
+          description: وضعیت پرداخت شهریه
+        tuition_due_date:
+          type: string
+          format: date
+          description: تاریخ سررسید شهریه (YYYY-MM-DD)
+        last_payment_date:
+          type: string
+          format: date
+          description: تاریخ آخرین پرداخت شهریه (YYYY-MM-DD)
+        tuition_notes:
+          type: string
+          maxLength: 1000
+          nullable: true
+          description: توضیحات و یادداشت‌های شهریه
         note:
           type: string
           maxLength: 1000
@@ -7287,6 +7648,30 @@ components:
           nullable: true
           description: یادداشت اختیاری هنگام تغییر وضعیت
       required: [status]
+
+    SubscriptionTuitionUpdateRequest:
+      type: object
+      properties:
+        tuition_status:
+          type: string
+          enum: [unpaid, paid, pending, exempt, partial]
+          description: وضعیت پرداخت شهریه (پرداخت شده، پرداخت نشده، در انتظار بررسی، معاف، بیعانه/ناقص)
+        monthly_fee:
+          type: integer
+          description: مبلغ شهریه ماهانه به تومان
+        tuition_due_date:
+          type: string
+          format: date
+          description: تاریخ سررسید شهریه (YYYY-MM-DD)
+        last_payment_date:
+          type: string
+          format: date
+          description: تاریخ آخرین واریز/پرداخت شهریه (YYYY-MM-DD)
+        tuition_notes:
+          type: string
+          maxLength: 1000
+          nullable: true
+          description: توضیحات و یادداشت‌های شهریه یا شماره فیش واریزی
 
     Instructor:
       type: object
@@ -8927,6 +9312,9 @@ components:
         weekday:
           type: string
           nullable: true
+        day_and_date_fa:
+          type: string
+          nullable: true
         start_time:
           type: string
           nullable: true
@@ -8940,6 +9328,10 @@ components:
           type: string
           nullable: true
           description: Snapshot of appointment_date + start_time (YYYY-MM-DD HH:MM:SS)
+        sms_preview_text:
+          type: string
+          nullable: true
+          description: Rendered Persian SMS body using the active appointment reminder pattern ({0}=student, {1}=day_and_date_fa, {2}=HH:MM)
         multiple_appointments:
           type: boolean
           description: True when the student has more than one active appointment in the week
@@ -8970,6 +9362,22 @@ components:
           type: string
           format: date
           description: Friday week end
+        pattern:
+          type: object
+          properties:
+            key:
+              type: string
+              example: appointment_reminder
+            body_id:
+              type: integer
+              nullable: true
+            source:
+              type: string
+              enum: [database, env, unset]
+            is_configured:
+              type: boolean
+            template:
+              type: string
         summary:
           type: object
           properties:
@@ -9026,6 +9434,15 @@ components:
           type: string
           nullable: true
           description: Optional client operation/idempotency token to guard against double-click submissions
+        body_id:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Optional Melipayamak appointment reminder pattern bodyId override (overrides DB/env for this dispatch)
+        save_pattern:
+          type: boolean
+          default: false
+          description: When true alongside body_id, persists body_id in sms_pattern_settings for future dispatches
       required: [week_date, mode]
 
     AppointmentSmsSendResponse:
@@ -9040,6 +9457,12 @@ components:
         mode:
           type: string
           enum: [unsent, failed, changed]
+        body_id:
+          type: integer
+          description: Effective Melipayamak pattern bodyId used for this batch dispatch
+        pattern_source:
+          type: string
+          enum: [request, database, env]
         sent:
           type: integer
         failed:
@@ -9090,6 +9513,107 @@ components:
                 type: string
                 nullable: true
       required: [week_date, mode, sent, failed, skipped, items]
+
+    SmsPatternItem:
+      type: object
+      properties:
+        pattern_key:
+          type: string
+          enum: [auth_2fa, appointment_reminder, exam_result]
+        label:
+          type: string
+        env_key:
+          type: string
+        alias_field:
+          type: string
+        body_id:
+          type: integer
+          nullable: true
+        db_body_id:
+          type: integer
+          nullable: true
+        env_body_id:
+          type: integer
+          nullable: true
+        source:
+          type: string
+          enum: [database, env, unset]
+        is_configured:
+          type: boolean
+        pattern_text:
+          type: string
+        placeholders:
+          type: array
+          items:
+            type: string
+        updated_by:
+          type: integer
+          nullable: true
+        updated_at:
+          type: string
+          nullable: true
+
+    SmsPatternsResponse:
+      type: object
+      properties:
+        patterns:
+          type: object
+          properties:
+            auth_2fa:
+              $ref: "#/components/schemas/SmsPatternItem"
+            appointment_reminder:
+              $ref: "#/components/schemas/SmsPatternItem"
+            exam_result:
+              $ref: "#/components/schemas/SmsPatternItem"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SmsPatternItem"
+        auth_body_id:
+          type: integer
+          nullable: true
+        appointment_body_id:
+          type: integer
+          nullable: true
+        exam_body_id:
+          type: integer
+          nullable: true
+
+    SmsPatternsUpdateRequest:
+      type: object
+      properties:
+        appointment_body_id:
+          type: integer
+          nullable: true
+          description: Melipayamak bodyId for weekly appointment reminders (`appointment_reminder`)
+        exam_body_id:
+          type: integer
+          nullable: true
+          description: Melipayamak bodyId for exam share links (`exam_result`)
+        auth_body_id:
+          type: integer
+          nullable: true
+          description: Melipayamak bodyId for staff 2FA login OTP (`auth_2fa`)
+        pattern_key:
+          type: string
+          enum: [auth_2fa, appointment_reminder, exam_result]
+        body_id:
+          type: integer
+          nullable: true
+        pattern_text:
+          type: string
+          nullable: true
+        patterns:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              body_id:
+                type: integer
+                nullable: true
+              pattern_text:
+                type: string
+                nullable: true
 
     AppointmentSmsLogItem:
       type: object
@@ -9159,7 +9683,7 @@ components:
               code: VALIDATION_ERROR
               message: پارامترها ناقص است
     Unauthorized:
-      description: Authentication required or token invalid
+      description: Authentication required or token invalid, expired, blacklisted, revoked, or user deactivated
       content:
         application/json:
           schema:
@@ -9276,12 +9800,12 @@ components:
               code: CONTENT_ACCESS_DISABLED
               message: دسترسی به محتوای پیام‌ها فعال نیست
     RateLimited:
-      description: Throttled; retry after the indicated delay
+      description: Rate limit exceeded; retry after the indicated delay (`Retry-After` header)
       headers:
         Retry-After:
           schema:
             type: integer
-          description: Seconds until the next allowed attempt
+          description: Seconds until the next allowed request
       content:
         application/json:
           schema:

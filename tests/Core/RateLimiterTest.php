@@ -77,7 +77,7 @@ class RateLimiterTest extends TestCase
     {
         RedisClient::useInMemoryDriver(true);
 
-        $middleware = new RateLimitMiddleware('test:public:ip', 2, 60, 60);
+        $middleware = new RateLimitMiddleware('test:public:ip', 2, 60);
         $request = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/public/courses', [
             'REMOTE_ADDR' => '198.51.100.25',
         ]);
@@ -93,8 +93,105 @@ class RateLimiterTest extends TestCase
         $this->assertSame('2', $res1->getHeaderLine('X-RateLimit-Limit'));
         $this->assertSame('1', $res1->getHeaderLine('X-RateLimit-Remaining'));
 
+        $res2 = $middleware->process($request, $handler);
+        $this->assertSame('2', $res2->getHeaderLine('X-RateLimit-Limit'));
+        $this->assertSame('0', $res2->getHeaderLine('X-RateLimit-Remaining'));
+
         $this->expectException(RateLimitedException::class);
         $middleware->process($request, $handler);
     }
+
+    public function testFixedWindowResetsAfterWindowAndFailsOpenWhenRedisDown(): void
+    {
+        RedisClient::useInMemoryDriver(true);
+        $now = 1_760_100_000;
+        RedisClient::setTestNow($now);
+
+        $key = RateLimiter::key('test:fw', '198.51.100.30');
+        $a1 = RateLimiter::attemptFixedWindow($key, 2, 60);
+        $a2 = RateLimiter::attemptFixedWindow($key, 2, 60);
+        $a3 = RateLimiter::attemptFixedWindow($key, 2, 60);
+
+        $this->assertTrue($a1['allowed']);
+        $this->assertTrue($a2['allowed']);
+        $this->assertFalse($a3['allowed']);
+        $this->assertGreaterThan(0, $a3['retry_after']);
+
+        // Window resets at +61s
+        RedisClient::setTestNow($now + 61);
+        $a4 = RateLimiter::attemptFixedWindow($key, 2, 60);
+        $this->assertTrue($a4['allowed']);
+        $this->assertSame(1, $a4['attempts']);
+
+        // Fail-open when Redis goes down
+        RedisClient::simulateFailure(true, 'Redis timeout');
+        $degraded = RateLimiter::attemptFixedWindow($key, 1, 60);
+        $this->assertTrue($degraded['allowed']);
+        $this->assertTrue($degraded['degraded']);
+    }
+
+    public function testAuthAttemptEnforcesPerIpAndIdentifierAndAllowsGenerousSharedIp(): void
+    {
+        RedisClient::useInMemoryDriver(true);
+        $_ENV['RATE_LIMIT_AUTH_USER_IP_MAX'] = '2';
+        $_ENV['RATE_LIMIT_AUTH_IP_MAX'] = '100';
+
+        $middleware = RateLimitMiddleware::forAuthAttempt();
+        $handler = new class implements RequestHandlerInterface {
+            public function handle(ServerRequestInterface $request): ResponseInterface
+            {
+                return (new ResponseFactory())->createResponse(200);
+            }
+        };
+
+        $makeReq = static function (string $username): ServerRequestInterface {
+            return (new ServerRequestFactory())
+                ->createServerRequest('POST', '/api/v1/auth/login', ['REMOTE_ADDR' => '198.51.100.77'])
+                ->withParsedBody(['username' => $username, 'password' => 'secret']);
+        };
+
+        $this->assertSame(200, $middleware->process($makeReq('09120001111'), $handler)->getStatusCode());
+        $this->assertSame(200, $middleware->process($makeReq('09120001111'), $handler)->getStatusCode());
+
+        // Different user on the same shared Wi-Fi IP still allowed
+        $this->assertSame(200, $middleware->process($makeReq('09120002222'), $handler)->getStatusCode());
+
+        // 3rd attempt for 09120001111 from same IP is blocked
+        $this->expectException(RateLimitedException::class);
+        $middleware->process($makeReq('09120001111'), $handler);
+    }
+
+    public function testAuthenticatedRoleLimitsAndBotPrefixExemption(): void
+    {
+        RedisClient::useInMemoryDriver(true);
+        $_ENV['RATE_LIMIT_API_STUDENT_MAX'] = '2';
+        $_ENV['RATE_LIMIT_API_STAFF_MAX'] = '4';
+
+        $middleware = RateLimitMiddleware::forAuthenticatedUser();
+        $handler = new class implements RequestHandlerInterface {
+            public function handle(ServerRequestInterface $request): ResponseInterface
+            {
+                return (new ResponseFactory())->createResponse(200);
+            }
+        };
+
+        $studentReq = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/api/v1/plans')
+            ->withAttribute('user', (object) ['sub' => 501, 'role' => 'student']);
+        $adminReq = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/api/v1/students')
+            ->withAttribute('user', (object) ['sub' => 502, 'role' => 'admin']);
+        $botReq = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/api/v1/bot/ping', ['REMOTE_ADDR' => '198.51.100.88']);
+
+        // Bot route bypasses per-IP middleware limits entirely
+        $botRes = RateLimitMiddleware::forPublicIp()->process($botReq, $handler);
+        $this->assertFalse($botRes->hasHeader('X-RateLimit-Limit'));
+
+        // Student limit = 2, Admin limit = 4
+        $this->assertSame('2', $middleware->process($studentReq, $handler)->getHeaderLine('X-RateLimit-Limit'));
+        $this->assertSame('4', $middleware->process($adminReq, $handler)->getHeaderLine('X-RateLimit-Limit'));
+    }
 }
+
 

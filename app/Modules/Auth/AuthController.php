@@ -5,6 +5,7 @@ namespace App\Modules\Auth;
 use App\Core\Auth;
 use App\Core\AuthCookie;
 use App\Core\ClientIp;
+use App\Core\JwtRevocation;
 use App\Core\RateLimitedException;
 use App\Core\RateLimiter;
 use App\Core\Validator;
@@ -310,6 +311,15 @@ class AuthController
 
     public function logout(Request $request, Response $response): Response
     {
+        $authHeader = $request->getHeaderLine('Authorization');
+        $token = str_starts_with($authHeader, 'Bearer ')
+            ? trim(substr($authHeader, 7))
+            : AuthCookie::tokenFromRequest($request);
+
+        if (is_string($token) && $token !== '') {
+            JwtRevocation::blacklistToken($token);
+        }
+
         $response->getBody()->write(json_encode([
             'success'    => true,
             'data'       => null,
@@ -346,7 +356,7 @@ class AuthController
         }
 
         try {
-            $this->service->changePassword(
+            $session = $this->service->changePassword(
                 (int) $decoded->sub,
                 (string) $body['current_password'],
                 (string) $body['new_password']
@@ -364,13 +374,24 @@ class AuthController
             return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
         }
 
+        $token = $session['token'] ?? null;
+        $payload = [
+            'message' => 'رمز عبور با موفقیت تغییر یافت',
+            'user'    => $session['user'] ?? null,
+        ];
+        $cookieOnly = $request->getHeaderLine('X-Auth-Mode') === 'cookie';
+        if (!$cookieOnly && is_string($token)) {
+            $payload['token'] = $token;
+        }
+
         $response->getBody()->write(json_encode([
             'success'    => true,
-            'data'       => ['message' => 'رمز عبور با موفقیت تغییر یافت'],
+            'data'       => $payload,
             'pagination' => null,
             'error'      => null,
         ], JSON_UNESCAPED_UNICODE));
-        return $response->withHeader('Content-Type', 'application/json; charset=utf-8');
+        $response = $response->withHeader('Content-Type', 'application/json; charset=utf-8');
+        return is_string($token) ? AuthCookie::issue($response, $request, $token) : $response;
     }
 
     public function updateProfile(Request $request, Response $response): Response

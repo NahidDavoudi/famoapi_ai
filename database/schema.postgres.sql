@@ -25,6 +25,8 @@ SET TIME ZONE 'UTC';
 \i database/migrations/008_tutoring_classroom_audit_log.sql
 \i database/migrations/009_staff_activity_logs.sql
 \i database/migrations/010_supporter_description.sql
+\i database/migrations/011_subscription_tuition.sql
+\i database/migrations/012_sms_pattern_settings.sql
 
 
 

@@ -12,6 +12,8 @@ import {
   handleTutoringClassroomEndpoint,
   handleAdminActivityLogEndpoint,
   handleSupporterEndpoint,
+  handleSubscriptionEndpoint,
+  handleSmsPatternEndpoint,
   recordStaffActivity,
 } from './dev-server.mjs';
 
@@ -271,7 +273,7 @@ test('Phase 1 Step 1 — Auth change-password and profile endpoints (PHP impleme
   // 1. Verify PHP Controller, Service, and Routes
   assert.match(authCtrl, /public function changePassword\(Request \$request,\s*Response \$response\): Response/);
   assert.match(authCtrl, /public function updateProfile\(Request \$request,\s*Response \$response\): Response/);
-  assert.match(authSvc, /public function changePassword\(int \$userId,\s*string \$currentPassword,\s*string \$newPassword\): void/);
+  assert.match(authSvc, /public function changePassword\(int \$userId,\s*string \$currentPassword,\s*string \$newPassword\): array/);
   assert.match(authSvc, /public function updateProfile\(int \$userId,\s*array \$data\): array/);
   assert.match(authSvc, /INVALID_PASSWORD/);
   assert.match(authSvc, /DUPLICATE_PHONE/);
@@ -280,8 +282,8 @@ test('Phase 1 Step 1 — Auth change-password and profile endpoints (PHP impleme
   assert.match(authSvc, /UPDATE supporters SET name = :name, phone = :phone WHERE id = :id/);
   assert.match(authSvc, /UPDATE students SET name = :name, phone = :phone WHERE id = :id/);
   assert.match(authSvc, /UPDATE instructors SET name = :name WHERE id = :id/);
-  assert.match(routesPhp, /\$app->post\('\/api\/v1\/auth\/change-password',\s*\[\$authController,\s*'changePassword'\]\)->add\(\$authMiddleware\)/);
-  assert.match(routesPhp, /\$app->put\('\/api\/v1\/auth\/profile',\s*\[\$authController,\s*'updateProfile'\]\)->add\(\$authMiddleware\)/);
+  assert.match(routesPhp, /\$app->post\('\/api\/v1\/auth\/change-password',\s*\[\$authController,\s*'changePassword'\]\)->add\(\$authRateLimit\)->add\(\$authMiddleware\)/);
+  assert.match(routesPhp, /\$app->put\('\/api\/v1\/auth\/profile',\s*\[\$authController,\s*'updateProfile'\]\)->add\(\$authRateLimit\)->add\(\$authMiddleware\)/);
 
   // 2. Verify OpenAPI & README documentation
   assert.match(rootSpec, /\/api\/v1\/auth\/change-password:/);
@@ -426,7 +428,7 @@ test('Exam Comments & Share Links Stage 1 — Migration 006, PUT /api/v1/exams/c
   assert.match(examCtrlPhp, /public function upsertComment\(Request \$request,\s*Response \$response\): Response/);
   assert.match(
     routesPhp,
-    /\$app->put\('\/api\/v1\/exams\/comments',\s*\[\$examController,\s*'upsertComment'\]\)->add\(\$requireStaff\)->add\(\$authMiddleware\)/
+    /\$app->put\('\/api\/v1\/exams\/comments',\s*\[\$examController,\s*'upsertComment'\]\)->add\(\$requireStaff\)->add\(\$authRateLimit\)->add\(\$authMiddleware\)/
   );
 
   // 3. Verify OpenAPI & README
@@ -540,11 +542,11 @@ test('Exam Comments & Share Links Stage 2 — POST /api/v1/exams/share-links and
   assert.match(examCtrlPhp, /'X-Robots-Tag',\s*'noindex, nofollow'/);
   assert.match(
     routesPhp,
-    /\$app->post\('\/api\/v1\/exams\/share-links',\s*\[\$examController,\s*'createShareLink'\]\)->add\(\$requireSupporter\)->add\(\$authMiddleware\)/
+    /\$app->post\('\/api\/v1\/exams\/share-links',\s*\[\$examController,\s*'createShareLink'\]\)->add\(\$smsShareIpLimit\)->add\(\$requireSupporter\)->add\(\$authRateLimit\)->add\(\$authMiddleware\)/
   );
   assert.match(
     routesPhp,
-    /\$app->get\('\/api\/v1\/public\/exam-results\/\{token\}',\s*\[\$examController,\s*'getPublicSharedResult'\]\)\s*->add\(new \\App\\Core\\RateLimitMiddleware\('public:exam_result:ip',\s*20,\s*60\)\)/
+    /\$app->get\('\/api\/v1\/public\/exam-results\/\{token\}',\s*\[\$examController,\s*'getPublicSharedResult'\]\)\s*->add\(\$publicExamLimit\)/
   );
 
   // 2. Verify OpenAPI & README
@@ -880,15 +882,15 @@ test('Weekly Appointment SMS Reminders — Migration 007, preview, bulk send mod
   assert.match(apptCtrlPhp, /public function smsLog\(/);
   assert.match(
     routesPhp,
-    /\$app->get\('\/api\/v1\/appointments\/sms\/preview',\s*\[\$appointmentController,\s*'previewSms'\]\)->add\(\$requireAdmin\)->add\(\$authMiddleware\)/
+    /\$app->get\('\/api\/v1\/appointments\/sms\/preview',\s*\[\$appointmentController,\s*'previewSms'\]\)->add\(\$requireAdmin\)->add\(\$authRateLimit\)->add\(\$authMiddleware\)/
   );
   assert.match(
     routesPhp,
-    /\$app->post\('\/api\/v1\/appointments\/sms\/send',\s*\[\$appointmentController,\s*'sendSms'\]\)->add\(\$requireAdmin\)->add\(\$authMiddleware\)/
+    /\$app->post\('\/api\/v1\/appointments\/sms\/send',\s*\[\$appointmentController,\s*'sendSms'\]\)->add\(\$smsIpLimit\)->add\(\$requireAdmin\)->add\(\$authRateLimit\)->add\(\$authMiddleware\)/
   );
   assert.match(
     routesPhp,
-    /\$app->get\('\/api\/v1\/appointments\/sms\/log',\s*\[\$appointmentController,\s*'smsLog'\]\)->add\(\$requireAdmin\)->add\(\$authMiddleware\)/
+    /\$app->get\('\/api\/v1\/appointments\/sms\/log',\s*\[\$appointmentController,\s*'smsLog'\]\)->add\(\$requireAdmin\)->add\(\$authRateLimit\)->add\(\$authMiddleware\)/
   );
 
   // 4. Verify OpenAPI & README synchronization
@@ -1261,10 +1263,10 @@ test('Tutoring classrooms endpoints (POST/PUT/DELETE /api/v1/tutoring/classrooms
   assert.match(tutoringCtrlPhp, /public function updateClassroom\(Request \$request, Response \$response, array \$args\): Response/);
   assert.match(tutoringCtrlPhp, /public function deleteClassroom\(Request \$request, Response \$response, array \$args\): Response/);
   assert.match(tutoringCtrlPhp, /public function listClassroomAuditLogs\(Request \$request, Response \$response, array \$args = \[\]\): Response/);
-  assert.match(routesPhp, /\$app->post\('\/api\/v1\/tutoring\/classrooms',\s*\[\$tutoringController,\s*'createClassroom'\]\)->add\(\$requireStaff\)->add\(\$authMiddleware\)/);
-  assert.match(routesPhp, /\$app->get\('\/api\/v1\/tutoring\/classrooms\/audit-logs',\s*\[\$tutoringController,\s*'listClassroomAuditLogs'\]\)->add\(\$requireStaff\)->add\(\$authMiddleware\)/);
-  assert.match(routesPhp, /\$app->get\('\/api\/v1\/tutoring\/classrooms\/\{id:\[0-9\]\+\}\/audit-logs',\s*\[\$tutoringController,\s*'listClassroomAuditLogs'\]\)->add\(\$requireStaff\)->add\(\$authMiddleware\)/);
-  assert.match(routesPhp, /\$app->delete\('\/api\/v1\/tutoring\/classrooms\/\{id:\[0-9\]\+\}',\s*\[\$tutoringController,\s*'deleteClassroom'\]\)->add\(\$requireStaff\)->add\(\$authMiddleware\)/);
+  assert.match(routesPhp, /\$app->post\('\/api\/v1\/tutoring\/classrooms',\s*\[\$tutoringController,\s*'createClassroom'\]\)->add\(\$requireStaff\)->add\(\$authRateLimit\)->add\(\$authMiddleware\)/);
+  assert.match(routesPhp, /\$app->get\('\/api\/v1\/tutoring\/classrooms\/audit-logs',\s*\[\$tutoringController,\s*'listClassroomAuditLogs'\]\)->add\(\$requireStaff\)->add\(\$authRateLimit\)->add\(\$authMiddleware\)/);
+  assert.match(routesPhp, /\$app->get\('\/api\/v1\/tutoring\/classrooms\/\{id:\[0-9\]\+\}\/audit-logs',\s*\[\$tutoringController,\s*'listClassroomAuditLogs'\]\)->add\(\$requireStaff\)->add\(\$authRateLimit\)->add\(\$authMiddleware\)/);
+  assert.match(routesPhp, /\$app->delete\('\/api\/v1\/tutoring\/classrooms\/\{id:\[0-9\]\+\}',\s*\[\$tutoringController,\s*'deleteClassroom'\]\)->add\(\$requireStaff\)->add\(\$authRateLimit\)->add\(\$authMiddleware\)/);
   assert.match(rootSpec, /\/api\/v1\/tutoring\/classrooms:/);
   assert.match(rootSpec, /\/api\/v1\/tutoring\/classrooms\/\{id\}:/);
   assert.match(rootSpec, /\/api\/v1\/tutoring\/classrooms\/audit-logs:/);
@@ -1684,6 +1686,440 @@ test('Supporter Profile Photo & Description (Admin upload + Public landing page 
   );
   assert.equal(publicItem.image_url, publicItem.avatar_url);
 });
+
+test('Course Enrollment & Monthly Tuition Status (POST /courses/{id}/enroll, GET /subscriptions/me, PATCH /subscriptions/{id}/tuition, Migration 011)', () => {
+  // 1. Verify schema migration 011 and PHP files
+  const migration011 = fs.readFileSync(
+    new URL('./database/migrations/011_subscription_tuition.sql', import.meta.url),
+    'utf8'
+  );
+  assert.match(migration011, /ALTER TABLE subscriptions/);
+  assert.match(migration011, /ADD COLUMN monthly_fee INT/);
+  assert.match(migration011, /ADD COLUMN tuition_status VARCHAR\(30\)/);
+  assert.match(migration011, /ADD COLUMN tuition_due_date DATE/);
+  assert.match(migration011, /ADD COLUMN last_payment_date DATE/);
+
+  const subModel = fs.readFileSync(
+    new URL('./app/Modules/Subscription/Subscription.php', import.meta.url),
+    'utf8'
+  );
+  assert.match(subModel, /public static function ensureTuitionColumns\(\)/);
+  assert.match(subModel, /public static function updateTuition\(int \$id, array \$tuitionData\)/);
+  assert.match(subModel, /sub\.monthly_fee/);
+  assert.match(subModel, /sub\.tuition_status/);
+
+  const subService = fs.readFileSync(
+    new URL('./app/Modules/Subscription/SubscriptionService.php', import.meta.url),
+    'utf8'
+  );
+  assert.match(subService, /public const VALID_TUITION_STATUSES/);
+  assert.match(subService, /'unpaid'/);
+  assert.match(subService, /'paid'/);
+  assert.match(subService, /public function updateTuition\(int \$id, array \$data\)/);
+
+  const subController = fs.readFileSync(
+    new URL('./app/Modules/Subscription/SubscriptionController.php', import.meta.url),
+    'utf8'
+  );
+  assert.match(subController, /public function enrollCourse\(/);
+  assert.match(subController, /public function updateTuition\(/);
+
+  const routesPhp = fs.readFileSync(new URL('./routes/api.php', import.meta.url), 'utf8');
+  assert.match(routesPhp, /\/courses\/\{id:\[0-9\]\+\}\/enroll/);
+  assert.match(routesPhp, /\/subscriptions\/\{id:\[0-9\]\+\}\/tuition/);
+
+  // 2. Behavioral test using dev-server context
+  const ctx = createAppContext();
+  const studentActor = { sub: 3, role: 'student', linked_id: 20 };
+  const adminActor = { sub: 1, role: 'admin', linked_id: 1 };
+
+  // 2a. Student enrolls in Course #102 (Physics, monthly fee 420,000)
+  const enrollRes = handleSubscriptionEndpoint(
+    ctx,
+    'POST',
+    new URL('http://localhost:3000/api/v1/courses/102/enroll'),
+    {},
+    studentActor
+  );
+  assert.equal(enrollRes.status, 201);
+  assert.equal(enrollRes.body.success, true);
+  assert.equal(enrollRes.body.data.course_id, 102);
+  assert.equal(enrollRes.body.data.student_id, 20);
+  assert.equal(enrollRes.body.data.status, 'pending');
+  assert.equal(enrollRes.body.data.monthly_fee, 420000);
+  assert.equal(enrollRes.body.data.tuition_status, 'unpaid');
+  assert.equal(enrollRes.body.data.tuition_status_label, 'پرداخت نشده');
+  assert.ok(enrollRes.body.data.tuition_due_date, 'Due date must be set');
+
+  const newSubId = enrollRes.body.data.id;
+
+  // 2b. Attempting duplicate enrollment in Course #102 returns 409 ALREADY_SUBSCRIBED
+  const dupEnrollRes = handleSubscriptionEndpoint(
+    ctx,
+    'POST',
+    new URL('http://localhost:3000/api/v1/courses/102/enroll'),
+    {},
+    studentActor
+  );
+  assert.equal(dupEnrollRes.status, 409);
+  assert.equal(dupEnrollRes.body.error.code, 'ALREADY_SUBSCRIBED');
+
+  // 2c. Student fetches their own subscriptions via GET /api/v1/subscriptions/me
+  const mySubsRes = handleSubscriptionEndpoint(
+    ctx,
+    'GET',
+    new URL('http://localhost:3000/api/v1/subscriptions/me'),
+    {},
+    studentActor
+  );
+  assert.equal(mySubsRes.status, 200);
+  assert.equal(mySubsRes.body.success, true);
+  assert.ok(Array.isArray(mySubsRes.body.data));
+  const myEnrolled = mySubsRes.body.data.find((s) => s.id === newSubId);
+  assert.ok(myEnrolled, 'Newly enrolled subscription must appear in /subscriptions/me');
+  assert.equal(myEnrolled.course_id, 102);
+  assert.equal(myEnrolled.monthly_fee, 420000);
+  assert.equal(myEnrolled.tuition_status, 'unpaid');
+  assert.equal(myEnrolled.tuition_status_label, 'پرداخت نشده');
+
+  // 2d. Admin/Staff updates tuition payment status to 'paid' via PATCH /api/v1/subscriptions/{id}/tuition
+  const tuitionPatchRes = handleSubscriptionEndpoint(
+    ctx,
+    'PATCH',
+    new URL(`http://localhost:3000/api/v1/subscriptions/${newSubId}/tuition`),
+    {
+      tuition_status: 'paid',
+      tuition_notes: 'واریز از طریق درگاه پرداخت بانکی',
+    },
+    adminActor
+  );
+  assert.equal(tuitionPatchRes.status, 200);
+  assert.equal(tuitionPatchRes.body.success, true);
+  assert.equal(tuitionPatchRes.body.data.tuition_status, 'paid');
+  assert.equal(tuitionPatchRes.body.data.tuition_status_label, 'پرداخت شده');
+  assert.ok(tuitionPatchRes.body.data.last_payment_date, 'Last payment date must be recorded');
+  assert.equal(tuitionPatchRes.body.data.tuition_notes, 'واریز از طریق درگاه پرداخت بانکی');
+
+  // 2e. Invalid tuition status returns 422 VALIDATION_ERROR
+  const invalidStatusRes = handleSubscriptionEndpoint(
+    ctx,
+    'PATCH',
+    new URL(`http://localhost:3000/api/v1/subscriptions/${newSubId}/tuition`),
+    { tuition_status: 'invalid_status_xyz' },
+    adminActor
+  );
+  assert.equal(invalidStatusRes.status, 422);
+  assert.equal(invalidStatusRes.body.error.code, 'VALIDATION_ERROR');
+
+  // 2f. Filter subscriptions by tuition_status
+  const paidFilterRes = handleSubscriptionEndpoint(
+    ctx,
+    'GET',
+    new URL('http://localhost:3000/api/v1/subscriptions?tuition_status=paid'),
+    {},
+    adminActor
+  );
+  assert.equal(paidFilterRes.status, 200);
+  assert.ok(paidFilterRes.body.data.every((s) => s.tuition_status === 'paid'));
+
+  // 2g. Non-admin student forbidden from updating tuition
+  const forbiddenPatchRes = handleSubscriptionEndpoint(
+    ctx,
+    'PATCH',
+    new URL(`http://localhost:3000/api/v1/subscriptions/${newSubId}/tuition`),
+    { tuition_status: 'paid' },
+    studentActor
+  );
+  assert.equal(forbiddenPatchRes.status, 403);
+  assert.equal(forbiddenPatchRes.body.error.code, 'FORBIDDEN');
+});
+
+test('Melipayamak SMS Pattern Isolation (/api/v1/admin/sms/patterns, no 2FA fallback for appointments, Migration 012)', () => {
+  // 1. Verify Migration 012, Core SmsPatternSettings, SmsService non-fallback, Controller, Service, Routes, and OpenAPI sync
+  const mig012 = fs.readFileSync(
+    new URL('./database/migrations/012_sms_pattern_settings.sql', import.meta.url),
+    'utf8'
+  );
+  const patternSettingsPhp = fs.readFileSync(
+    new URL('./app/Core/SmsPatternSettings.php', import.meta.url),
+    'utf8'
+  );
+  const smsServicePhp = fs.readFileSync(
+    new URL('./app/Core/SmsService.php', import.meta.url),
+    'utf8'
+  );
+  const smsCtrlPhp = fs.readFileSync(
+    new URL('./app/Modules/Settings/SmsSettingsController.php', import.meta.url),
+    'utf8'
+  );
+  const apptSvcPhp = fs.readFileSync(
+    new URL('./app/Modules/Appointments/AppointmentService.php', import.meta.url),
+    'utf8'
+  );
+  const apptCtrlPhp = fs.readFileSync(
+    new URL('./app/Modules/Appointments/AppointmentController.php', import.meta.url),
+    'utf8'
+  );
+  const routesPhp = fs.readFileSync(new URL('./routes/api.php', import.meta.url), 'utf8');
+  const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
+  const publicSpec = fs.readFileSync(new URL('./public/openapi.yaml', import.meta.url), 'utf8');
+  const readmeMd = fs.readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+
+  assert.match(mig012, /CREATE TABLE IF NOT EXISTS `?sms_pattern_settings`?/);
+  assert.match(
+    mig012,
+    /موسسه آموزشی فامو \| دکتر موسوی والدین گرامی \{0\} ، نوبت فرزند شما روز \{1\} ساعت \{2\} میباشد\. در صورت تایید به شماره موسسه پیامک دهید\./
+  );
+
+  assert.match(patternSettingsPhp, /KEY_AUTH_2FA = 'auth_2fa'/);
+  assert.match(patternSettingsPhp, /KEY_APPOINTMENT_REMINDER = 'appointment_reminder'/);
+  assert.match(patternSettingsPhp, /KEY_EXAM_RESULT = 'exam_result'/);
+  assert.match(
+    patternSettingsPhp,
+    /موسسه آموزشی فامو \| دکتر موسوی والدین گرامی \{0\} ، نوبت فرزند شما روز \{1\} ساعت \{2\} میباشد\. در صورت تایید به شماره موسسه پیامک دهید\./
+  );
+
+  // Critical bugfix invariant: Appointment and Exam patterns must NEVER fall back to MELIPAYAMAK_PATTERN_BODY_ID
+  assert.doesNotMatch(
+    smsServicePhp,
+    /\$this->melipayamakExamBodyId\s*=\s*self::env\('MELIPAYAMAK_EXAM_BODY_ID'\)\s*\?:/
+  );
+  assert.doesNotMatch(
+    smsServicePhp,
+    /\$this->melipayamakAppointmentBodyId\s*=\s*self::env\('MELIPAYAMAK_APPOINTMENT_BODY_ID'\)\s*\?:/
+  );
+  assert.match(smsServicePhp, /SmsPatternSettings::resolveBodyId\(SmsPatternSettings::KEY_APPOINTMENT_REMINDER\)/);
+  assert.match(smsServicePhp, /public function setAppointmentBodyId\(\?int \$bodyId\): void/);
+  assert.match(smsServicePhp, /public function getLastError\(\): \?string/);
+
+  assert.match(smsCtrlPhp, /public function getPatterns\(/);
+  assert.match(smsCtrlPhp, /public function updatePatterns\(/);
+  assert.match(apptSvcPhp, /APPOINTMENT_PATTERN_NOT_CONFIGURED/);
+  assert.match(apptSvcPhp, /sms_preview_text/);
+  assert.match(apptCtrlPhp, /\$body\['body_id'\]/);
+
+  assert.match(routesPhp, /\/api\/v1\/admin\/sms\/patterns/);
+  assert.equal(rootSpec, publicSpec);
+  assert.match(rootSpec, /\/api\/v1\/admin\/sms\/patterns:/);
+  assert.match(rootSpec, /SmsPatternsResponse:/);
+  assert.match(readmeMd, /\/api\/v1\/admin\/sms\/patterns/);
+
+  // 2. Behavioral verification: simulate production where ONLY 2FA login pattern (500001) is set in env,
+  //    and appointment_reminder has neither env nor DB pattern ID configured yet.
+  const ctx = createAppContext();
+  ctx.smsPatterns.appointment_reminder.env_body_id = null;
+  ctx.smsPatterns.appointment_reminder.db_body_id = null;
+  ctx.smsPatterns.exam_result.env_body_id = null;
+  ctx.smsPatterns.exam_result.db_body_id = null;
+
+  const adminActor = { sub: 1, role: 'admin' };
+  const supporterActor = { sub: 2, role: 'supporter' };
+  const patternsUrl = new URL('http://localhost:3000/api/v1/admin/sms/patterns');
+  const previewUrl = new URL('http://localhost:3000/api/v1/appointments/sms/preview?week_date=2026-10-24');
+  const sendUrl = new URL('http://localhost:3000/api/v1/appointments/sms/send');
+
+  // 2a. Supporter forbidden from /api/v1/admin/sms/patterns (403)
+  const forbRes = handleSmsPatternEndpoint(ctx, 'GET', patternsUrl, {}, supporterActor);
+  assert.equal(forbRes.status, 403);
+  assert.equal(forbRes.body.error.code, 'FORBIDDEN');
+
+  // 2b. Admin reads initial pattern status: auth_2fa is configured (500001), appointment_reminder is unset (no fallback!)
+  const getInitial = handleSmsPatternEndpoint(ctx, 'GET', patternsUrl, {}, adminActor);
+  assert.equal(getInitial.status, 200);
+  assert.equal(getInitial.body.data.auth_body_id, 500001);
+  assert.equal(getInitial.body.data.appointment_body_id, null);
+  assert.equal(getInitial.body.data.patterns.appointment_reminder.is_configured, false);
+  assert.equal(getInitial.body.data.patterns.appointment_reminder.source, 'unset');
+
+  // 2c. Trying to send appointment SMS before setting appointment pattern MUST fail fast with 422
+  //     and NEVER dispatch using the 2FA login pattern (500001)
+  const blockedSend = handleAppointmentSmsEndpoint(
+    ctx,
+    'POST',
+    sendUrl,
+    { week_date: '2026-10-24', mode: 'unsent' },
+    adminActor
+  );
+  assert.equal(blockedSend.status, 422);
+  assert.equal(blockedSend.body.error.code, 'APPOINTMENT_PATTERN_NOT_CONFIGURED');
+  assert.equal(ctx.smsDispatches.length, 0);
+
+  // 2d. Preview still works and exposes pattern.is_configured=false + exact Persian sms_preview_text
+  const previewUnset = handleAppointmentSmsEndpoint(ctx, 'GET', previewUrl, {}, adminActor);
+  assert.equal(previewUnset.status, 200);
+  assert.equal(previewUnset.body.data.pattern.is_configured, false);
+  assert.equal(previewUnset.body.data.pattern.body_id, null);
+  const st20Prev = previewUnset.body.data.items.find((i) => i.student_id === 20);
+  assert.equal(
+    st20Prev.sms_preview_text,
+    'موسسه آموزشی فامو | دکتر موسوی والدین گرامی دانش‌آموز نمونه ، نوبت فرزند شما روز شنبه 1405/08/02 ساعت 16:30 میباشد. در صورت تایید به شماره موسسه پیامک دهید.'
+  );
+
+  // 2e. Validation rejects invalid/non-positive body_id on PUT /api/v1/admin/sms/patterns
+  const badUpdate = handleSmsPatternEndpoint(
+    ctx,
+    'PUT',
+    patternsUrl,
+    { appointment_body_id: 'abc' },
+    adminActor
+  );
+  assert.equal(badUpdate.status, 422);
+  assert.equal(badUpdate.body.error.code, 'VALIDATION_ERROR');
+
+  // 2f. Admin configures dedicated Melipayamak appointment pattern bodyId (345678)
+  const updateRes = handleSmsPatternEndpoint(
+    ctx,
+    'PUT',
+    patternsUrl,
+    { appointment_body_id: 345678 },
+    adminActor
+  );
+  assert.equal(updateRes.status, 200);
+  assert.equal(updateRes.body.data.appointment_body_id, 345678);
+  assert.equal(updateRes.body.data.auth_body_id, 500001);
+  assert.equal(updateRes.body.data.patterns.appointment_reminder.source, 'database');
+  assert.equal(updateRes.body.data.patterns.appointment_reminder.is_configured, true);
+
+  // 2g. Appointment SMS now sends with dedicated body_id=345678 (NOT 500001)
+  const sentRes = handleAppointmentSmsEndpoint(
+    ctx,
+    'POST',
+    sendUrl,
+    { week_date: '2026-10-24', mode: 'unsent' },
+    adminActor
+  );
+  assert.equal(sentRes.status, 200);
+  assert.equal(sentRes.body.data.body_id, 345678);
+  assert.equal(sentRes.body.data.pattern_source, 'database');
+  assert.equal(ctx.smsDispatches.length, 1);
+  assert.equal(ctx.smsDispatches[0].body_id, 345678);
+  assert.notEqual(ctx.smsDispatches[0].body_id, ctx.smsPatterns.auth_2fa.env_body_id);
+  assert.equal(ctx.smsDispatches[0].text, 'دانش‌آموز نمونه;شنبه 1405/08/02;16:30');
+
+  // 2h. Inline override body_id + save_pattern=true in POST /appointments/sms/send persists for future sends
+  ctx.appointments.find((a) => a.id === 1).start_time = '17:00:00';
+  const inlineSend = handleAppointmentSmsEndpoint(
+    ctx,
+    'POST',
+    sendUrl,
+    { week_date: '2026-10-24', mode: 'changed', body_id: 778899, save_pattern: true },
+    adminActor
+  );
+  assert.equal(inlineSend.status, 200);
+  assert.equal(inlineSend.body.data.body_id, 778899);
+  assert.equal(inlineSend.body.data.pattern_source, 'request');
+  assert.equal(ctx.smsDispatches[1].body_id, 778899);
+
+  const afterSave = handleSmsPatternEndpoint(ctx, 'GET', patternsUrl, {}, adminActor);
+  assert.equal(afterSave.body.data.appointment_body_id, 778899);
+  assert.equal(afterSave.body.data.patterns.appointment_reminder.source, 'database');
+});
+
+test('Redis JWT revocation, configurable rate limiting, ClientIp right-to-left proxy check, and RedisMonitorMiddleware', () => {
+  const redisClientPhp = fs.readFileSync(new URL('./app/Core/RedisClient.php', import.meta.url), 'utf8');
+  const redisMonitorPhp = fs.readFileSync(new URL('./app/Core/RedisMonitorMiddleware.php', import.meta.url), 'utf8');
+  const clientIpPhp = fs.readFileSync(new URL('./app/Core/ClientIp.php', import.meta.url), 'utf8');
+  const authPhp = fs.readFileSync(new URL('./app/Core/Auth.php', import.meta.url), 'utf8');
+  const jwtRevPhp = fs.readFileSync(new URL('./app/Core/JwtRevocation.php', import.meta.url), 'utf8');
+  const rateLimitsCfg = fs.readFileSync(new URL('./config/rate_limits.php', import.meta.url), 'utf8');
+  const rateLimiterPhp = fs.readFileSync(new URL('./app/Core/RateLimiter.php', import.meta.url), 'utf8');
+  const rateLimitMwPhp = fs.readFileSync(new URL('./app/Core/RateLimitMiddleware.php', import.meta.url), 'utf8');
+  const bootstrapPhp = fs.readFileSync(new URL('./bootstrap/app.php', import.meta.url), 'utf8');
+  const routesPhp = fs.readFileSync(new URL('./routes/api.php', import.meta.url), 'utf8');
+  const envExample = fs.readFileSync(new URL('./.env.example', import.meta.url), 'utf8');
+  const envValidatorPhp = fs.readFileSync(new URL('./app/Core/EnvValidator.php', import.meta.url), 'utf8');
+  const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
+  const publicSpec = fs.readFileSync(new URL('./public/openapi.yaml', import.meta.url), 'utf8');
+
+  // 1. Verify RedisClient::eval, downtime monitoring & critical logs
+  assert.match(redisClientPhp, /public static function eval\(/);
+  assert.match(redisClientPhp, /private static function evalInMemory\(/);
+  assert.match(redisClientPhp, /\[CRITICAL\] Redis unreachable/);
+  assert.match(redisClientPhp, /downtime_seconds=/);
+  assert.match(redisMonitorPhp, /class RedisMonitorMiddleware implements MiddlewareInterface/);
+  assert.match(bootstrapPhp, /RedisMonitorMiddleware/);
+
+  // 2. Verify ClientIp walks X-Forwarded-For right-to-left skipping trusted proxies
+  assert.match(clientIpPhp, /for \(\$i = count\(\$parts\) - 1; \$i >= 0; \$i--\)/);
+
+  // 3. Verify JWT jti/typ claims, blacklist, user_epoch, fail modes & same-second docs
+  assert.match(authPhp, /'jti'\s*=>\s*\$user\['jti'\]\s*\?\?\s*bin2hex\(random_bytes\(16\)\)/);
+  assert.match(authPhp, /'typ'\s*=>\s*\$user\['typ'\]\s*\?\?\s*'access'/);
+  assert.match(jwtRevPhp, /jwt:bl:/);
+  assert.match(jwtRevPhp, /jwt:user_epoch:/);
+  assert.match(jwtRevPhp, /\$iat < \$epoch/);
+  assert.match(jwtRevPhp, /AUTH_REVOCATION_FAIL_MODE/);
+  assert.match(jwtRevPhp, /AUTH_REVOCATION_ADMIN_FAIL_MODE/);
+
+  // 4. Verify centralized config & rate limits
+  assert.match(rateLimitsCfg, /'auth_user_ip_max'\s*=>\s*\$envInt\('RATE_LIMIT_AUTH_USER_IP_MAX', 5\)/);
+  assert.match(rateLimitsCfg, /'auth_ip_max'\s*=>\s*\$envInt\('RATE_LIMIT_AUTH_IP_MAX', 100\)/);
+  assert.match(rateLimitsCfg, /'public_ip_max'\s*=>\s*\$envInt\('RATE_LIMIT_PUBLIC_IP_MAX'/);
+  assert.match(rateLimitsCfg, /'api_student_max'\s*=>\s*\$envInt\('RATE_LIMIT_API_STUDENT_MAX', 120\)/);
+  assert.match(rateLimitsCfg, /'api_staff_max'\s*=>\s*\$envInt\('RATE_LIMIT_API_STAFF_MAX', 300\)/);
+  assert.match(rateLimitsCfg, /'sms_phone_max'\s*=>\s*\$envInt\('RATE_LIMIT_SMS_PHONE_MAX', 3\)/);
+  assert.match(rateLimitsCfg, /'sms_ip_max'\s*=>\s*\$envInt\('RATE_LIMIT_SMS_IP_MAX', 10\)/);
+  assert.match(rateLimiterPhp, /FIXED_WINDOW_LUA/);
+  assert.match(rateLimiterPhp, /attemptFixedWindow\(/);
+  assert.match(rateLimitMwPhp, /MODE_AUTH_USER/);
+  assert.match(rateLimitMwPhp, /MODE_AUTH_ATTEMPT/);
+  assert.match(rateLimitMwPhp, /MODE_SMS_SEND/);
+  assert.match(routesPhp, /\$authAttemptLimit/);
+  assert.match(routesPhp, /\$authRateLimit/);
+  assert.match(routesPhp, /\$smsIpLimit/);
+
+  // 5. Verify env + OpenAPI sync
+  assert.match(envExample, /AUTH_REVOCATION_ADMIN_FAIL_MODE=closed/);
+  assert.match(envExample, /RATE_LIMIT_API_STAFF_MAX=300/);
+  assert.match(envValidatorPhp, /RATE_LIMIT_API_STAFF_MAX/);
+  assert.match(envValidatorPhp, /AUTH_REVOCATION_FAIL_MODE/);
+  assert.equal(rootSpec, publicSpec);
+  assert.match(rootSpec, /temporary_password:/);
+  assert.match(rootSpec, /jwt:user_epoch/);
+
+  // 6. Behavioral verification of RedisStore::eval() & simulator JWT revocation
+  const ctx = createAppContext();
+  const eval1 = ctx.redis.eval("redis.call('INCR', KEYS[1])", ['rl:fw:test1'], ['60']);
+  assert.equal(eval1[0], 1);
+  assert.ok(eval1[1] > 0 && eval1[1] <= 60);
+  const eval2 = ctx.redis.eval("redis.call('INCR', KEYS[1])", ['rl:fw:test1'], ['60']);
+  assert.equal(eval2[0], 2);
+
+  const fw1 = ctx.rateLimiter.attemptFixedWindow('sim:user:1', 2, 60);
+  const fw2 = ctx.rateLimiter.attemptFixedWindow('sim:user:1', 2, 60);
+  const fw3 = ctx.rateLimiter.attemptFixedWindow('sim:user:1', 2, 60);
+  assert.equal(fw1.allowed, true);
+  assert.equal(fw2.allowed, true);
+  assert.equal(fw3.allowed, false);
+  assert.ok(fw3.retry_after > 0);
+
+  // Logout blacklists jti
+  const studentActor = { sub: 3, role: 'student', jti: 'jti-abc-123', iat: Math.floor(Date.now() / 1000) - 30 };
+  const logoutRes = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/logout', {}, studentActor);
+  assert.equal(logoutRes.status, 200);
+  assert.equal(ctx.redis.get('jwt:bl:jti-abc-123'), '1');
+
+  const afterLogout = handleAuthEndpoint(ctx, 'PUT', '/api/v1/auth/profile', { full_name: 'تست', phone: '09120000003' }, studentActor);
+  assert.equal(afterLogout.status, 401);
+
+  // Change-password revokes prior iat and issues fresh active token
+  const activeActor = { sub: 3, role: 'student', jti: 'jti-fresh-1', iat: Math.floor(Date.now() / 1000) - 20 };
+  const chgRes = handleAuthEndpoint(
+    ctx,
+    'POST',
+    '/api/v1/auth/change-password',
+    { current_password: 'stud123', new_password: 'newSecret99' },
+    activeActor
+  );
+  assert.equal(chgRes.status, 200);
+  assert.ok(chgRes.body.data.token, 'change-password must return a fresh JWT');
+  assert.ok(chgRes.body.data.user);
+
+  const oldActorAttempt = handleAuthEndpoint(ctx, 'PUT', '/api/v1/auth/profile', { full_name: 'تست', phone: '09120000003' }, activeActor);
+  assert.equal(oldActorAttempt.status, 401);
+});
+
+
 
 
 

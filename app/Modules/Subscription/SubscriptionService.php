@@ -17,30 +17,53 @@ class SubscriptionService
         'rejected',
     ];
 
+    public const VALID_TUITION_STATUSES = [
+        'unpaid',
+        'paid',
+        'pending',
+        'exempt',
+        'partial',
+    ];
+
     /**
      * Format a raw subscription row joined with student & course metadata.
      */
     private function formatRow(array $row): array
     {
+        $tuitionStatus = (string) ($row['tuition_status'] ?? 'unpaid');
+        $tuitionLabels = [
+            'unpaid'  => 'پرداخت نشده',
+            'paid'    => 'پرداخت شده',
+            'pending' => 'در انتظار بررسی',
+            'exempt'  => 'معاف از شهریه',
+            'partial' => 'پرداخت ناقص / بیعانه',
+        ];
+
         return [
-            'id'         => (int) $row['id'],
-            'course_id'  => (int) $row['course_id'],
-            'student_id' => (int) $row['student_id'],
-            'status'     => (string) $row['status'],
-            'is_active'  => (int) $row['is_active'],
-            'note'       => $row['note'],
-            'started_at' => $row['started_at'],
-            'end_at'     => $row['end_at'],
-            'created_at' => $row['created_at'],
-            'updated_at' => $row['updated_at'],
-            'course'     => [
+            'id'                   => (int) $row['id'],
+            'course_id'            => (int) $row['course_id'],
+            'student_id'           => (int) $row['student_id'],
+            'status'               => (string) $row['status'],
+            'is_active'            => (int) $row['is_active'],
+            'monthly_fee'          => isset($row['monthly_fee']) ? (int) $row['monthly_fee'] : 0,
+            'tuition_status'       => $tuitionStatus,
+            'tuition_status_label' => $tuitionLabels[$tuitionStatus] ?? $tuitionStatus,
+            'tuition_due_date'     => $row['tuition_due_date'] ?? null,
+            'last_payment_date'    => $row['last_payment_date'] ?? null,
+            'tuition_notes'        => $row['tuition_notes'] ?? null,
+            'note'                 => $row['note'],
+            'started_at'           => $row['started_at'],
+            'end_at'               => $row['end_at'],
+            'created_at'           => $row['created_at'],
+            'updated_at'           => $row['updated_at'],
+            'course'               => [
                 'id'          => (int) $row['course_id'],
                 'name'        => $row['course_name'] ?? null,
                 'price'       => isset($row['course_price']) ? (int) $row['course_price'] : 0,
                 'icon'        => $row['course_icon'] ?? null,
                 'description' => $row['course_description'] ?? null,
             ],
-            'student'    => [
+            'student'              => [
                 'id'    => (int) $row['student_id'],
                 'name'  => $row['student_name'] ?? null,
                 'phone' => $row['student_phone'] ?? null,
@@ -149,14 +172,44 @@ class SubscriptionService
             }
         }
 
+        $coursePrice = isset($course['price']) ? (int) preg_replace('/[^0-9]/', '', (string)$course['price']) : 0;
+        $monthlyFee = isset($data['monthly_fee']) && $data['monthly_fee'] !== ''
+            ? max(0, (int) $data['monthly_fee'])
+            : $coursePrice;
+
+        $tuitionStatus = isset($data['tuition_status']) && $data['tuition_status'] !== ''
+            ? strtolower(trim((string) $data['tuition_status']))
+            : 'unpaid';
+
+        if (!in_array($tuitionStatus, self::VALID_TUITION_STATUSES, true)) {
+            $tuitionStatus = 'unpaid';
+        }
+
+        $tuitionDueDate = !empty($data['tuition_due_date'])
+            ? (string) $data['tuition_due_date']
+            : date('Y-m-d', strtotime('+30 days'));
+
+        $lastPaymentDate = !empty($data['last_payment_date'])
+            ? (string) $data['last_payment_date']
+            : ($tuitionStatus === 'paid' ? date('Y-m-d') : null);
+
+        $tuitionNotes = isset($data['tuition_notes']) && $data['tuition_notes'] !== ''
+            ? trim((string) $data['tuition_notes'])
+            : null;
+
         $id = Subscription::create([
-            'course_id'  => $courseId,
-            'student_id' => $studentId,
-            'status'     => $status,
-            'is_active'  => $isActive,
-            'note'       => isset($data['note']) && $data['note'] !== '' ? trim((string) $data['note']) : null,
-            'started_at' => !empty($data['started_at']) ? (string) $data['started_at'] : null,
-            'end_at'     => !empty($data['end_at']) ? (string) $data['end_at'] : null,
+            'course_id'          => $courseId,
+            'student_id'         => $studentId,
+            'status'             => $status,
+            'is_active'          => $isActive,
+            'monthly_fee'        => $monthlyFee,
+            'tuition_status'     => $tuitionStatus,
+            'tuition_due_date'   => $tuitionDueDate,
+            'last_payment_date'  => $lastPaymentDate,
+            'tuition_notes'      => $tuitionNotes,
+            'note'               => isset($data['note']) && $data['note'] !== '' ? trim((string) $data['note']) : null,
+            'started_at'         => !empty($data['started_at']) ? (string) $data['started_at'] : null,
+            'end_at'             => !empty($data['end_at']) ? (string) $data['end_at'] : null,
         ]);
 
         return $this->get($id);
@@ -227,6 +280,35 @@ class SubscriptionService
                 : null;
         }
 
+        if (array_key_exists('monthly_fee', $data) && $data['monthly_fee'] !== null && $data['monthly_fee'] !== '') {
+            $updatePayload['monthly_fee'] = max(0, (int) $data['monthly_fee']);
+        }
+
+        if (array_key_exists('tuition_status', $data) && $data['tuition_status'] !== null && $data['tuition_status'] !== '') {
+            $ts = strtolower(trim((string) $data['tuition_status']));
+            if (!in_array($ts, self::VALID_TUITION_STATUSES, true)) {
+                throw new ApiException('وضعیت شهریه نامعتبر است', 422, 'INVALID_TUITION_STATUS');
+            }
+            $updatePayload['tuition_status'] = $ts;
+            if ($ts === 'paid' && empty($data['last_payment_date']) && empty($existing['last_payment_date'])) {
+                $updatePayload['last_payment_date'] = date('Y-m-d');
+            }
+        }
+
+        if (array_key_exists('tuition_due_date', $data)) {
+            $updatePayload['tuition_due_date'] = !empty($data['tuition_due_date']) ? (string) $data['tuition_due_date'] : null;
+        }
+
+        if (array_key_exists('last_payment_date', $data)) {
+            $updatePayload['last_payment_date'] = !empty($data['last_payment_date']) ? (string) $data['last_payment_date'] : null;
+        }
+
+        if (array_key_exists('tuition_notes', $data)) {
+            $updatePayload['tuition_notes'] = $data['tuition_notes'] !== null && $data['tuition_notes'] !== ''
+                ? trim((string) $data['tuition_notes'])
+                : null;
+        }
+
         if (array_key_exists('started_at', $data) && $data['started_at'] !== null && $data['started_at'] !== '') {
             $updatePayload['started_at'] = (string) $data['started_at'];
         }
@@ -238,6 +320,50 @@ class SubscriptionService
         }
 
         Subscription::update($id, $updatePayload);
+
+        return $this->get($id);
+    }
+
+    public function updateTuition(int $id, array $data): array
+    {
+        $existing = Subscription::findById($id);
+        if (!$existing) {
+            throw new ApiException('اشتراک مورد نظر یافت نشد', 404, 'SUBSCRIPTION_NOT_FOUND');
+        }
+
+        $payload = [];
+        if (array_key_exists('tuition_status', $data) && $data['tuition_status'] !== null && $data['tuition_status'] !== '') {
+            $ts = strtolower(trim((string) $data['tuition_status']));
+            if (!in_array($ts, self::VALID_TUITION_STATUSES, true)) {
+                throw new ApiException('وضعیت شهریه نامعتبر است', 422, 'INVALID_TUITION_STATUS');
+            }
+            $payload['tuition_status'] = $ts;
+            if ($ts === 'paid' && empty($data['last_payment_date']) && empty($existing['last_payment_date'])) {
+                $payload['last_payment_date'] = date('Y-m-d');
+            }
+        }
+
+        if (array_key_exists('monthly_fee', $data) && $data['monthly_fee'] !== null && $data['monthly_fee'] !== '') {
+            $payload['monthly_fee'] = max(0, (int) $data['monthly_fee']);
+        }
+
+        if (array_key_exists('tuition_due_date', $data)) {
+            $payload['tuition_due_date'] = !empty($data['tuition_due_date']) ? (string) $data['tuition_due_date'] : null;
+        }
+
+        if (array_key_exists('last_payment_date', $data)) {
+            $payload['last_payment_date'] = !empty($data['last_payment_date']) ? (string) $data['last_payment_date'] : null;
+        }
+
+        if (array_key_exists('tuition_notes', $data)) {
+            $payload['tuition_notes'] = $data['tuition_notes'] !== null && $data['tuition_notes'] !== ''
+                ? trim((string) $data['tuition_notes'])
+                : null;
+        }
+
+        if (!empty($payload)) {
+            Subscription::updateTuition($id, $payload);
+        }
 
         return $this->get($id);
     }

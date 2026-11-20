@@ -11,20 +11,49 @@ class SmsService
     private string $melipayamakBodyId;
     private string $melipayamakExamBodyId;
     private string $melipayamakAppointmentBodyId;
+    private ?int $overrideAppointmentBodyId = null;
+    private ?int $overrideExamBodyId = null;
+    private ?string $lastError = null;
 
     public function __construct()
     {
-        $this->apiKey = $_ENV['SMS_API_KEY'] ?? '';
-        $this->sender = $_ENV['SMS_SENDER'] ?? '100001';
-        $this->melipayamakUsername = $_ENV['MELIPAYAMAK_USERNAME'] ?? '';
-        $this->melipayamakPassword = $_ENV['MELIPAYAMAK_PASSWORD'] ?? '';
-        $this->melipayamakBodyId = $_ENV['MELIPAYAMAK_PATTERN_BODY_ID'] ?? '';
-        $this->melipayamakExamBodyId = $_ENV['MELIPAYAMAK_EXAM_BODY_ID'] ?? $this->melipayamakBodyId;
-        $this->melipayamakAppointmentBodyId = $_ENV['MELIPAYAMAK_APPOINTMENT_BODY_ID'] ?? $this->melipayamakBodyId;
+        $this->apiKey = self::env('SMS_API_KEY');
+        $this->sender = self::env('SMS_SENDER') ?: '100001';
+        $this->melipayamakUsername = self::env('MELIPAYAMAK_USERNAME');
+        $this->melipayamakPassword = self::env('MELIPAYAMAK_PASSWORD');
+        $this->melipayamakBodyId = self::env('MELIPAYAMAK_PATTERN_BODY_ID');
+        // Never fall back appointment or exam pattern IDs to the 2FA login pattern ID.
+        $this->melipayamakExamBodyId = self::env('MELIPAYAMAK_EXAM_BODY_ID');
+        $this->melipayamakAppointmentBodyId = self::env('MELIPAYAMAK_APPOINTMENT_BODY_ID');
+    }
+
+    public function setAppointmentBodyId(?int $bodyId): void
+    {
+        $this->overrideAppointmentBodyId = ($bodyId !== null && $bodyId > 0) ? $bodyId : null;
+    }
+
+    public function setExamBodyId(?int $bodyId): void
+    {
+        $this->overrideExamBodyId = ($bodyId !== null && $bodyId > 0) ? $bodyId : null;
+    }
+
+    public function getLastError(): ?string
+    {
+        return $this->lastError;
+    }
+
+    private static function env(string $key): string
+    {
+        $val = $_ENV[$key] ?? $_SERVER[$key] ?? getenv($key);
+        if (!is_string($val) && !is_numeric($val)) {
+            return '';
+        }
+        return trim((string) $val);
     }
 
     public function send(string $phone, string $message): bool
     {
+        $this->lastError = null;
         $phone = preg_replace('/[^0-9]/', '', $phone);
 
         $url = "https://api.kavenegar.com/v1/{$this->apiKey}/sms/send.json";
@@ -69,16 +98,28 @@ class SmsService
      */
     public function sendAppointmentReminder(string $mobile, string $studentName, string $dayAndDate, string $time): bool
     {
+        $this->lastError = null;
         $logPath = __DIR__ . '/../../storage/logs/app.log';
-        $bodyId = $this->melipayamakAppointmentBodyId !== '' ? $this->melipayamakAppointmentBodyId : $this->melipayamakBodyId;
 
-        if (empty($this->melipayamakUsername) || empty($this->melipayamakPassword) || empty($bodyId)) {
-            error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Melipayamak not configured for appointment reminder.' . PHP_EOL, 3, $logPath);
+        $bodyId = $this->overrideAppointmentBodyId
+            ?? SmsPatternSettings::resolveBodyId(SmsPatternSettings::KEY_APPOINTMENT_REMINDER)
+            ?? SmsPatternSettings::parsePositiveInt($this->melipayamakAppointmentBodyId);
+
+        if ($bodyId === null || $bodyId <= 0) {
+            $this->lastError = 'کد پترن پیامک نوبت تنظیم نشده است (تنظیمات پنل ادمین یا MELIPAYAMAK_APPOINTMENT_BODY_ID).';
+            error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Appointment pattern bodyId is not configured (refusing 2FA fallback).' . PHP_EOL, 3, $logPath);
+            return false;
+        }
+
+        if (empty($this->melipayamakUsername) || empty($this->melipayamakPassword)) {
+            $this->lastError = 'اطلاعات اتصال درگاه ملی‌پیامک (نام کاربری/رمز عبور) تنظیم نشده است.';
+            error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Melipayamak credentials not configured for appointment reminder.' . PHP_EOL, 3, $logPath);
             return false;
         }
 
         $normalized = PhoneNumber::normalize($mobile);
         if ($normalized === null || !preg_match('/^09[0-9]{9}$/', $normalized)) {
+            $this->lastError = 'فرمت شماره موبایل والد معتبر نیست.';
             error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Invalid parent mobile format for appointment reminder.' . PHP_EOL, 3, $logPath);
             return false;
         }
@@ -100,18 +141,24 @@ class SmsService
 
     public function sendVerificationCode(string $mobile, string $code): bool
     {
-        if (empty($this->melipayamakUsername) || empty($this->melipayamakPassword) || empty($this->melipayamakBodyId)) {
+        $this->lastError = null;
+        $bodyId = SmsPatternSettings::resolveBodyId(SmsPatternSettings::KEY_AUTH_2FA)
+            ?? SmsPatternSettings::parsePositiveInt($this->melipayamakBodyId);
+
+        if (empty($this->melipayamakUsername) || empty($this->melipayamakPassword) || $bodyId === null || $bodyId <= 0) {
+            $this->lastError = 'تنظیمات درگاه پیامک برای ارسال کد تایید کامل نیست.';
             error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Melipayamak not fully configured.' . PHP_EOL, 3, __DIR__ . '/../../storage/logs/app.log');
             return false;
         }
 
         $mobile = preg_replace('/[^0-9]/', '', $mobile);
         if (!preg_match('/^09[0-9]{9}$/', $mobile)) {
+            $this->lastError = 'فرمت شماره موبایل معتبر نیست.';
             error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Invalid mobile format for 2FA.' . PHP_EOL, 3, __DIR__ . '/../../storage/logs/app.log');
             return false;
         }
 
-        return $this->sendMelipayamakPattern($mobile, (int) $this->melipayamakBodyId, $code, '2FA code');
+        return $this->sendMelipayamakPattern($mobile, (int) $bodyId, $code, '2FA code');
     }
 
     /**
@@ -120,16 +167,27 @@ class SmsService
      */
     public function sendExamResultLink(string $mobile, string $studentName, string $examDate, string $shareUrl): bool
     {
+        $this->lastError = null;
         $logPath = __DIR__ . '/../../storage/logs/app.log';
-        $bodyId = $this->melipayamakExamBodyId !== '' ? $this->melipayamakExamBodyId : $this->melipayamakBodyId;
+        $bodyId = $this->overrideExamBodyId
+            ?? SmsPatternSettings::resolveBodyId(SmsPatternSettings::KEY_EXAM_RESULT)
+            ?? SmsPatternSettings::parsePositiveInt($this->melipayamakExamBodyId);
 
-        if (empty($this->melipayamakUsername) || empty($this->melipayamakPassword) || empty($bodyId)) {
-            error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Melipayamak not configured for exam result link.' . PHP_EOL, 3, $logPath);
+        if ($bodyId === null || $bodyId <= 0) {
+            $this->lastError = 'کد پترن پیامک کارنامه آزمون تنظیم نشده است (تنظیمات پنل ادمین یا MELIPAYAMAK_EXAM_BODY_ID).';
+            error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Exam pattern bodyId is not configured (refusing 2FA fallback).' . PHP_EOL, 3, $logPath);
+            return false;
+        }
+
+        if (empty($this->melipayamakUsername) || empty($this->melipayamakPassword)) {
+            $this->lastError = 'اطلاعات اتصال درگاه ملی‌پیامک (نام کاربری/رمز عبور) تنظیم نشده است.';
+            error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Melipayamak credentials not configured for exam result link.' . PHP_EOL, 3, $logPath);
             return false;
         }
 
         $normalized = PhoneNumber::normalize($mobile);
         if ($normalized === null || !preg_match('/^09[0-9]{9}$/', $normalized)) {
+            $this->lastError = 'فرمت شماره موبایل والد معتبر نیست.';
             error_log('[' . date('Y-m-d H:i:s') . '] SmsService: Invalid parent mobile format for exam result link.' . PHP_EOL, 3, $logPath);
             return false;
         }
@@ -172,11 +230,13 @@ class SmsService
         $logPath = __DIR__ . '/../../storage/logs/app.log';
 
         if ($curlError) {
+            $this->lastError = 'خطا در برقراری ارتباط با ملی‌پیامک: ' . $curlError;
             error_log('[' . date('Y-m-d H:i:s') . '] SmsService cURL error (' . $contextLabel . '): ' . $curlError . PHP_EOL, 3, $logPath);
             return false;
         }
 
         if ($httpCode !== 200) {
+            $this->lastError = "خطای HTTP {$httpCode} از درگاه ملی‌پیامک";
             error_log('[' . date('Y-m-d H:i:s') . '] SmsService HTTP ' . $httpCode . ' (' . $contextLabel . ')' . PHP_EOL, 3, $logPath);
             return false;
         }
@@ -184,11 +244,12 @@ class SmsService
         $decoded = json_decode((string) $response, true);
         if (!is_array($decoded) || !isset($decoded['RetStatus']) || (int) $decoded['RetStatus'] !== 1) {
             $errMsg = is_array($decoded) ? ($decoded['StrRetStatus'] ?? 'unknown') : (string) $response;
+            $this->lastError = 'درگاه ملی‌پیامک ارسال را رد کرد: ' . $errMsg;
             error_log('[' . date('Y-m-d H:i:s') . '] SmsService Melipayamak rejected (' . $contextLabel . '): ' . $errMsg . PHP_EOL, 3, $logPath);
             return false;
         }
 
-        error_log('[' . date('Y-m-d H:i:s') . '] SmsService: ' . $contextLabel . ' sent to ' . substr($mobile, 0, 4) . '***' . PHP_EOL, 3, $logPath);
+        error_log('[' . date('Y-m-d H:i:s') . '] SmsService: ' . $contextLabel . ' (bodyId=' . $bodyId . ') sent to ' . substr($mobile, 0, 4) . '***' . PHP_EOL, 3, $logPath);
         return true;
     }
 }

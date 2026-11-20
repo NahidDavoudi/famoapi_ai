@@ -12,59 +12,50 @@ class PublicService
 
     public function getCourses(): array
     {
-        return Cache::remember(self::GROUP, 'courses', self::TTL, function () {
-            $courses = Course::findAllPublished();
-            foreach ($courses as &$course) {
-                $features = Course::getFeatures((int) $course['id']);
-                $course['features'] = array_map(fn($f) => $f['feature_text'], $features);
-                $course['badge_label'] = $course['badge_label'] ?? null;
-                $course['target_grades'] = $course['target_grades'] ?? null;
-                $course['format'] = $course['format'] ?? null;
-                $course['full_description'] = $course['full_description'] ?? null;
-            }
-            unset($course);
-            return ['courses' => $courses];
-        });
+        $courses = Course::findAllPublished();
+        foreach ($courses as &$course) {
+            $features = Course::getFeatures((int) $course['id']);
+            $course['features'] = array_map(fn($f) => $f['feature_text'], $features);
+            $course['badge_label'] = $course['badge_label'] ?? null;
+            $course['target_grades'] = $course['target_grades'] ?? null;
+            $course['format'] = $course['format'] ?? null;
+            $course['full_description'] = $course['full_description'] ?? null;
+        }
+        unset($course);
+
+        Cache::forget(self::GROUP, 'courses');
+        Cache::forget(self::GROUP, 'http_response:/api/v1/public/courses');
+
+        return ['courses' => $courses];
     }
 
     public function getInstructors(): array
     {
-        // داده‌ی خام (نسبی) کش می‌شود تا تغییر ASSET_URL کش را نشکند
-        $data = Cache::remember(self::GROUP, 'instructors', self::TTL, function () {
-            $instructors = Instructor::findAllPublished();
-            foreach ($instructors as &$instructor) {
-                $instructor['social_links'] = Instructor::getSocialLinks((int) $instructor['id']);
-            }
-            unset($instructor);
-            return ['instructors' => $instructors];
-        });
-
-        foreach ($data['instructors'] as &$instructor) {
+        $instructors = Instructor::findAllPublished();
+        foreach ($instructors as &$instructor) {
+            $instructor['social_links'] = Instructor::getSocialLinks((int) $instructor['id']);
             if (array_key_exists('image_url', $instructor)) {
                 $instructor['image_url'] = AssetUrl::fromStorage($instructor['image_url']);
             }
         }
         unset($instructor);
 
-        return $data;
+        Cache::forget(self::GROUP, 'instructors');
+        Cache::forget(self::GROUP, 'http_response:/api/v1/public/instructors');
+
+        return ['instructors' => $instructors];
     }
 
     public function getSupporters(): array
     {
-        // داده‌ی خام (نسبی) کش می‌شود تا تغییر ASSET_URL کش را نشکند
-        $data = Cache::remember(self::GROUP, 'supporters', self::TTL, function () {
-            return ['supporters' => Supporter::findAllPublished()];
-        });
+        // خواندن مستقیم آخرین وضعیت پشتیبان‌ها از دیتابیس و پاک‌سازی کش قدیمی
+        // تا هر تغییر از پنل ادمین یا دیتابیس بلافاصله در لندینگ پیج نمایش داده شود
+        $supporters = Supporter::findAllPublished();
 
-        // اگر کش قدیمی فاقد کلید description باشد، کش را تازه می‌کنیم
-        if (!empty($data['supporters']) && is_array($data['supporters'][0] ?? null) && !array_key_exists('description', $data['supporters'][0])) {
-            Cache::forget(self::GROUP, 'supporters');
-            $data = Cache::remember(self::GROUP, 'supporters', self::TTL, function () {
-                return ['supporters' => Supporter::findAllPublished()];
-            });
-        }
+        Cache::forget(self::GROUP, 'supporters');
+        Cache::forget(self::GROUP, 'http_response:/api/v1/public/supporters');
 
-        foreach ($data['supporters'] as &$supporter) {
+        foreach ($supporters as &$supporter) {
             $resolvedUrl = AssetUrl::fromStorage($supporter['avatar'] ?? null);
             $supporter['avatar_url'] = $resolvedUrl;
             $supporter['image_url'] = $resolvedUrl;
@@ -72,6 +63,6 @@ class PublicService
         }
         unset($supporter);
 
-        return $data;
+        return ['supporters' => $supporters];
     }
 }

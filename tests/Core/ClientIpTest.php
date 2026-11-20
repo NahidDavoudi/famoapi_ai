@@ -80,6 +80,20 @@ class ClientIpTest extends TestCase
         $this->assertSame('198.51.100.9', ClientIp::fromRequest($untrusted));
     }
 
+    public function testRightToLeftTraversalIgnoresSpoofedLeftmostHeader(): void
+    {
+        $_ENV['TRUSTED_PROXIES'] = '10.0.0.0/8,172.16.0.0/12';
+        $_ENV['TRUSTED_PROXY_HEADER'] = 'X-Forwarded-For';
+
+        // Client spoofed 1.2.3.4 on the left; real client connecting to first trusted proxy is 198.51.100.55
+        $_SERVER['REMOTE_ADDR'] = '172.17.0.2';
+        $request = $this->createRequest('GET', '/x')->withAddedHeader(
+            'X-Forwarded-For',
+            '1.2.3.4, 198.51.100.55, 10.0.0.8'
+        );
+        $this->assertSame('198.51.100.55', ClientIp::fromRequest($request));
+    }
+
     public function testInvalidAddressFailsOpen(): void
     {
         $_SERVER['REMOTE_ADDR'] = 'not-an-ip';

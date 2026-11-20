@@ -8,6 +8,7 @@ use App\Core\PhoneNumber;
 use App\Core\RateLimitedException;
 use App\Core\RateLimiter;
 use App\Core\RedisClient;
+use App\Core\SmsPatternSettings;
 use App\Core\SmsService;
 use App\Modules\Bot\IranDay;
 
@@ -95,6 +96,7 @@ class AppointmentService
         $weekStart = IranDay::weekStart($trimmedWeekDate);
         $weekEnd   = IranDay::addDays($weekStart, 6);
 
+        $patternMeta  = SmsPatternSettings::resolve(SmsPatternSettings::KEY_APPOINTMENT_REMINDER);
         $students     = Appointment::findTargetStudents($weekStart, $weekEnd, $normalizedStudentIds);
         $studentIdSet = array_map(static fn (array $s): int => (int) $s['id'], $students);
         $activeApps   = Appointment::findActiveInWeek($weekStart, $weekEnd, $studentIdSet);
@@ -142,6 +144,8 @@ class AppointmentService
             $endTime = null;
             $appointmentId = null;
             $appointmentStatus = null;
+            $dayAndDateFa = null;
+            $smsPreviewText = null;
 
             if ($nearest !== null) {
                 $appointmentId     = (int) $nearest['id'];
@@ -152,6 +156,13 @@ class AppointmentService
                 $endTime           = self::formatTimeShort($nearest['end_time'] ?? null);
                 $appointmentStatus = (string) $nearest['status'];
                 $appointmentAt     = self::buildAppointmentAt($appointmentDate, $nearest['start_time'] ?? null);
+                $dayAndDateFa      = "{$weekday} {$appointmentJalali}";
+                $smsPreviewText    = SmsPatternSettings::renderAppointmentMessage(
+                    (string) $student['name'],
+                    $dayAndDateFa,
+                    $startTime,
+                    (string) $patternMeta['pattern_text']
+                );
             }
 
             if ($nearest === null) {
@@ -183,10 +194,12 @@ class AppointmentService
                 'appointment_date'      => $appointmentDate,
                 'appointment_jalali'    => $appointmentJalali,
                 'weekday'               => $weekday,
+                'day_and_date_fa'       => $dayAndDateFa,
                 'start_time'            => $startTime,
                 'end_time'              => $endTime,
                 'appointment_status'    => $appointmentStatus,
                 'appointment_at'        => $appointmentAt,
+                'sms_preview_text'      => $smsPreviewText,
                 'multiple_appointments' => $multipleAppointments,
                 'active_appointments_count' => count($studentApps),
                 'last_sent_at'          => $log['sent_at'] ?? null,
@@ -199,6 +212,13 @@ class AppointmentService
         return [
             'week_date' => $weekStart,
             'week_end'  => $weekEnd,
+            'pattern'   => [
+                'key'           => $patternMeta['pattern_key'],
+                'body_id'       => $patternMeta['body_id'],
+                'source'        => $patternMeta['source'],
+                'is_configured' => $patternMeta['is_configured'],
+                'template'      => $patternMeta['pattern_text'],
+            ],
             'summary'   => $summary,
             'items'     => $items,
             'students'  => $items,
@@ -214,7 +234,9 @@ class AppointmentService
         string $mode = 'unsent',
         ?array $studentIds = null,
         ?int $createdBy = null,
-        ?string $operationId = null
+        ?string $operationId = null,
+        ?int $bodyId = null,
+        bool $savePattern = false
     ): array {
         $trimmedWeekDate = trim($weekDate);
         if ($trimmedWeekDate === '' || !IranDay::isValidDate($trimmedWeekDate)) {
@@ -225,6 +247,23 @@ class AppointmentService
         if (!in_array($trimmedMode, self::VALID_SMS_MODES, true)) {
             throw new ApiException('حالت ارسال (mode) باید یکی از unsent، failed یا changed باشد', 422, 'VALIDATION_ERROR');
         }
+
+        $patternMeta = SmsPatternSettings::resolve(SmsPatternSettings::KEY_APPOINTMENT_REMINDER, $bodyId);
+        if (!$patternMeta['is_configured']) {
+            throw new ApiException(
+                'کد پترن پیامک نوبت تنظیم نشده است. لطفاً کد پترن یادآوری نوبت را در تنظیمات پیامک پنل ادمین یا متغیر MELIPAYAMAK_APPOINTMENT_BODY_ID ثبت کنید.',
+                422,
+                'APPOINTMENT_PATTERN_NOT_CONFIGURED'
+            );
+        }
+
+        $effectiveBodyId = (int) $patternMeta['body_id'];
+        if ($savePattern && $bodyId !== null && $bodyId > 0) {
+            SmsPatternSettings::updateMany([
+                SmsPatternSettings::KEY_APPOINTMENT_REMINDER => ['body_id' => $effectiveBodyId],
+            ], $createdBy);
+        }
+        $this->sms->setAppointmentBodyId($effectiveBodyId);
 
         $normalizedStudentIds = $this->normalizeStudentIds($studentIds);
         $weekStart = IranDay::weekStart($trimmedWeekDate);
@@ -429,6 +468,39 @@ class AppointmentService
                         continue;
                     }
 
+                    $cfg = RateLimiter::config();
+                    $fwPhone = RateLimiter::attemptFixedWindow(
+                        RateLimiter::key('sms:phone_win', $parentMobile),
+                        (int) ($cfg['sms_phone_max'] ?? 3),
+                        (int) ($cfg['sms_phone_window'] ?? 600)
+                    );
+                    if (!$fwPhone['allowed']) {
+                        $errMsg = 'RATE_LIMITED: سقف ارسال پیامک برای این شماره پر شده است';
+                        Appointment::upsertSmsLog([
+                            'student_id'     => $sid,
+                            'week_date'      => $weekStart,
+                            'mobile'         => $parentMobile,
+                            'recipient_type' => 'parent',
+                            'appointment_at' => $appointmentAt,
+                            'status'         => 'failed',
+                            'error'          => $errMsg,
+                            'sent_at'        => null,
+                            'created_by'     => $createdBy,
+                        ]);
+                        $counts['failed']++;
+                        $items[] = [
+                            'student_id'            => $sid,
+                            'student_name'          => $studentName,
+                            'recipient_type'        => 'parent',
+                            'mobile_mask'           => $mobileMask,
+                            'appointment_at'        => $appointmentAt,
+                            'multiple_appointments' => $multipleAppointments,
+                            'status'                => 'failed',
+                            'error'                 => $errMsg,
+                        ];
+                        continue;
+                    }
+
                     $phoneKey = RateLimiter::key('appointment_sms:phone', $parentMobile);
                     $phoneStatus = RateLimiter::status($phoneKey, $phoneHourlyMax);
                     if (!$phoneStatus['allowed']) {
@@ -497,7 +569,7 @@ class AppointmentService
                             'error'                 => null,
                         ];
                     } else {
-                        $errMsg = 'خطا در ارسال پیامک از طریق ملی‌پیامک';
+                        $errMsg = $this->sms->getLastError() ?: 'خطا در ارسال پیامک از طریق ملی‌پیامک';
                         Appointment::upsertSmsLog([
                             'student_id'     => $sid,
                             'week_date'      => $weekStart,
@@ -541,6 +613,8 @@ class AppointmentService
                 'week_date'        => $weekStart,
                 'week_end'         => $weekEnd,
                 'mode'             => $trimmedMode,
+                'body_id'          => $effectiveBodyId,
+                'pattern_source'   => $patternMeta['source'],
                 'sent'             => $counts['sent'],
                 'failed'           => $counts['failed'],
                 'skipped'          => $counts['skipped'],

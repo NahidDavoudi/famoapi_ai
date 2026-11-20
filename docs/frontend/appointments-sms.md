@@ -68,6 +68,7 @@
 
 | گروه اندپوینت | مسیر | نقش‌های مجاز | رفتار در صورت عدم دسترسی |
 | :--- | :--- | :---: | :--- |
+| **پیکربندی کد پترن‌های ملی‌پیامک** | `GET /api/v1/admin/sms/patterns`<br>`PUT\|PATCH /api/v1/admin/sms/patterns` | **فقط `admin`** | `403 FORBIDDEN` (`دسترسی محدود به مدیران`) |
 | **پیامک نوبت هفتگی** | `GET /api/v1/appointments/sms/preview`<br>`POST /api/v1/appointments/sms/send`<br>`GET /api/v1/appointments/sms/log` | **فقط `admin`** | `403 FORBIDDEN` (`دسترسی محدود به مدیران`) |
 | **مدیریت نوبت‌ها** | `GET /api/v1/appointments`<br>`POST /api/v1/appointments`<br>`PUT /api/v1/appointments/{id}/status`<br>`DELETE /api/v1/appointments/{id}` | **`admin`** و **`supporter`** | `403 FORBIDDEN` (`دسترسی محدود به پشتیبانان`) |
 | **مخاطبین والد (`parent_contacts`)** | `GET /api/v1/students/{studentId}/parent-contacts` | **`admin`** و **`supporter`** | `403 FORBIDDEN` |
@@ -242,6 +243,7 @@ curl -X GET "https://api.famoacademy.ir/api/v1/appointments/sms/preview?week_dat
 | :--- | :---: | :---: | :--- |
 | `data.week_date` | `string` | خیر | تاریخ میلادی شنبه‌ی شروع هفته (`YYYY-MM-DD`). |
 | `data.week_end` | `string` | خیر | تاریخ میلادی جمعه‌ی پایان هفته (`YYYY-MM-DD`). |
+| `data.pattern` | `object` | خیر | وضعیت کد پترن نوبت‌دهی (`key`, `body_id`, `source`, `is_configured`, `template`). اگر `is_configured === false` باشد، پیش از ارسال باید کد پترن از طریق `PUT /api/v1/admin/sms/patterns` ثبت شود. |
 | `data.summary.total` *(PHP)* / `total_students` *(dev-server)* | `integer` | خیر | تعداد کل شاگردان بررسی‌شده در این هفته. |
 | `data.summary.will_send` | `integer` | خیر | تعداد شاگردانی که نوبت فعال و شماره‌ی والد معتبر دارند و هنوز پیامکی برایشان ارسال نشده است. |
 | `data.summary.already_sent` | `integer` | خیر | تعداد شاگردانی که پیامک نوبت فعلی با موفقیت برایشان ارسال شده و زمان نوبت تغییر نکرده است. |
@@ -268,6 +270,7 @@ curl -X GET "https://api.famoacademy.ir/api/v1/appointments/sms/preview?week_dat
 | `items[].end_time` | `string` | بله | ساعت پایان نوبت (در PHP به فرمت `"17:00"`، در `dev-server` به فرمت `"17:00:00"`). |
 | `items[].appointment_status` | `string` | بله | وضعیت خود نوبت انتخاب‌شده (`pending`، `confirmed` یا `scheduled`). |
 | `items[].appointment_at` | `string` | بله | اسنپ‌شات استاندارد زمان نوبت (`YYYY-MM-DD HH:MM:SS`). |
+| `items[].sms_preview_text` | `string` | بله | متن کامل و جایگذاری‌شده‌ی پیامک مطابق پترن ملی‌پیامک نوبت‌دهی (`{0}` نام شاگرد، `{1}` روز و تاریخ شمسی، `{2}` ساعت). |
 | `items[].multiple_appointments` | `boolean` | خیر | `true` اگر شاگرد بیش از یک نوبت فعال در این هفته داشته باشد. |
 | `items[].active_appointments_count` | `integer` | خیر | تعداد کل نوبت‌های فعال شاگرد در این هفته (`0`، `1`، `2` و ...). |
 | `items[].last_sent_at` | `string` | بله | زمان آخرین ارسال موفق پیامک در این هفته (`YYYY-MM-DD HH:MM:SS`). |
@@ -298,6 +301,8 @@ curl -X GET "https://api.famoacademy.ir/api/v1/appointments/sms/preview?week_dat
 | `mode` | `'unsent' \| 'failed' \| 'changed'` | **اجباری** (در OpenAPI؛ در کنترلر پیش‌فرض `'unsent'`) | `'unsent'` | تعیین می‌کند پیامک برای کدام دسته از شاگردان ارسال شود (توضیح کامل در بخش ۳.۱). |
 | `student_ids` | `number[] \| null` | اختیاری | `null` (همه‌ی واجدین) | آرایه‌ای از شناسه‌های شاگردان (`[20, 21]`). اگر ارسال نشود یا `null` باشد، همه‌ی شاگردان واجد شرایط آن `mode` پردازش می‌شوند. **هشدار:** آرایه‌ی خالی `[]` نفرستید (در PHP خطای `422` می‌دهد). |
 | `operation_id` | `string \| null` | اختیاری | `null` | کلید یکتای عملیات (Idempotency key) برای جلوگیری از ارسال تکراری بر اثر دابل‌کلیک (در PHP کلید `idempotency_key` نیز پذیرفته می‌شود). |
+| `body_id` | `number \| null` | اختیاری | مقدار ذخیره‌شده در DB / Env | کد پترن (`bodyId`) اختصاصی نوبت‌دهی در ملی‌پیامک برای ارسال فعلی (جایگزین تنظیمات DB و متغیر محیطی). |
+| `save_pattern` | `boolean` | اختیاری | `false` | اگر همراه با `body_id` برابر `true` ارسال شود، این کد پترن در جدول `sms_pattern_settings` برای ارسال‌های آینده نیز ذخیره می‌شود. |
 
 #### نمونه‌ی درخواست `curl`
 ```bash
@@ -425,8 +430,32 @@ curl -X POST "https://api.famoacademy.ir/api/v1/appointments/sms/send" \
 | `401` | `UNAUTHORIZED` / `AUTH_ERROR` | عدم ارسال یا انقضای توکن JWT. | «نشست کاربری شما منقضی شده است. لطفاً دوباره وارد شوید.» |
 | `403` | `FORBIDDEN` | کاربر دارای نقش غیر از `admin` است. | «فقط مدیر سیستم مجاز به ارسال پیامک نوبت‌هاست.» |
 | `409` | `CONCURRENT_SEND_LOCKED` | ارسال همزمان برای همان `week_date` در حال اجراست یا همان `operation_id` در ۶۰ ثانیه‌ی اخیر ارسال شده است. | «عملیات ارسال پیامک برای این هفته در حال انجام است. لطفاً چند لحظه صبر کنید.» |
+| `422` | `APPOINTMENT_PATTERN_NOT_CONFIGURED` | کد پترن یادآوری نوبت نه در جدول `sms_pattern_settings`، نه در `MELIPAYAMAK_APPOINTMENT_BODY_ID` و نه در `body_id` درخواست تنظیم نشده است (هرگز به پترن لاگین ۲مرحله‌ای fallback نمی‌شود). | «کد پترن پیامک نوبت در ملی‌پیامک ثبت نشده است. لطفاً کد پترن را در تنظیمات وارد کنید.» |
 | `422` | `VALIDATION_ERROR` | `week_date` نامعتبر است، `mode` خارج از ۳ مقدار مجاز است، یا `student_ids` آرایه‌ی خالی `[]` یا شامل مقدار غیرعددی است. | نمایش `error.message` برگشتی از سرور. |
 | `429` | `RATE_LIMITED` | سقف ارسال ساعتی کاربر ادمین (`200` پیامک در ساعت) پیش از شروع درخواست پر شده است. | «سقف ارسال پیامک ساعتی شما تکمیل شده است. لطفاً پس از زمان اعلام‌شده تلاش کنید.» |
+
+---
+
+### ۲.۲.۱. دریافت و ویرایش کد پترن‌های ملی‌پیامک (`Admin SMS Patterns`)
+بک‌اند برای جلوگیری از ارسال پیامک نوبت با پترن لاگین ادمین، هر کاربرد را کاملاً ایزوله مدیریت می‌کند (`auth_2fa`, `appointment_reminder`, `exam_result`):
+- **دریافت تنظیمات:** `GET /api/v1/admin/sms/patterns` (فقط `admin`) → خروجی شامل `patterns.appointment_reminder` (`body_id`, `source`, `is_configured`, `pattern_text`) و کلیدهای مستقیم `appointment_body_id`, `exam_body_id`, `auth_body_id`.
+- **ذخیره / ویرایش:** `PUT` یا `PATCH /api/v1/admin/sms/patterns` با بدنه‌ی نمونه:
+  ```json
+  {
+    "appointment_body_id": 345678
+  }
+  ```
+  یا به صورت آبجکت کامل برای تغییر همزمان متن الگو:
+  ```json
+  {
+    "patterns": {
+      "appointment_reminder": {
+        "body_id": 345678,
+        "pattern_text": "موسسه آموزشی فامو | دکتر موسوی والدین گرامی {0} ، نوبت فرزند شما روز {1} ساعت {2} میباشد. در صورت تایید به شماره موسسه پیامک دهید."
+      }
+    }
+  }
+  ```
 
 ---
 

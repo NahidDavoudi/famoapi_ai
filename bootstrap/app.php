@@ -137,6 +137,9 @@ $app->add(function (ServerRequestInterface $request, $handler) {
     return $response;
 });
 
+// Monitor Redis reachability and record critical downtime/recovery logs with duration.
+$app->add(new App\Core\RedisMonitorMiddleware());
+
 // Add CorsMiddleware last so it executes FIRST (outermost) on all incoming requests, including OPTIONS preflight.
 $app->add(new App\Core\CorsMiddleware());
 

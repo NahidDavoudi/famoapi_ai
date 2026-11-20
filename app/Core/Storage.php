@@ -64,9 +64,10 @@ class Storage
 
         $dir = rtrim($basePath, '/\\') . DIRECTORY_SEPARATOR . $subDir;
         if (!is_dir($dir)) {
-            if (!mkdir($dir, 0700, true) && !is_dir($dir)) {
+            if (!mkdir($dir, 0755, true) && !is_dir($dir)) {
                 throw new ApiException('مسیر ذخیره فایل در دسترس نیست', 500, 'UPLOAD_ERROR');
             }
+            @chmod($dir, 0755);
         }
 
         // ── تبدیل JPG/JPEG/JFIF/PNG به WebP (در صورت وجود GD/Imagick) ──
@@ -76,6 +77,7 @@ class Storage
             $webpDestination = $dir . '/' . $webpFilename;
 
             if (ImageOptimizer::toWebp($temporaryPath, $webpDestination, self::imageOptionsFor($module))) {
+                @chmod($webpDestination, 0644);
                 if (is_file($temporaryPath)) {
                     @unlink($temporaryPath); // پاک‌سازی فایل temp (MultipartFormDataParser)
                 }
@@ -92,6 +94,7 @@ class Storage
         } elseif (!move_uploaded_file($file['tmp_name'], $destination)) {
             throw new ApiException('خطا در آپلود فایل', 500, 'UPLOAD_ERROR');
         }
+        @chmod($destination, 0644);
 
         return $subDir . '/' . $filename;
     }

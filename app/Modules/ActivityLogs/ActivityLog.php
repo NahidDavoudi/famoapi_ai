@@ -735,6 +735,16 @@ class ActivityLog
             }
         }
 
+        if ($first === 'admin' && $second === 'sms') {
+            return [
+                'module'      => 'sms_patterns',
+                'action'      => 'update_patterns',
+                'target_type' => 'sms_pattern_settings',
+                'target_id'   => isset($body['pattern_key']) ? (string) $body['pattern_key'] : null,
+                'summary'     => 'بروزرسانی تنظیمات کد پترن‌های ملی‌پیامک (لاگین / نوبت‌دهی / کارنامه)',
+            ];
+        }
+
         return [
             'module'      => $first,
             'action'      => strtolower($method),

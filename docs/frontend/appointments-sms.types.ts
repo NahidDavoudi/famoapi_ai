@@ -30,6 +30,7 @@ export type ApiErrorCode =
   | 'NOT_FOUND'
   | 'VALIDATION_ERROR'
   | 'CONCURRENT_SEND_LOCKED'
+  | 'APPOINTMENT_PATTERN_NOT_CONFIGURED'
   | 'RATE_LIMITED'
   | 'INTERNAL_ERROR'
   | (string & {});
@@ -205,6 +206,8 @@ export interface AppointmentSmsPreviewItem {
   appointment_status: ActiveAppointmentStatus | string | null;
   /** Canonical snapshot compared against SMS log: `"YYYY-MM-DD HH:MM:SS"` */
   appointment_at: string | null;
+  /** Rendered Persian SMS message using the active appointment reminder pattern */
+  sms_preview_text?: string | null;
   /** `true` when the student has > 1 active appointment in `[week_date, week_end]` */
   multiple_appointments: boolean;
   /** Count of active appointments for the student in this week */
@@ -221,11 +224,21 @@ export interface AppointmentSmsPreviewItem {
   last_error: string | null;
 }
 
+export interface AppointmentSmsPatternMeta {
+  key: 'appointment_reminder' | string;
+  body_id: number | null;
+  source: 'database' | 'env' | 'unset' | 'request';
+  is_configured: boolean;
+  template: string;
+}
+
 export interface AppointmentSmsPreviewData {
   /** Saturday starting the week (`YYYY-MM-DD`) */
   week_date: string;
   /** Friday ending the week (`YYYY-MM-DD`) */
   week_end: string;
+  /** Active Melipayamak appointment pattern metadata */
+  pattern?: AppointmentSmsPatternMeta;
   /** Present at top-level in `dev-server.mjs` */
   recipient_type?: 'parent';
   summary: AppointmentSmsPreviewSummary;
@@ -253,6 +266,10 @@ export interface PostAppointmentSmsSendRequest {
   student_ids?: number[] | null;
   /** Optional client idempotency / double-click token (locked for 60s in Redis) */
   operation_id?: string | null;
+  /** Optional Melipayamak appointment reminder pattern bodyId override */
+  body_id?: number | null;
+  /** Persist `body_id` in `sms_pattern_settings` for future dispatches */
+  save_pattern?: boolean;
 }
 
 export interface AppointmentSmsSendSummary {
@@ -287,6 +304,8 @@ export interface AppointmentSmsSendData {
   week_date: string;
   week_end: string;
   mode: AppointmentSmsSendMode;
+  body_id?: number;
+  pattern_source?: 'request' | 'database' | 'env';
   /** Present at top-level in `dev-server.mjs` */
   recipient_type?: 'parent';
   /** Top-level counters in PHP backend */

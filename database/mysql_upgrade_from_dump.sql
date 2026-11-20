@@ -70,19 +70,25 @@ CREATE TABLE IF NOT EXISTS `course_features` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `subscriptions` (
-    `id`         INT         NOT NULL AUTO_INCREMENT,
-    `course_id`  INT         NOT NULL,
-    `student_id` INT         NOT NULL,
-    `status`     VARCHAR(30) NOT NULL DEFAULT 'pending',
-    `is_active`  TINYINT(1)  NOT NULL DEFAULT 1,
-    `note`       TEXT        DEFAULT NULL,
-    `started_at` DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    `end_at`     DATETIME    DEFAULT NULL,
-    `created_at` DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    `updated_at` DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `id`                INT         NOT NULL AUTO_INCREMENT,
+    `course_id`         INT         NOT NULL,
+    `student_id`        INT         NOT NULL,
+    `status`            VARCHAR(30) NOT NULL DEFAULT 'pending',
+    `monthly_fee`       INT         NOT NULL DEFAULT 0,
+    `tuition_status`    VARCHAR(30) NOT NULL DEFAULT 'unpaid',
+    `tuition_due_date`  DATE        DEFAULT NULL,
+    `last_payment_date` DATE        DEFAULT NULL,
+    `tuition_notes`     TEXT        DEFAULT NULL,
+    `is_active`         TINYINT(1)  NOT NULL DEFAULT 1,
+    `note`              TEXT        DEFAULT NULL,
+    `started_at`        DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `end_at`            DATETIME    DEFAULT NULL,
+    `created_at`        DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at`        DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),
     KEY `idx_subscriptions_student` (`student_id`, `is_active`),
-    KEY `idx_subscriptions_course` (`course_id`)
+    KEY `idx_subscriptions_course` (`course_id`),
+    KEY `idx_subscriptions_tuition_status` (`tuition_status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 3. Phase 1 & 2/3 Exam Teacher Comments & Shareable Parent Result Links (Migration 006)
@@ -184,7 +190,22 @@ ALTER TABLE `supporters`
     ADD COLUMN IF NOT EXISTS `avatar` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL AFTER `chat_id`,
     ADD COLUMN IF NOT EXISTS `description` TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL AFTER `avatar`;
 
--- 7. Record migrations in `migrations` table so Migrator::run() knows they are applied
+-- 7. Separate Melipayamak Pattern Settings per SMS Purpose (Migration 012)
+CREATE TABLE IF NOT EXISTS `sms_pattern_settings` (
+    `pattern_key`  VARCHAR(64)  NOT NULL,
+    `body_id`      BIGINT       DEFAULT NULL,
+    `pattern_text` TEXT         CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `updated_by`   INT          DEFAULT NULL,
+    `updated_at`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`pattern_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO `sms_pattern_settings` (`pattern_key`, `body_id`, `pattern_text`) VALUES
+    ('auth_2fa', NULL, 'کد تایید ورود به پنل فامو: {0}'),
+    ('appointment_reminder', NULL, 'موسسه آموزشی فامو | دکتر موسوی والدین گرامی {0} ، نوبت فرزند شما روز {1} ساعت {2} میباشد. در صورت تایید به شماره موسسه پیامک دهید.'),
+    ('exam_result', NULL, 'کارنامه آزمون {0} در تاریخ {1}: {2}');
+
+-- 8. Record migrations in `migrations` table so Migrator::run() knows they are applied
 INSERT IGNORE INTO `migrations` (`migration`, `executed_at`) VALUES
     ('001_core_identity_and_users.sql', CURRENT_TIMESTAMP),
     ('002_academic_and_planner.sql', CURRENT_TIMESTAMP),
@@ -195,7 +216,9 @@ INSERT IGNORE INTO `migrations` (`migration`, `executed_at`) VALUES
     ('007_appointment_sms_log.sql', CURRENT_TIMESTAMP),
     ('008_tutoring_classroom_audit_log.sql', CURRENT_TIMESTAMP),
     ('009_staff_activity_logs.sql', CURRENT_TIMESTAMP),
-    ('010_supporter_description.sql', CURRENT_TIMESTAMP);
+    ('010_supporter_description.sql', CURRENT_TIMESTAMP),
+    ('011_subscription_tuition.sql', CURRENT_TIMESTAMP),
+    ('012_sms_pattern_settings.sql', CURRENT_TIMESTAMP);
 
 
 

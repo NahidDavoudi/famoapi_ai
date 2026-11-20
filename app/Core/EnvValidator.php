@@ -45,6 +45,21 @@ final class EnvValidator
         'REDIS_PORT',
         'PUBLIC_RATE_LIMIT_MAX',
         'PUBLIC_RATE_LIMIT_WINDOW',
+        'RATE_LIMIT_API_AUTH_WINDOW',
+        'RATE_LIMIT_API_STAFF_MAX',
+        'RATE_LIMIT_API_STUDENT_MAX',
+        'RATE_LIMIT_AUTH_IP_MAX',
+        'RATE_LIMIT_AUTH_IP_WINDOW',
+        'RATE_LIMIT_AUTH_USER_IP_MAX',
+        'RATE_LIMIT_AUTH_USER_IP_WINDOW',
+        'RATE_LIMIT_PUBLIC_EXAM_IP_MAX',
+        'RATE_LIMIT_PUBLIC_EXAM_IP_WINDOW',
+        'RATE_LIMIT_PUBLIC_IP_MAX',
+        'RATE_LIMIT_PUBLIC_IP_WINDOW',
+        'RATE_LIMIT_SMS_IP_MAX',
+        'RATE_LIMIT_SMS_IP_WINDOW',
+        'RATE_LIMIT_SMS_PHONE_MAX',
+        'RATE_LIMIT_SMS_PHONE_WINDOW',
     ];
 
     private const NON_NEGATIVE_INT_KEYS = [
@@ -218,6 +233,13 @@ final class EnvValidator
         $sameSite = self::get('JWT_COOKIE_SAMESITE');
         if ($sameSite !== null && $sameSite !== '' && !in_array(strtolower(trim($sameSite)), self::ALLOWED_SAMESITE, true)) {
             $errors[] = 'متغیر محیطی JWT_COOKIE_SAMESITE باید یکی از مقادیر Lax، Strict یا None باشد';
+        }
+
+        foreach (['AUTH_REVOCATION_FAIL_MODE', 'AUTH_REVOCATION_ADMIN_FAIL_MODE'] as $failModeKey) {
+            $failModeVal = self::get($failModeKey);
+            if ($failModeVal !== null && $failModeVal !== '' && !in_array(strtolower(trim($failModeVal)), ['open', 'closed'], true)) {
+                $errors[] = "متغیر محیطی {$failModeKey} باید یکی از مقادیر open یا closed باشد";
+            }
         }
 
         foreach (self::BOOLEAN_KEYS as $key) {

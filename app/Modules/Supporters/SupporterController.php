@@ -65,7 +65,30 @@ class SupporterController
                 return $candidate;
             }
         }
+        foreach ($files as $candidate) {
+            if (is_array($candidate)) {
+                $candidate = $candidate[0] ?? null;
+            }
+            if ($candidate instanceof UploadedFileInterface && $candidate->getError() !== UPLOAD_ERR_NO_FILE) {
+                return $candidate;
+            }
+        }
         return null;
+    }
+
+    private function normalizeAvatarPath(?string $raw): ?string
+    {
+        if ($raw === null) {
+            return null;
+        }
+        $trimmed = trim($raw);
+        if ($trimmed === '') {
+            return null;
+        }
+        if (preg_match('#/uploads/(.+)$#i', $trimmed, $m)) {
+            return ltrim($m[1], '/');
+        }
+        return ltrim($trimmed, '/');
     }
 
     /**
@@ -184,10 +207,11 @@ class SupporterController
             if (array_key_exists('scopes', $body)) {
                 $data['scopes'] = $body['scopes'];
             }
-            if (isset($body['avatar']) && is_string($body['avatar']) && trim($body['avatar']) !== '') {
-                $data['avatar'] = trim($body['avatar']);
-            } elseif (isset($body['image_url']) && is_string($body['image_url']) && trim($body['image_url']) !== '') {
-                $data['avatar'] = trim($body['image_url']);
+            foreach (['avatar', 'image_url', 'avatar_url', 'image', 'photo'] as $imgKey) {
+                if (isset($body[$imgKey]) && is_string($body[$imgKey]) && trim($body[$imgKey]) !== '') {
+                    $data['avatar'] = $this->normalizeAvatarPath($body[$imgKey]);
+                    break;
+                }
             }
 
             $avatarFile = $this->avatarFileFromRequest($request);
@@ -272,10 +296,16 @@ class SupporterController
         if (isset($body['chat_id'])) $data['chat_id'] = $body['chat_id'];
         if (array_key_exists('is_active', $body)) $data['is_active'] = (int) $body['is_active'];
         if ($avatarFile === null) {
-            if (array_key_exists('avatar', $body) && (is_string($body['avatar']) || $body['avatar'] === null)) {
-                $data['avatar'] = is_string($body['avatar']) ? trim($body['avatar']) : null;
-            } elseif (array_key_exists('image_url', $body) && (is_string($body['image_url']) || $body['image_url'] === null)) {
-                $data['avatar'] = is_string($body['image_url']) ? trim($body['image_url']) : null;
+            $explicitDeleteAvatar = !empty($body['remove_avatar']) || !empty($body['delete_avatar']);
+            if ($explicitDeleteAvatar) {
+                $data['avatar'] = null;
+            } else {
+                foreach (['avatar', 'image_url', 'avatar_url', 'image', 'photo'] as $imgKey) {
+                    if (isset($body[$imgKey]) && is_string($body[$imgKey]) && trim($body[$imgKey]) !== '') {
+                        $data['avatar'] = $this->normalizeAvatarPath($body[$imgKey]);
+                        break;
+                    }
+                }
             }
         }
         if (isset($body['password']) && $body['password'] !== '') {

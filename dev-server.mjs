@@ -103,6 +103,36 @@ export class RedisStore {
     return set ? Array.from(set) : [];
   }
 
+  eval(script, keys = [], args = []) {
+    const strScript = String(script || '');
+    if (strScript.includes("redis.call('INCR'") || strScript.includes('redis.call("INCR"')) {
+      const key = keys[0];
+      if (!key) return null;
+      const windowSeconds = Math.max(1, parseInt(args[0] ?? '60', 10) || 60);
+      const next = this.incr(key);
+      let remTtl = this.ttl(key);
+      if (next === 1 || remTtl < 0) {
+        this.expire(key, windowSeconds);
+        remTtl = windowSeconds;
+      }
+      return [next, Math.max(0, remTtl)];
+    }
+    if (strScript.includes("redis.call('SETEX'") || strScript.includes('redis.call("SETEX"')) {
+      const key = keys[0];
+      const ttlSeconds = Math.max(1, parseInt(args[0] ?? '1', 10) || 1);
+      const val = String(args[1] ?? '');
+      this.setex(key, ttlSeconds, val);
+      return 'OK';
+    }
+    if (strScript.includes("redis.call('GET'") || strScript.includes('redis.call("GET"')) {
+      return keys[0] ? this.get(keys[0]) : null;
+    }
+    if (strScript.includes("redis.call('DEL'") || strScript.includes('redis.call("DEL"')) {
+      return keys.length > 0 ? this.del(...keys) : 0;
+    }
+    return null;
+  }
+
   inspectAll() {
     const now = Date.now();
     const keys = [];
@@ -288,8 +318,29 @@ export class RateLimiterEngine {
     };
   }
 
+  attemptFixedWindow(key, maxAttempts = this.maxAttempts, windowSeconds = this.windowSeconds) {
+    const max = Math.max(1, Number(maxAttempts) || 1);
+    const win = Math.max(1, Number(windowSeconds) || 60);
+    const redisKey = `rl:fw:${key}`;
+    const res = this.redis.eval(
+      "local current = redis.call('INCR', KEYS[1])",
+      [redisKey],
+      [String(win)]
+    );
+    const attempts = Array.isArray(res) ? Number(res[0]) : 1;
+    const ttl = Array.isArray(res) ? Math.max(1, Number(res[1])) : win;
+    const allowed = attempts <= max;
+    return {
+      allowed,
+      retry_after: allowed ? 0 : ttl,
+      attempts,
+      remaining: Math.max(0, max - attempts),
+      limit: max,
+    };
+  }
+
   clear(key) {
-    this.redis.del(`rl:attempts:${key}`, `rl:lock:${key}`);
+    this.redis.del(`rl:attempts:${key}`, `rl:lock:${key}`, `rl:fw:${key}`);
   }
 }
 
@@ -664,6 +715,102 @@ export function createAppContext() {
     },
   ];
 
+  const courses = [
+    {
+      id: 101,
+      name: 'Advanced Konkoor Mathematics & Calculus',
+      price: 4500000,
+      monthly_fee: 450000,
+      icon: '📐',
+      gradient_color_from: '#0284c7',
+      gradient_color_to: '#10b981',
+      description: 'دوره جامع حسابان و ریاضیات کنکور با حل تست‌های پیشرفته',
+      is_active: 1,
+    },
+    {
+      id: 102,
+      name: 'Comprehensive Physics — Mechanics & Electromagnetism',
+      price: 4200000,
+      monthly_fee: 420000,
+      icon: '⚡',
+      gradient_color_from: '#8b5cf6',
+      gradient_color_to: '#ec4899',
+      description: 'دوره فیزیک جامع کنکور شامل مفاهیم فیزیک پایه و دوازدهم',
+      is_active: 1,
+    },
+    {
+      id: 103,
+      name: 'Organic & Analytical Chemistry Mastery',
+      price: 3900000,
+      monthly_fee: 390000,
+      icon: '🧪',
+      gradient_color_from: '#f59e0b',
+      gradient_color_to: '#ef4444',
+      description: 'دوره جامع شیمی کنکور با روش‌های تست‌زنی سریع و مفهومی',
+      is_active: 1,
+    },
+  ];
+
+  const subscriptions = [
+    {
+      id: 1,
+      course_id: 101,
+      student_id: 20,
+      status: 'active',
+      is_active: 1,
+      monthly_fee: 450000,
+      tuition_status: 'paid',
+      tuition_due_date: '2026-12-01',
+      last_payment_date: '2026-11-01',
+      tuition_notes: 'شهریه آبان‌ماه واریز شد',
+      note: 'ثبت‌نام سال تحصیلی ۱۴۰۵',
+      started_at: '2026-11-01 10:00:00',
+      end_at: null,
+      created_at: '2026-11-01 10:00:00',
+      updated_at: '2026-11-01 10:00:00',
+    },
+  ];
+
+  const smsPatterns = {
+    auth_2fa: {
+      pattern_key: 'auth_2fa',
+      label: 'کد تایید ورود دو مرحله‌ای (لاگین ادمین و کادر)',
+      env_key: 'MELIPAYAMAK_PATTERN_BODY_ID',
+      alias_field: 'auth_body_id',
+      env_body_id: 500001,
+      db_body_id: null,
+      pattern_text: 'کد تایید ورود به پنل فامو: {0}',
+      placeholders: ['کد تایید ۶ رقمی'],
+      updated_by: null,
+      updated_at: null,
+    },
+    appointment_reminder: {
+      pattern_key: 'appointment_reminder',
+      label: 'یادآوری نوبت هفتگی شاگردان به والدین',
+      env_key: 'MELIPAYAMAK_APPOINTMENT_BODY_ID',
+      alias_field: 'appointment_body_id',
+      env_body_id: 500002,
+      db_body_id: null,
+      pattern_text:
+        'موسسه آموزشی فامو | دکتر موسوی والدین گرامی {0} ، نوبت فرزند شما روز {1} ساعت {2} میباشد. در صورت تایید به شماره موسسه پیامک دهید.',
+      placeholders: ['نام و نام خانوادگی دانش‌آموز', 'روز و تاریخ شمسی', 'ساعت نوبت'],
+      updated_by: null,
+      updated_at: null,
+    },
+    exam_result: {
+      pattern_key: 'exam_result',
+      label: 'ارسال لینک کارنامه آزمون به والدین',
+      env_key: 'MELIPAYAMAK_EXAM_BODY_ID',
+      alias_field: 'exam_body_id',
+      env_body_id: 500003,
+      db_body_id: null,
+      pattern_text: 'کارنامه آزمون {0} در تاریخ {1}: {2}',
+      placeholders: ['نام و نام خانوادگی دانش‌آموز', 'تاریخ آزمون', 'لینک کارنامه'],
+      updated_by: null,
+      updated_at: null,
+    },
+  };
+
   return {
     redis,
     cache,
@@ -674,11 +821,14 @@ export function createAppContext() {
     supporters,
     students,
     instructors,
+    courses,
+    subscriptions,
     examResults,
     examComments,
     examResultLinks,
     parentContacts,
     smsDispatches,
+    smsPatterns,
     appointments,
     appointmentSmsLogs,
     tutoringClassrooms,
@@ -694,6 +844,27 @@ export function createAppContext() {
 }
 
 export function handleAuthEndpoint(ctx, method, pathname, body = {}, authUser = null) {
+  if (method === 'POST' && pathname === '/api/v1/auth/logout') {
+    if (authUser && authUser.jti) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const exp = typeof authUser.exp === 'number' ? authUser.exp : nowSec + 86400;
+      const ttl = Math.max(1, exp - nowSec);
+      ctx.redis.setex(`jwt:bl:${authUser.jti}`, ttl, '1');
+    }
+    return {
+      status: 200,
+      headers: {
+        'Set-Cookie': 'famo_jwt=; Max-Age=0; Path=/; HttpOnly',
+      },
+      body: {
+        success: true,
+        data: null,
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
   if (!authUser || !authUser.sub) {
     return {
       status: 401,
@@ -702,6 +873,31 @@ export function handleAuthEndpoint(ctx, method, pathname, body = {}, authUser = 
         data: null,
         pagination: null,
         error: { code: 'AUTH_ERROR', message: 'توکن احراز هویت ارسال نشده است' },
+      },
+    };
+  }
+
+  if (authUser.jti && ctx.redis.get(`jwt:bl:${authUser.jti}`) !== null) {
+    return {
+      status: 401,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'UNAUTHORIZED', message: 'توکن نامعتبر یا منقضی شده است' },
+      },
+    };
+  }
+
+  const epochRaw = ctx.redis.get(`jwt:user_epoch:${Number(authUser.sub)}`);
+  if (epochRaw !== null && typeof authUser.iat === 'number' && authUser.iat < Number(epochRaw)) {
+    return {
+      status: 401,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'UNAUTHORIZED', message: 'توکن نامعتبر یا منقضی شده است' },
       },
     };
   }
@@ -715,6 +911,18 @@ export function handleAuthEndpoint(ctx, method, pathname, body = {}, authUser = 
         data: null,
         pagination: null,
         error: { code: 'NOT_FOUND', message: 'کاربر یافت نشد' },
+      },
+    };
+  }
+
+  if (Number(user.is_active ?? 1) === 0) {
+    return {
+      status: 401,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'UNAUTHORIZED', message: 'حساب کاربری غیرفعال است' },
       },
     };
   }
@@ -760,11 +968,36 @@ export function handleAuthEndpoint(ctx, method, pathname, body = {}, authUser = 
     }
 
     user.password = newPassword;
+    const epoch = Math.floor(Date.now() / 1000);
+    ctx.redis.setex(`jwt:user_epoch:${user.id}`, 86400, String(epoch));
+    const freshJti = crypto.randomBytes(16).toString('hex');
+    const freshPayload = {
+      sub: user.id,
+      role: user.role,
+      jti: freshJti,
+      typ: 'access',
+      iat: epoch,
+      exp: epoch + 86400,
+    };
+    const freshToken = Buffer.from(JSON.stringify(freshPayload)).toString('base64url');
     return {
       status: 200,
+      headers: {
+        'Set-Cookie': `famo_jwt=${freshToken}; Path=/; HttpOnly`,
+      },
       body: {
         success: true,
-        data: { message: 'رمز عبور با موفقیت تغییر یافت' },
+        data: {
+          message: 'رمز عبور با موفقیت تغییر یافت',
+          token: freshToken,
+          user: {
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            student_id: user.role === 'student' && user.linked_id > 0 ? user.linked_id : null,
+            instructor_id: user.role === 'teacher' && user.linked_id > 0 ? user.linked_id : null,
+          },
+        },
         pagination: null,
         error: null,
       },
@@ -1746,6 +1979,285 @@ function formatPersianDayAndDate(dateYmd) {
   return `${dayName} ${jalali}`.trim();
 }
 
+function parsePositivePatternBodyId(raw) {
+  if (raw === null || raw === undefined || raw === '' || typeof raw === 'boolean') {
+    return { empty: true, value: null };
+  }
+  const str = String(raw).trim();
+  if (!/^\d+$/.test(str)) {
+    return { empty: false, invalid: true, value: null };
+  }
+  const num = Number(str);
+  if (!Number.isSafeInteger(num) || num <= 0) {
+    return { empty: false, invalid: true, value: null };
+  }
+  return { empty: false, invalid: false, value: num };
+}
+
+function resolveSmsPattern(ctx, key, overrideBodyId = null) {
+  const row = ctx.smsPatterns?.[key];
+  if (!row) return null;
+
+  const dbId = parsePositivePatternBodyId(row.db_body_id).value;
+  const envId = parsePositivePatternBodyId(row.env_body_id).value;
+  const reqId = parsePositivePatternBodyId(overrideBodyId).value;
+
+  let body_id = null;
+  let source = 'unset';
+  if (reqId !== null) {
+    body_id = reqId;
+    source = 'request';
+  } else if (dbId !== null) {
+    body_id = dbId;
+    source = 'database';
+  } else if (envId !== null) {
+    body_id = envId;
+    source = 'env';
+  }
+
+  return {
+    pattern_key: row.pattern_key,
+    label: row.label,
+    env_key: row.env_key,
+    alias_field: row.alias_field,
+    body_id,
+    db_body_id: dbId,
+    env_body_id: envId,
+    source,
+    is_configured: body_id !== null && body_id > 0,
+    pattern_text: row.pattern_text,
+    placeholders: row.placeholders,
+    updated_by: row.updated_by ?? null,
+    updated_at: row.updated_at ?? null,
+  };
+}
+
+function getAllSmsPatterns(ctx) {
+  const keys = ['auth_2fa', 'appointment_reminder', 'exam_result'];
+  const patterns = {};
+  const items = [];
+  for (const key of keys) {
+    const resolved = resolveSmsPattern(ctx, key);
+    patterns[key] = resolved;
+    items.push(resolved);
+  }
+  return {
+    patterns,
+    items,
+    auth_body_id: patterns.auth_2fa.body_id,
+    appointment_body_id: patterns.appointment_reminder.body_id,
+    exam_body_id: patterns.exam_result.body_id,
+  };
+}
+
+function renderAppointmentSmsMessage(studentName, dayAndDateFa, timeFa, template) {
+  const tpl =
+    template && String(template).trim() !== ''
+      ? String(template)
+      : 'موسسه آموزشی فامو | دکتر موسوی والدین گرامی {0} ، نوبت فرزند شما روز {1} ساعت {2} میباشد. در صورت تایید به شماره موسسه پیامک دهید.';
+  return tpl
+    .replaceAll('{0}', String(studentName || '').trim())
+    .replaceAll('{1}', String(dayAndDateFa || '').trim())
+    .replaceAll('{2}', String(timeFa || '').trim());
+}
+
+export function handleSmsPatternEndpoint(ctx, method, urlObj, body = {}, authUser = null) {
+  if (!authUser || !authUser.sub) {
+    return {
+      status: 401,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'AUTH_ERROR', message: 'توکن احراز هویت ارسال نشده است' },
+      },
+    };
+  }
+
+  const user = ctx.users.find((u) => u.id === Number(authUser.sub));
+  if (!user) {
+    return {
+      status: 404,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'NOT_FOUND', message: 'کاربر یافت نشد' },
+      },
+    };
+  }
+
+  if (user.role !== 'admin') {
+    return {
+      status: 403,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'FORBIDDEN', message: 'دسترسی محدود به مدیران سیستم' },
+      },
+    };
+  }
+
+  if (method === 'GET') {
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: getAllSmsPatterns(ctx),
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  if (method !== 'PUT' && method !== 'PATCH') {
+    return {
+      status: 405,
+      body: {
+        success: false,
+        data: null,
+        pagination: null,
+        error: { code: 'METHOD_NOT_ALLOWED', message: 'متد HTTP پشتیبانی نمی‌شود' },
+      },
+    };
+  }
+
+  const aliasToKey = {
+    auth_body_id: 'auth_2fa',
+    login_body_id: 'auth_2fa',
+    pattern_body_id: 'auth_2fa',
+    MELIPAYAMAK_PATTERN_BODY_ID: 'auth_2fa',
+    appointment_body_id: 'appointment_reminder',
+    MELIPAYAMAK_APPOINTMENT_BODY_ID: 'appointment_reminder',
+    exam_body_id: 'exam_result',
+    MELIPAYAMAK_EXAM_BODY_ID: 'exam_result',
+  };
+  const validKeys = ['auth_2fa', 'appointment_reminder', 'exam_result'];
+  const updates = {};
+
+  const failValidation = (message) => ({
+    status: 422,
+    body: {
+      success: false,
+      data: null,
+      pagination: null,
+      error: { code: 'VALIDATION_ERROR', message },
+    },
+  });
+
+  if (typeof body?.pattern_key === 'string') {
+    const key = body.pattern_key.trim();
+    if (!validKeys.includes(key)) {
+      return failValidation(`کلید پترن «${key}» معتبر نیست`);
+    }
+    const entry = {};
+    if (Object.prototype.hasOwnProperty.call(body, 'body_id')) {
+      const parsed = parsePositivePatternBodyId(body.body_id);
+      if (parsed.invalid) {
+        return failValidation(`کد پترن (${key}) باید یک عدد صحیح مثبت باشد`);
+      }
+      entry.body_id = parsed.value;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'pattern_text')) {
+      entry.pattern_text = typeof body.pattern_text === 'string' ? body.pattern_text : null;
+    }
+    if (Object.keys(entry).length > 0) {
+      updates[key] = entry;
+    }
+  }
+
+  if (body?.patterns && typeof body.patterns === 'object' && !Array.isArray(body.patterns)) {
+    for (const [rawKey, cfg] of Object.entries(body.patterns)) {
+      const key = rawKey.trim();
+      if (!validKeys.includes(key)) {
+        return failValidation(`کلید پترن «${key}» معتبر نیست`);
+      }
+      if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+        const parsed = parsePositivePatternBodyId(cfg);
+        if (parsed.invalid) {
+          return failValidation(`کد پترن (${key}) باید یک عدد صحیح مثبت باشد`);
+        }
+        updates[key] = { body_id: parsed.value };
+        continue;
+      }
+      const entry = {};
+      if (Object.prototype.hasOwnProperty.call(cfg, 'body_id')) {
+        const parsed = parsePositivePatternBodyId(cfg.body_id);
+        if (parsed.invalid) {
+          return failValidation(`کد پترن (${key}) باید یک عدد صحیح مثبت باشد`);
+        }
+        entry.body_id = parsed.value;
+      }
+      if (Object.prototype.hasOwnProperty.call(cfg, 'pattern_text')) {
+        entry.pattern_text = typeof cfg.pattern_text === 'string' ? cfg.pattern_text : null;
+      }
+      if (Object.keys(entry).length > 0) {
+        updates[key] = entry;
+      }
+    }
+  }
+
+  for (const key of validKeys) {
+    if (body?.[key] && typeof body[key] === 'object' && !Array.isArray(body[key])) {
+      const cfg = body[key];
+      const entry = updates[key] || {};
+      if (Object.prototype.hasOwnProperty.call(cfg, 'body_id')) {
+        const parsed = parsePositivePatternBodyId(cfg.body_id);
+        if (parsed.invalid) {
+          return failValidation(`کد پترن (${key}) باید یک عدد صحیح مثبت باشد`);
+        }
+        entry.body_id = parsed.value;
+      }
+      if (Object.prototype.hasOwnProperty.call(cfg, 'pattern_text')) {
+        entry.pattern_text = typeof cfg.pattern_text === 'string' ? cfg.pattern_text : null;
+      }
+      if (Object.keys(entry).length > 0) {
+        updates[key] = entry;
+      }
+    }
+  }
+
+  for (const [alias, key] of Object.entries(aliasToKey)) {
+    if (Object.prototype.hasOwnProperty.call(body || {}, alias)) {
+      const parsed = parsePositivePatternBodyId(body[alias]);
+      if (parsed.invalid) {
+        return failValidation(`کد پترن (${alias}) باید یک عدد صحیح مثبت باشد`);
+      }
+      updates[key] = { ...(updates[key] || {}), body_id: parsed.value };
+    }
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return failValidation('حداقل یکی از کدهای پترن (مانند appointment_body_id یا patterns) باید ارسال شود');
+  }
+
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  for (const [key, entry] of Object.entries(updates)) {
+    const target = ctx.smsPatterns[key];
+    if (Object.prototype.hasOwnProperty.call(entry, 'body_id')) {
+      target.db_body_id = entry.body_id;
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'pattern_text')) {
+      if (entry.pattern_text && entry.pattern_text.trim() !== '') {
+        target.pattern_text = entry.pattern_text.trim();
+      }
+    }
+    target.updated_by = user.id;
+    target.updated_at = now;
+  }
+
+  return {
+    status: 200,
+    body: {
+      success: true,
+      data: getAllSmsPatterns(ctx),
+      pagination: null,
+      error: null,
+    },
+  };
+}
+
 export function handleAppointmentSmsEndpoint(ctx, method, urlObj, body = {}, authUser = null) {
   if (!authUser || !authUser.sub) {
     return {
@@ -1906,6 +2418,7 @@ export function handleAppointmentSmsEndpoint(ctx, method, urlObj, body = {}, aut
         appointment_at: null,
         day_and_date_fa: null,
         time_fa: null,
+        sms_preview_text: null,
         multiple_appointments: false,
         active_appointments_count: 0,
         status: 'no_appointment',
@@ -1922,6 +2435,13 @@ export function handleAppointmentSmsEndpoint(ctx, method, urlObj, body = {}, aut
     );
     const dayAndDateFa = formatPersianDayAndDate(selectedAppt.appointment_date);
     const timeFa = formatTimeHhMm(selectedAppt.start_time);
+    const patternMeta = resolveSmsPattern(ctx, 'appointment_reminder');
+    const smsPreviewText = renderAppointmentSmsMessage(
+      student.name,
+      dayAndDateFa,
+      timeFa,
+      patternMeta?.pattern_text
+    );
     const existingLog = findLatestLogForStudentWeek(sid, weekStart, parentMobile);
 
     let status = 'will_send';
@@ -1953,6 +2473,7 @@ export function handleAppointmentSmsEndpoint(ctx, method, urlObj, body = {}, aut
       appointment_at: appointmentAt,
       day_and_date_fa: dayAndDateFa,
       time_fa: timeFa,
+      sms_preview_text: smsPreviewText,
       multiple_appointments: multipleAppointments,
       active_appointments_count: studentAppts.length,
       status,
@@ -1980,6 +2501,7 @@ export function handleAppointmentSmsEndpoint(ctx, method, urlObj, body = {}, aut
     const weekStart = getIranWeekStart(rawWeekDate);
     const weekEnd = addDaysYmd(weekStart, 6);
     const activeStudents = ctx.students.filter((s) => s.is_active === 1);
+    const patternMeta = resolveSmsPattern(ctx, 'appointment_reminder');
 
     const summary = {
       total_students: activeStudents.length,
@@ -2010,6 +2532,13 @@ export function handleAppointmentSmsEndpoint(ctx, method, urlObj, body = {}, aut
         data: {
           week_date: weekStart,
           week_end: weekEnd,
+          pattern: {
+            key: patternMeta.pattern_key,
+            body_id: patternMeta.body_id,
+            source: patternMeta.source,
+            is_configured: patternMeta.is_configured,
+            template: patternMeta.pattern_text,
+          },
           recipient_type: 'parent',
           summary,
           items,
@@ -2061,6 +2590,46 @@ export function handleAppointmentSmsEndpoint(ctx, method, urlObj, body = {}, aut
         };
       }
       studentIdsFilter = [...new Set(body.student_ids.map(Number).filter((n) => n > 0))];
+    }
+
+    const rawBodyId = body?.body_id ?? body?.pattern_body_id ?? body?.pattern_id ?? null;
+    const parsedOverride = parsePositivePatternBodyId(rawBodyId);
+    if (parsedOverride.invalid) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'کد پترن ملی‌پیامک (body_id) باید یک عدد صحیح مثبت باشد' },
+        },
+      };
+    }
+
+    const patternMeta = resolveSmsPattern(ctx, 'appointment_reminder', parsedOverride.value);
+    if (!patternMeta || !patternMeta.is_configured) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: {
+            code: 'APPOINTMENT_PATTERN_NOT_CONFIGURED',
+            message:
+              'کد پترن پیامک نوبت تنظیم نشده است. لطفاً کد پترن یادآوری نوبت را در تنظیمات پیامک پنل ادمین یا متغیر MELIPAYAMAK_APPOINTMENT_BODY_ID ثبت کنید.',
+          },
+        },
+      };
+    }
+
+    if (body?.save_pattern && parsedOverride.value !== null) {
+      ctx.smsPatterns.appointment_reminder.db_body_id = parsedOverride.value;
+      ctx.smsPatterns.appointment_reminder.updated_by = user.id;
+      ctx.smsPatterns.appointment_reminder.updated_at = new Date()
+        .toISOString()
+        .replace('T', ' ')
+        .slice(0, 19);
     }
 
     const weekStart = getIranWeekStart(rawWeekDate);
@@ -2272,9 +2841,17 @@ export function handleAppointmentSmsEndpoint(ctx, method, urlObj, body = {}, aut
           ctx.smsDispatches.push({
             provider: 'melipayamak',
             endpoint: 'https://rest.payamak-panel.com/api/SendSMS/BaseServiceNumber',
+            body_id: patternMeta.body_id,
+            pattern_source: patternMeta.source,
             body_id_env: 'MELIPAYAMAK_APPOINTMENT_BODY_ID',
             to: parentMobile,
             text: `${safeName};${safeDayAndDate};${safeTime}`,
+            rendered_text: renderAppointmentSmsMessage(
+              safeName,
+              safeDayAndDate,
+              safeTime,
+              patternMeta.pattern_text
+            ),
             sent_at: sentAt,
           });
 
@@ -2337,6 +2914,8 @@ export function handleAppointmentSmsEndpoint(ctx, method, urlObj, body = {}, aut
             week_date: weekStart,
             week_end: weekEnd,
             mode,
+            body_id: patternMeta.body_id,
+            pattern_source: patternMeta.source,
             recipient_type: 'parent',
             summary,
             details,
@@ -3718,6 +4297,421 @@ export function handleSupporterEndpoint(ctx, method, urlObj, body = {}, authUser
   };
 }
 
+export function formatSubscription(sub, ctx) {
+  const course = (ctx.courses || []).find((c) => c.id === sub.course_id) || {
+    id: sub.course_id,
+    name: 'دوره جامع کنکور',
+    price: sub.monthly_fee || 0,
+    icon: '📚',
+    description: null,
+  };
+  const student = (ctx.students || []).find((s) => s.id === sub.student_id) || {
+    id: sub.student_id,
+    name: 'دانش‌آموز',
+    phone: null,
+    grade: 12,
+    field: '',
+  };
+  const tuitionLabels = {
+    unpaid: 'پرداخت نشده',
+    paid: 'پرداخت شده',
+    pending: 'در انتظار بررسی',
+    exempt: 'معاف از شهریه',
+    partial: 'پرداخت ناقص / بیعانه',
+  };
+  const tStatus = sub.tuition_status || 'unpaid';
+
+  return {
+    id: sub.id,
+    course_id: sub.course_id,
+    student_id: sub.student_id,
+    status: sub.status || 'pending',
+    is_active: sub.is_active !== undefined ? Number(sub.is_active) : 1,
+    monthly_fee: Number(sub.monthly_fee ?? course.monthly_fee ?? course.price ?? 0),
+    tuition_status: tStatus,
+    tuition_status_label: tuitionLabels[tStatus] || tStatus,
+    tuition_due_date: sub.tuition_due_date || null,
+    last_payment_date: sub.last_payment_date || null,
+    tuition_notes: sub.tuition_notes || null,
+    note: sub.note || null,
+    started_at: sub.started_at || null,
+    end_at: sub.end_at || null,
+    created_at: sub.created_at || '2026-11-01 10:00:00',
+    updated_at: sub.updated_at || '2026-11-01 10:00:00',
+    course: {
+      id: course.id,
+      name: course.name || course.title,
+      price: course.price || 0,
+      icon: course.icon || '📚',
+      description: course.description || null,
+    },
+    student: {
+      id: student.id,
+      name: student.name,
+      phone: student.phone,
+      grade: student.grade,
+      field: student.field,
+    },
+  };
+}
+
+export function handleSubscriptionEndpoint(ctx, method, urlObj, body = {}, authUser = null) {
+  const pathname = urlObj.pathname;
+  const isStudent = authUser && authUser.role === 'student';
+  const currentStudentId = isStudent ? (authUser.linked_id || authUser.sub) : null;
+
+  // 1. GET /api/v1/subscriptions/me
+  if (pathname === '/api/v1/subscriptions/me' && method === 'GET') {
+    if (!authUser) {
+      return { status: 401, body: { success: false, data: null, error: { code: 'UNAUTHORIZED', message: 'احراز هویت الزامی است' } } };
+    }
+    const studentId = isStudent ? currentStudentId : (urlObj.searchParams.get('student_id') ? parseInt(urlObj.searchParams.get('student_id'), 10) : 20);
+    const onlyActive = urlObj.searchParams.get('only_active') === '1' || urlObj.searchParams.get('only_active') === 'true';
+
+    let subs = (ctx.subscriptions || []).filter((s) => s.student_id === studentId);
+    if (onlyActive) {
+      subs = subs.filter((s) => s.is_active === 1);
+    }
+    const formatted = subs.map((s) => formatSubscription(s, ctx));
+    return {
+      status: 200,
+      body: { success: true, data: formatted, pagination: null, error: null },
+    };
+  }
+
+  // 2. GET /api/v1/students/{id}/subscriptions
+  const studentSubsMatch = pathname.match(/^\/api\/v1\/students\/(\d+)\/subscriptions$/);
+  if (studentSubsMatch && method === 'GET') {
+    if (!authUser) {
+      return { status: 401, body: { success: false, data: null, error: { code: 'UNAUTHORIZED', message: 'احراز هویت الزامی است' } } };
+    }
+    const targetStudentId = parseInt(studentSubsMatch[1], 10);
+    if (isStudent && currentStudentId !== targetStudentId) {
+      return { status: 403, body: { success: false, data: null, error: { code: 'FORBIDDEN', message: 'دسترسی غیرمجاز' } } };
+    }
+    const onlyActive = urlObj.searchParams.get('only_active') === '1' || urlObj.searchParams.get('only_active') === 'true';
+    let subs = (ctx.subscriptions || []).filter((s) => s.student_id === targetStudentId);
+    if (onlyActive) {
+      subs = subs.filter((s) => s.is_active === 1);
+    }
+    const formatted = subs.map((s) => formatSubscription(s, ctx));
+    return {
+      status: 200,
+      body: { success: true, data: formatted, pagination: null, error: null },
+    };
+  }
+
+  // 3. POST /api/v1/courses/{id}/enroll
+  const enrollMatch = pathname.match(/^\/api\/v1\/courses\/(\d+)\/enroll$/);
+  if (enrollMatch && method === 'POST') {
+    if (!authUser) {
+      return { status: 401, body: { success: false, data: null, error: { code: 'UNAUTHORIZED', message: 'احراز هویت الزامی است' } } };
+    }
+    const courseId = parseInt(enrollMatch[1], 10);
+    const course = (ctx.courses || []).find((c) => c.id === courseId);
+    if (!course) {
+      return { status: 404, body: { success: false, data: null, error: { code: 'COURSE_NOT_FOUND', message: 'دوره مورد نظر یافت نشد' } } };
+    }
+
+    const studentId = isStudent ? currentStudentId : (body.student_id ? parseInt(body.student_id, 10) : currentStudentId || 20);
+
+    const existing = (ctx.subscriptions || []).find(
+      (s) => s.student_id === studentId && s.course_id === courseId && s.is_active === 1 && ['pending', 'active'].includes(s.status)
+    );
+    if (existing) {
+      return {
+        status: 409,
+        body: { success: false, data: null, error: { code: 'ALREADY_SUBSCRIBED', message: 'این دانش‌آموز در حال حاضر اشتراک فعال یا در انتظار تایید برای این دوره دارد' } },
+      };
+    }
+
+    const defaultFee = course.monthly_fee || course.price || 0;
+    const monthlyFee = body.monthly_fee !== undefined && body.monthly_fee !== '' ? Number(body.monthly_fee) : defaultFee;
+    const tuitionStatus = (body.tuition_status && ['unpaid', 'paid', 'pending', 'exempt', 'partial'].includes(body.tuition_status))
+      ? body.tuition_status
+      : 'unpaid';
+
+    const now = new Date().toISOString();
+    const dueDate = body.tuition_due_date || new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
+    const newId = (ctx.subscriptions || []).reduce((max, s) => Math.max(max, s.id), 0) + 1;
+
+    const newSub = {
+      id: newId,
+      course_id: courseId,
+      student_id: studentId,
+      status: isStudent ? 'pending' : (body.status || 'pending'),
+      is_active: 1,
+      monthly_fee: monthlyFee,
+      tuition_status: tuitionStatus,
+      tuition_due_date: dueDate,
+      last_payment_date: tuitionStatus === 'paid' ? now.split('T')[0] : null,
+      tuition_notes: body.tuition_notes || null,
+      note: body.note || null,
+      started_at: now,
+      end_at: null,
+      created_at: now,
+      updated_at: now,
+    };
+
+    if (!ctx.subscriptions) ctx.subscriptions = [];
+    ctx.subscriptions.push(newSub);
+
+    return {
+      status: 201,
+      body: { success: true, data: formatSubscription(newSub, ctx), pagination: null, error: null },
+    };
+  }
+
+  // 4. POST /api/v1/subscriptions
+  if (pathname === '/api/v1/subscriptions' && method === 'POST') {
+    if (!authUser) {
+      return { status: 401, body: { success: false, data: null, error: { code: 'UNAUTHORIZED', message: 'احراز هویت الزامی است' } } };
+    }
+    const courseId = parseInt(body.course_id, 10);
+    if (!courseId) {
+      return { status: 422, body: { success: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'شناسه دوره الزامی است' } } };
+    }
+    const course = (ctx.courses || []).find((c) => c.id === courseId);
+    if (!course) {
+      return { status: 404, body: { success: false, data: null, error: { code: 'COURSE_NOT_FOUND', message: 'دوره مورد نظر یافت نشد' } } };
+    }
+
+    const studentId = isStudent ? currentStudentId : (body.student_id ? parseInt(body.student_id, 10) : currentStudentId || 20);
+
+    const existing = (ctx.subscriptions || []).find(
+      (s) => s.student_id === studentId && s.course_id === courseId && s.is_active === 1 && ['pending', 'active'].includes(s.status)
+    );
+    if (existing) {
+      return {
+        status: 409,
+        body: { success: false, data: null, error: { code: 'ALREADY_SUBSCRIBED', message: 'این دانش‌آموز در حال حاضر اشتراک فعال یا در انتظار تایید برای این دوره دارد' } },
+      };
+    }
+
+    const defaultFee = course.monthly_fee || course.price || 0;
+    const monthlyFee = body.monthly_fee !== undefined && body.monthly_fee !== '' ? Number(body.monthly_fee) : defaultFee;
+    const tuitionStatus = (body.tuition_status && ['unpaid', 'paid', 'pending', 'exempt', 'partial'].includes(body.tuition_status))
+      ? body.tuition_status
+      : 'unpaid';
+
+    const now = new Date().toISOString();
+    const dueDate = body.tuition_due_date || new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
+    const newId = (ctx.subscriptions || []).reduce((max, s) => Math.max(max, s.id), 0) + 1;
+
+    const newSub = {
+      id: newId,
+      course_id: courseId,
+      student_id: studentId,
+      status: isStudent ? 'pending' : (body.status || 'pending'),
+      is_active: 1,
+      monthly_fee: monthlyFee,
+      tuition_status: tuitionStatus,
+      tuition_due_date: dueDate,
+      last_payment_date: tuitionStatus === 'paid' ? now.split('T')[0] : null,
+      tuition_notes: body.tuition_notes || null,
+      note: body.note || null,
+      started_at: now,
+      end_at: null,
+      created_at: now,
+      updated_at: now,
+    };
+
+    if (!ctx.subscriptions) ctx.subscriptions = [];
+    ctx.subscriptions.push(newSub);
+
+    return {
+      status: 201,
+      body: { success: true, data: formatSubscription(newSub, ctx), pagination: null, error: null },
+    };
+  }
+
+  // 5. GET /api/v1/subscriptions
+  if (pathname === '/api/v1/subscriptions' && method === 'GET') {
+    if (!authUser) {
+      return { status: 401, body: { success: false, data: null, error: { code: 'UNAUTHORIZED', message: 'احراز هویت الزامی است' } } };
+    }
+    let items = [...(ctx.subscriptions || [])];
+
+    if (isStudent) {
+      items = items.filter((s) => s.student_id === currentStudentId);
+    } else if (urlObj.searchParams.get('student_id')) {
+      const sid = parseInt(urlObj.searchParams.get('student_id'), 10);
+      items = items.filter((s) => s.student_id === sid);
+    }
+
+    if (urlObj.searchParams.get('course_id')) {
+      const cid = parseInt(urlObj.searchParams.get('course_id'), 10);
+      items = items.filter((s) => s.course_id === cid);
+    }
+
+    if (urlObj.searchParams.get('status')) {
+      const st = urlObj.searchParams.get('status');
+      items = items.filter((s) => s.status === st);
+    }
+
+    if (urlObj.searchParams.get('tuition_status')) {
+      const tst = urlObj.searchParams.get('tuition_status');
+      items = items.filter((s) => s.tuition_status === tst);
+    }
+
+    if (urlObj.searchParams.get('is_active') !== null && urlObj.searchParams.get('is_active') !== '') {
+      const act = parseInt(urlObj.searchParams.get('is_active'), 10);
+      items = items.filter((s) => s.is_active === act);
+    }
+
+    const page = Math.max(1, parseInt(urlObj.searchParams.get('page') || '1', 10));
+    const perPage = Math.max(1, Math.min(100, parseInt(urlObj.searchParams.get('perPage') || '20', 10)));
+    const total = items.length;
+    const paginated = items.slice((page - 1) * perPage, page * perPage);
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: paginated.map((s) => formatSubscription(s, ctx)),
+        pagination: {
+          total,
+          page,
+          perPage,
+          totalPages: Math.ceil(total / perPage),
+        },
+        error: null,
+      },
+    };
+  }
+
+  // 6. PATCH|PUT /api/v1/subscriptions/{id}/tuition
+  const tuitionMatch = pathname.match(/^\/api\/v1\/subscriptions\/(\d+)\/tuition$/);
+  if (tuitionMatch && (method === 'PATCH' || method === 'PUT')) {
+    if (!authUser || authUser.role === 'student') {
+      return { status: 403, body: { success: false, data: null, error: { code: 'FORBIDDEN', message: 'دسترسی فقط برای پشتیبان و ادمین مجاز است' } } };
+    }
+    const id = parseInt(tuitionMatch[1], 10);
+    const sub = (ctx.subscriptions || []).find((s) => s.id === id);
+    if (!sub) {
+      return { status: 404, body: { success: false, data: null, error: { code: 'SUBSCRIPTION_NOT_FOUND', message: 'اشتراک یافت نشد' } } };
+    }
+
+    if (body.tuition_status) {
+      if (!['unpaid', 'paid', 'pending', 'exempt', 'partial'].includes(body.tuition_status)) {
+        return { status: 422, body: { success: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'وضعیت شهریه نامعتبر است' } } };
+      }
+      sub.tuition_status = body.tuition_status;
+      if (body.tuition_status === 'paid' && !sub.last_payment_date) {
+        sub.last_payment_date = new Date().toISOString().split('T')[0];
+      }
+    }
+    if (body.monthly_fee !== undefined && body.monthly_fee !== '') {
+      sub.monthly_fee = Number(body.monthly_fee);
+    }
+    if (body.tuition_due_date !== undefined) sub.tuition_due_date = body.tuition_due_date;
+    if (body.last_payment_date !== undefined) sub.last_payment_date = body.last_payment_date;
+    if (body.tuition_notes !== undefined) sub.tuition_notes = body.tuition_notes;
+    sub.updated_at = new Date().toISOString();
+
+    return {
+      status: 200,
+      body: { success: true, data: formatSubscription(sub, ctx), pagination: null, error: null },
+    };
+  }
+
+  // 7. PATCH|PUT /api/v1/subscriptions/{id}/status
+  const statusMatch = pathname.match(/^\/api\/v1\/subscriptions\/(\d+)\/status$/);
+  if (statusMatch && (method === 'PATCH' || method === 'PUT')) {
+    if (!authUser || authUser.role === 'student') {
+      return { status: 403, body: { success: false, data: null, error: { code: 'FORBIDDEN', message: 'دسترسی فقط برای پشتیبان و ادمین مجاز است' } } };
+    }
+    const id = parseInt(statusMatch[1], 10);
+    const sub = (ctx.subscriptions || []).find((s) => s.id === id);
+    if (!sub) {
+      return { status: 404, body: { success: false, data: null, error: { code: 'SUBSCRIPTION_NOT_FOUND', message: 'اشتراک یافت نشد' } } };
+    }
+    if (!body.status) {
+      return { status: 422, body: { success: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'وضعیت الزامی است' } } };
+    }
+    sub.status = body.status;
+    if (body.note !== undefined) sub.note = body.note;
+    sub.updated_at = new Date().toISOString();
+
+    return {
+      status: 200,
+      body: { success: true, data: formatSubscription(sub, ctx), pagination: null, error: null },
+    };
+  }
+
+  // 8. GET /api/v1/subscriptions/{id}
+  const singleMatch = pathname.match(/^\/api\/v1\/subscriptions\/(\d+)$/);
+  if (singleMatch && method === 'GET') {
+    if (!authUser) {
+      return { status: 401, body: { success: false, data: null, error: { code: 'UNAUTHORIZED', message: 'احراز هویت الزامی است' } } };
+    }
+    const id = parseInt(singleMatch[1], 10);
+    const sub = (ctx.subscriptions || []).find((s) => s.id === id);
+    if (!sub) {
+      return { status: 404, body: { success: false, data: null, error: { code: 'SUBSCRIPTION_NOT_FOUND', message: 'اشتراک یافت نشد' } } };
+    }
+    if (isStudent && sub.student_id !== currentStudentId) {
+      return { status: 403, body: { success: false, data: null, error: { code: 'FORBIDDEN', message: 'دسترسی غیرمجاز' } } };
+    }
+    return {
+      status: 200,
+      body: { success: true, data: formatSubscription(sub, ctx), pagination: null, error: null },
+    };
+  }
+
+  // 9. PUT /api/v1/subscriptions/{id}
+  if (singleMatch && method === 'PUT') {
+    if (!authUser || authUser.role === 'student') {
+      return { status: 403, body: { success: false, data: null, error: { code: 'FORBIDDEN', message: 'دسترسی فقط برای پشتیبان و ادمین مجاز است' } } };
+    }
+    const id = parseInt(singleMatch[1], 10);
+    const sub = (ctx.subscriptions || []).find((s) => s.id === id);
+    if (!sub) {
+      return { status: 404, body: { success: false, data: null, error: { code: 'SUBSCRIPTION_NOT_FOUND', message: 'اشتراک یافت نشد' } } };
+    }
+    if (body.status !== undefined) sub.status = body.status;
+    if (body.is_active !== undefined) sub.is_active = Number(body.is_active);
+    if (body.monthly_fee !== undefined) sub.monthly_fee = Number(body.monthly_fee);
+    if (body.tuition_status !== undefined) sub.tuition_status = body.tuition_status;
+    if (body.tuition_due_date !== undefined) sub.tuition_due_date = body.tuition_due_date;
+    if (body.last_payment_date !== undefined) sub.last_payment_date = body.last_payment_date;
+    if (body.tuition_notes !== undefined) sub.tuition_notes = body.tuition_notes;
+    if (body.note !== undefined) sub.note = body.note;
+    sub.updated_at = new Date().toISOString();
+
+    return {
+      status: 200,
+      body: { success: true, data: formatSubscription(sub, ctx), pagination: null, error: null },
+    };
+  }
+
+  // 10. DELETE /api/v1/subscriptions/{id}
+  if (singleMatch && method === 'DELETE') {
+    if (!authUser) {
+      return { status: 401, body: { success: false, data: null, error: { code: 'UNAUTHORIZED', message: 'احراز هویت الزامی است' } } };
+    }
+    const id = parseInt(singleMatch[1], 10);
+    const subIdx = (ctx.subscriptions || []).findIndex((s) => s.id === id);
+    if (subIdx === -1) {
+      return { status: 404, body: { success: false, data: null, error: { code: 'SUBSCRIPTION_NOT_FOUND', message: 'اشتراک یافت نشد' } } };
+    }
+    const sub = ctx.subscriptions[subIdx];
+    if (isStudent && (sub.student_id !== currentStudentId || sub.status !== 'pending')) {
+      return { status: 400, body: { success: false, data: null, error: { code: 'CANNOT_DELETE_SUBSCRIPTION', message: 'فقط اشتراک‌های در انتظار تایید توسط دانش‌آموز قابل لغو هستند' } } };
+    }
+    ctx.subscriptions.splice(subIdx, 1);
+    return {
+      status: 200,
+      body: { success: true, data: null, pagination: null, error: null },
+    };
+  }
+
+  return {
+    status: 404,
+    body: { success: false, data: null, pagination: null, error: { code: 'NOT_FOUND', message: 'مسیر یافت نشد' } },
+  };
+}
+
 const REQUIRED_PHP_FILES = [
   'openapi.yaml',
   'public/openapi.yaml',
@@ -3726,15 +4720,25 @@ const REQUIRED_PHP_FILES = [
   'database/migrations/008_tutoring_classroom_audit_log.sql',
   'database/migrations/009_staff_activity_logs.sql',
   'database/migrations/010_supporter_description.sql',
+  'database/migrations/011_subscription_tuition.sql',
+  'database/migrations/012_sms_pattern_settings.sql',
   'config/database.php',
   'app/Core/Database.php',
   'app/Core/Migrator.php',
   'app/Core/PhoneNumber.php',
   'app/Core/RedisClient.php',
+  'app/Core/RedisMonitorMiddleware.php',
   'app/Core/Cache.php',
   'app/Core/PublicCacheMiddleware.php',
   'app/Core/RateLimiter.php',
   'app/Core/RateLimitMiddleware.php',
+  'app/Core/JwtRevocation.php',
+  'config/rate_limits.php',
+  'app/Core/SmsPatternSettings.php',
+  'app/Core/SmsService.php',
+  'app/Modules/Settings/SmsSettingsController.php',
+  'app/Modules/Appointments/AppointmentService.php',
+  'app/Modules/Appointments/AppointmentController.php',
   'app/Modules/ActivityLogs/ActivityLog.php',
   'app/Modules/ActivityLogs/ActivityLogController.php',
   'app/Modules/Tutoring/Tutoring.php',
@@ -4328,6 +5332,93 @@ function renderDashboardHtml() {
           </div>
         </div>
       </section>
+
+      <section class="panel" id="subscription-tuition-panel">
+        <div class="panel-header">
+          <div class="panel-title">ثبت‌نام دوره، شهریه ماهانه و وضعیت پرداخت شهریه (<code>/api/v1/subscriptions</code>)</div>
+          <span id="subscription-count" style="font-size: 0.75rem; color: var(--emerald);">1 subscription</span>
+        </div>
+        <div class="panel-body">
+          <div class="controls-row" style="gap: 0.6rem; flex-wrap: wrap;">
+            <label for="select-sub-student">
+              Student:
+              <select id="select-sub-student" aria-label="Select Student" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.35rem 0.55rem; font-size: 0.78rem;">
+                <option value="20">دانش‌آموز نمونه (#20)</option>
+              </select>
+            </label>
+            <label for="select-sub-course">
+              Course:
+              <select id="select-sub-course" aria-label="Select Course" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.35rem 0.55rem; font-size: 0.78rem;">
+                <option value="101" data-fee="450000">ریاضیات جامع کنکور (#101 - ماهانه ۴۵۰,۰۰۰ تومان)</option>
+                <option value="102" data-fee="420000">فیزیک جامع کنکور (#102 - ماهانه ۴۲۰,۰۰۰ تومان)</option>
+                <option value="103" data-fee="390000">شیمی جامع کنکور (#103 - ماهانه ۳۹۰,۰۰۰ تومان)</option>
+              </select>
+            </label>
+            <label for="input-sub-fee">
+              Monthly Fee (شهریه ماهانه):
+              <input id="input-sub-fee" aria-label="Monthly Fee" type="number" value="450000" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.32rem 0.55rem; font-size: 0.78rem; width: 8.5rem;" />
+            </label>
+            <label for="select-sub-tuition-status">
+              Tuition Status:
+              <select id="select-sub-tuition-status" aria-label="Tuition Status" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.35rem 0.55rem; font-size: 0.78rem;">
+                <option value="unpaid">پرداخت نشده (unpaid)</option>
+                <option value="paid">پرداخت شده (paid)</option>
+                <option value="pending">در انتظار تایید (pending)</option>
+                <option value="exempt">معاف از شهریه (exempt)</option>
+                <option value="partial">پرداخت ناقص / بیعانه (partial)</option>
+              </select>
+            </label>
+            <button id="btn-enroll-course" class="primary" style="font-weight: 600;">Enroll in Course (ثبت‌نام دانش‌آموز)</button>
+          </div>
+
+          <div style="overflow-x: auto;">
+            <table class="redis-table" aria-label="Course Subscriptions and Tuition">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Student (شاگرد)</th>
+                  <th>Course (دوره)</th>
+                  <th>Monthly Tuition (شهریه ماهانه)</th>
+                  <th>Tuition Status (وضعیت شهریه)</th>
+                  <th>Due Date (سررسید)</th>
+                  <th>Last Payment</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="subscriptions-tbody">
+                <tr><td colspan="8" style="color: var(--muted);">Loading subscriptions...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="sms-pattern-settings-panel">
+        <div class="panel-header">
+          <div class="panel-title">تنظیمات کد پترن‌های ملی‌پیامک و پیش‌نمایش پیامک نوبت (<code>/api/v1/admin/sms/patterns</code>)</div>
+          <span id="sms-appt-status-badge" style="font-size: 0.75rem; color: var(--emerald);">پترن نوبت مستقل از لاگین ۲مرحله‌ای</span>
+        </div>
+        <div class="panel-body">
+          <div class="controls-row" style="gap: 0.65rem; flex-wrap: wrap;">
+            <label for="input-sms-auth-body">
+              Auth 2FA BodyId:
+              <input id="input-sms-auth-body" aria-label="Auth 2FA BodyId" type="number" min="1" placeholder="مثلاً 500001" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.32rem 0.55rem; font-size: 0.78rem; width: 7.5rem;" />
+            </label>
+            <label for="input-sms-appt-body">
+              Appointment BodyId (نوبت):
+              <input id="input-sms-appt-body" aria-label="Appointment BodyId" type="number" min="1" placeholder="کد پترن نوبت" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.32rem 0.55rem; font-size: 0.78rem; width: 8rem;" />
+            </label>
+            <label for="input-sms-exam-body">
+              Exam Result BodyId (کارنامه):
+              <input id="input-sms-exam-body" aria-label="Exam Result BodyId" type="number" min="1" placeholder="کد پترن کارنامه" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.32rem 0.55rem; font-size: 0.78rem; width: 8rem;" />
+            </label>
+            <button id="btn-save-sms-patterns" class="primary">ذخیره کد پترن‌ها</button>
+          </div>
+          <div id="sms-appt-template-preview" style="margin-top: 0.65rem; padding: 0.65rem 0.8rem; background: var(--bg); border: 1px solid var(--border); border-radius: 0.45rem; font-size: 0.78rem; color: var(--muted); direction: rtl; text-align: right;">
+            در حال دریافت اطلاعات پترن پیامک نوبت...
+          </div>
+        </div>
+      </section>
     </div>
 
     <div style="display: flex; flex-direction: column; gap: 1.25rem;">
@@ -4704,10 +5795,179 @@ function renderDashboardHtml() {
       }
     });
 
+    async function refreshSubscriptions() {
+      const tbody = document.getElementById('subscriptions-tbody');
+      try {
+        const res = await fetch('/api/v1/subscriptions', {
+          headers: { 'X-Demo-Actor': getActorHeader() },
+        });
+        const json = await res.json();
+        if (!json.success || !json.data) return;
+
+        const subs = json.data;
+        document.getElementById('subscription-count').textContent = \`\${subs.length} subscription\${subs.length !== 1 ? 's' : ''}\`;
+
+        if (subs.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="8" style="color: var(--muted); text-align: center;">هیچ اشتراکی یافت نشد</td></tr>';
+          return;
+        }
+
+        const badgeStyles = {
+          paid: 'background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4);',
+          unpaid: 'background: rgba(244, 63, 94, 0.15); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.4);',
+          pending: 'background: rgba(245, 158, 11, 0.15); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.4);',
+          exempt: 'background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.4);',
+          partial: 'background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.4);',
+        };
+
+        tbody.innerHTML = subs
+          .map((sub) => {
+            const feeFormatted = (sub.monthly_fee || 0).toLocaleString('fa-IR') + ' تومان';
+            const badgeStyle = badgeStyles[sub.tuition_status] || badgeStyles.unpaid;
+            const nextStatus = sub.tuition_status === 'paid' ? 'unpaid' : 'paid';
+            const nextLabel = sub.tuition_status === 'paid' ? 'علامت به پرداخت نشده' : 'علامت به پرداخت شده ✓';
+
+            return \`<tr>
+              <td style="font-family: var(--font-mono); font-weight: 600;">#\${sub.id}</td>
+              <td>\${sub.student ? sub.student.name : 'شاگرد #' + sub.student_id}</td>
+              <td style="font-weight: 500;">\${sub.course ? sub.course.name : 'دوره #' + sub.course_id}</td>
+              <td style="font-family: var(--font-mono); color: var(--emerald); font-weight: 600;">\${feeFormatted}</td>
+              <td>
+                <span style="display: inline-block; padding: 0.15rem 0.5rem; border-radius: 0.25rem; font-size: 0.74rem; font-weight: 600; \${badgeStyle}">
+                  \${sub.tuition_status_label || sub.tuition_status}
+                </span>
+              </td>
+              <td style="font-family: var(--font-mono); font-size: 0.74rem; color: var(--muted);">\${sub.tuition_due_date || '—'}</td>
+              <td style="font-family: var(--font-mono); font-size: 0.74rem; color: var(--muted);">\${sub.last_payment_date || '—'}</td>
+              <td>
+                <button onclick="updateTuitionStatus(\${sub.id}, '\${nextStatus}')" style="font-size: 0.72rem; padding: 0.2rem 0.45rem;">
+                  \${nextLabel}
+                </button>
+              </td>
+            </tr>\`;
+          })
+          .join('');
+      } catch (e) {
+        tbody.innerHTML = \`<tr><td colspan="8" style="color: var(--rose);">خطا در دریافت لیست اشتراک‌ها: \${e.message}</td></tr>\`;
+      }
+    }
+
+    window.updateTuitionStatus = async function(id, status) {
+      try {
+        await fetch(\`/api/v1/subscriptions/\${id}/tuition\`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Demo-Actor': getActorHeader(),
+          },
+          body: JSON.stringify({ tuition_status: status }),
+        });
+        await refreshSubscriptions();
+      } catch (e) {
+        console.error('Failed to update tuition status', e);
+      }
+    };
+
+    document.getElementById('select-sub-course').addEventListener('change', (e) => {
+      const opt = e.target.options[e.target.selectedIndex];
+      if (opt && opt.dataset.fee) {
+        document.getElementById('input-sub-fee').value = opt.dataset.fee;
+      }
+    });
+
+    document.getElementById('btn-enroll-course').addEventListener('click', async () => {
+      const studentId = parseInt(document.getElementById('select-sub-student').value, 10);
+      const courseId = parseInt(document.getElementById('select-sub-course').value, 10);
+      const monthlyFee = parseInt(document.getElementById('input-sub-fee').value, 10);
+      const tuitionStatus = document.getElementById('select-sub-tuition-status').value;
+
+      try {
+        const res = await fetch(\`/api/v1/courses/\${courseId}/enroll\`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Demo-Actor': getActorHeader(),
+          },
+          body: JSON.stringify({
+            student_id: studentId,
+            monthly_fee: monthlyFee,
+            tuition_status: tuitionStatus,
+          }),
+        });
+        const json = await res.json();
+        if (!json.success && json.error) {
+          alert('خطا: ' + json.error.message);
+        } else {
+          await refreshSubscriptions();
+        }
+      } catch (e) {
+        console.error('Enroll failed', e);
+      }
+    });
+
+    async function refreshSmsPatternsAndPreview() {
+      const adminHeader = { 'X-Demo-Actor': JSON.stringify({ role: 'admin', sub: 1 }) };
+      try {
+        const [patRes, prevRes] = await Promise.all([
+          fetch('/api/v1/admin/sms/patterns', { headers: adminHeader }),
+          fetch('/api/v1/appointments/sms/preview?week_date=2026-10-24', { headers: adminHeader }),
+        ]);
+        const patJson = await patRes.json();
+        const prevJson = await prevRes.json();
+        if (patJson.success && patJson.data) {
+          document.getElementById('input-sms-auth-body').value = patJson.data.auth_body_id || '';
+          document.getElementById('input-sms-appt-body').value = patJson.data.appointment_body_id || '';
+          document.getElementById('input-sms-exam-body').value = patJson.data.exam_body_id || '';
+          const apptPat = patJson.data.patterns?.appointment_reminder;
+          const badge = document.getElementById('sms-appt-status-badge');
+          if (apptPat?.is_configured) {
+            badge.textContent = \`پترن نوبت فعال: #\${apptPat.body_id} (منبع: \${apptPat.source})\`;
+            badge.style.color = 'var(--emerald)';
+          } else {
+            badge.textContent = 'کد پترن نوبت تنظیم نشده (ارسال متوقف می‌شود)';
+            badge.style.color = 'var(--amber)';
+          }
+        }
+        const previewEl = document.getElementById('sms-appt-template-preview');
+        const firstSample = (prevJson.data?.items || []).find((i) => i.sms_preview_text);
+        if (firstSample) {
+          previewEl.textContent = \`نمونه متن ارسالی به والد (\${firstSample.student_name}): \${firstSample.sms_preview_text}\`;
+        } else if (prevJson.data?.pattern?.template) {
+          previewEl.textContent = \`الگوی نوبت: \${prevJson.data.pattern.template}\`;
+        }
+      } catch (e) {
+        console.error('Failed to load SMS pattern settings', e);
+      }
+    }
+
+    document.getElementById('btn-save-sms-patterns').addEventListener('click', async () => {
+      const authVal = document.getElementById('input-sms-auth-body').value.trim();
+      const apptVal = document.getElementById('input-sms-appt-body').value.trim();
+      const examVal = document.getElementById('input-sms-exam-body').value.trim();
+      const res = await fetch('/api/v1/admin/sms/patterns', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Demo-Actor': JSON.stringify({ role: 'admin', sub: 1 }),
+        },
+        body: JSON.stringify({
+          auth_body_id: authVal ? Number(authVal) : null,
+          appointment_body_id: apptVal ? Number(apptVal) : null,
+          exam_body_id: examVal ? Number(examVal) : null,
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        await refreshSmsPatternsAndPreview();
+      }
+    });
+
     // Run initial requests on load so state is populated immediately
     callPublicEndpoint('/api/v1/public/courses');
     refreshClassroomsAndAuditLogs();
     refreshStaffActivityLogs();
+    refreshSubscriptions();
+    refreshSmsPatternsAndPreview();
   </script>
 </body>
 </html>`;
@@ -4865,6 +6125,66 @@ export function startServer(port = parseInt(process.env.PORT || '3000', 10)) {
       return;
     }
 
+    if (pathname === '/api/v1/admin/sms/patterns') {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        let parsedBody = {};
+        if (raw) {
+          try {
+            parsedBody = JSON.parse(raw);
+          } catch {
+            parsedBody = {};
+          }
+        }
+        let actor = { sub: 1, role: 'admin', instructor_id: null };
+        const rawActor = req.headers['x-demo-actor'];
+        if (typeof rawActor === 'string' && rawActor) {
+          try {
+            actor = JSON.parse(rawActor);
+          } catch {
+            // keep default admin actor
+          }
+        }
+        const result = handleSmsPatternEndpoint(ctx, method, urlObj, parsedBody, actor);
+        res.writeHead(result.status, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(result.body));
+      });
+      return;
+    }
+
+    if (pathname.startsWith('/api/v1/appointments/sms/')) {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        let parsedBody = {};
+        if (raw) {
+          try {
+            parsedBody = JSON.parse(raw);
+          } catch {
+            parsedBody = {};
+          }
+        }
+        let actor = { sub: 1, role: 'admin', instructor_id: null };
+        const rawActor = req.headers['x-demo-actor'];
+        if (typeof rawActor === 'string' && rawActor) {
+          try {
+            actor = JSON.parse(rawActor);
+          } catch {
+            // keep default admin actor
+          }
+        }
+        const result = handleAppointmentSmsEndpoint(ctx, method, urlObj, parsedBody, actor);
+        res.writeHead(result.status, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(result.body));
+      });
+      return;
+    }
+
     if (pathname === '/api/v1/supporters' || pathname.startsWith('/api/v1/supporters/')) {
       let raw = '';
       req.on('data', (chunk) => {
@@ -4889,6 +6209,40 @@ export function startServer(port = parseInt(process.env.PORT || '3000', 10)) {
           }
         }
         const result = handleSupporterEndpoint(ctx, method, urlObj, parsedBody, actor);
+        res.writeHead(result.status, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(result.body));
+      });
+      return;
+    }
+
+    if (
+      pathname.startsWith('/api/v1/subscriptions') ||
+      pathname.match(/^\/api\/v1\/courses\/(\d+)\/enroll$/) ||
+      pathname.match(/^\/api\/v1\/students\/(\d+)\/subscriptions$/)
+    ) {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        let parsedBody = {};
+        if (raw) {
+          try {
+            parsedBody = JSON.parse(raw);
+          } catch {
+            parsedBody = {};
+          }
+        }
+        let actor = { sub: 1, role: 'admin', instructor_id: null };
+        const rawActor = req.headers['x-demo-actor'];
+        if (typeof rawActor === 'string' && rawActor) {
+          try {
+            actor = JSON.parse(rawActor);
+          } catch {
+            // keep default admin actor
+          }
+        }
+        const result = handleSubscriptionEndpoint(ctx, method, urlObj, parsedBody, actor);
         res.writeHead(result.status, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(result.body));
       });

@@ -9,15 +9,30 @@ final class ClientIp
 {
     public static function fromRequest(ServerRequestInterface $request): ?string
     {
-        $remote = trim((string) ($request->getServerParams()['REMOTE_ADDR'] ?? ''));
-        $header = trim((string) ($_ENV['TRUSTED_PROXY_HEADER'] ?? ''));
+        $remote = trim((string) ($request->getServerParams()['REMOTE_ADDR'] ?? $_SERVER['REMOTE_ADDR'] ?? ''));
+        $header = trim((string) ($_ENV['TRUSTED_PROXY_HEADER'] ?? getenv('TRUSTED_PROXY_HEADER') ?: ''));
         $trusted = self::trustedProxies();
 
         $client = $remote;
         if ($header !== '' && $remote !== '' && self::isTrusted($remote, $trusted)) {
-            $first = trim((string) (explode(',', $request->getHeaderLine($header))[0] ?? ''));
-            if ($first !== '') {
-                $client = $first;
+            $rawHeader = trim($request->getHeaderLine($header));
+            if ($rawHeader !== '') {
+                $parts = array_values(array_filter(
+                    array_map('trim', explode(',', $rawHeader)),
+                    static fn (string $ip): bool => $ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) !== false
+                ));
+
+                if ($parts !== []) {
+                    // Walk right-to-left skipping trusted proxies so left-side client-spoofed IPs cannot override the real edge IP.
+                    $resolved = null;
+                    for ($i = count($parts) - 1; $i >= 0; $i--) {
+                        if (!self::isTrusted($parts[$i], $trusted)) {
+                            $resolved = $parts[$i];
+                            break;
+                        }
+                    }
+                    $client = $resolved ?? $parts[0];
+                }
             }
         }
 
@@ -31,8 +46,8 @@ final class ClientIp
     /** @return list<string> */
     private static function trustedProxies(): array
     {
-        $raw = (string) ($_ENV['TRUSTED_PROXIES'] ?? '');
-        return array_values(array_filter(array_map('trim', explode(',', $raw)), static fn ($v) => $v !== ''));
+        $raw = (string) ($_ENV['TRUSTED_PROXIES'] ?? getenv('TRUSTED_PROXIES') ?: '');
+        return array_values(array_filter(array_map('trim', explode(',', $raw)), static fn (string $v): bool => $v !== ''));
     }
 
     private static function isTrusted(string $ip, array $cidrs): bool

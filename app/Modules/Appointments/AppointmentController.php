@@ -334,6 +334,11 @@ class AppointmentController
             $validator->arrayList('student_ids', 'لیست شناسه دانش‌آموزان', $body['student_ids'], true);
         }
 
+        $rawBodyId = $body['body_id'] ?? $body['pattern_body_id'] ?? $body['pattern_id'] ?? null;
+        if ($rawBodyId !== null && $rawBodyId !== '') {
+            $validator->positiveInt('body_id', 'کد پترن ملی‌پیامک', $rawBodyId);
+        }
+
         if (!$validator->passes()) {
             $response->getBody()->write(json_encode([
                 'success'    => false,
@@ -353,6 +358,8 @@ class AppointmentController
         $operationId = isset($body['operation_id']) && is_string($body['operation_id'])
             ? $body['operation_id']
             : (isset($body['idempotency_key']) && is_string($body['idempotency_key']) ? $body['idempotency_key'] : null);
+        $overrideBodyId = ($rawBodyId !== null && $rawBodyId !== '') ? (int) $rawBodyId : null;
+        $savePattern = !empty($body['save_pattern']);
 
         try {
             $result = $this->service->sendSms(
@@ -360,7 +367,9 @@ class AppointmentController
                 (string) $mode,
                 $studentIds,
                 isset($decoded->sub) ? (int) $decoded->sub : null,
-                $operationId
+                $operationId,
+                $overrideBodyId,
+                $savePattern
             );
         } catch (RateLimitedException $e) {
             $response->getBody()->write(json_encode([

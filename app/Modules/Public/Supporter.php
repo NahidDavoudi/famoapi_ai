@@ -11,7 +11,7 @@ class Supporter
         \App\Modules\Supporters\Supporter::ensureProfileColumns();
         $db = Database::getConnection();
         $stmt = $db->prepare(
-            'SELECT id, name, grade, field, description, avatar FROM supporters'
+            'SELECT id, name, grade, field, description, avatar FROM supporters ORDER BY id ASC'
         );
         $stmt->execute();
         return $stmt->fetchAll();

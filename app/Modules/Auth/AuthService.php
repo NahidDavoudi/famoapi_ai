@@ -4,6 +4,7 @@ namespace App\Modules\Auth;
 
 use App\Core\Auth;
 use App\Core\Database;
+use App\Core\JwtRevocation;
 use App\Core\PhoneNumber;
 use App\Core\RateLimitedException;
 use App\Core\RateLimiter;
@@ -44,6 +45,9 @@ class AuthService
         $user = User::findById($userId);
         if (!$user) {
             throw new \App\Core\ApiException('کاربر یافت نشد', 404, 'NOT_FOUND');
+        }
+        if (isset($user['is_active']) && (int) $user['is_active'] === 0) {
+            throw new \App\Core\ApiException('حساب کاربری غیرفعال است', 403, 'FORBIDDEN');
         }
 
         $studentId = $this->studentIdFor($user);
@@ -197,6 +201,28 @@ class AuthService
             // TODO: برای فعال‌سازی روی سایر نقش‌ها (مثلاً student)، این شرط را گسترش دهید
             $rawMobile = !empty($user['phone']) ? (string) $user['phone'] : (string) $user['username'];
             $mobile = PhoneNumber::normalize($rawMobile) ?? $rawMobile;
+            $cfg = RateLimiter::config();
+
+            $fwPhone = RateLimiter::attemptFixedWindow(
+                RateLimiter::key('sms:phone_win', $mobile),
+                (int) ($cfg['sms_phone_max'] ?? 3),
+                (int) ($cfg['sms_phone_window'] ?? 600)
+            );
+            if (!$fwPhone['allowed']) {
+                throw new RateLimitedException($fwPhone['retry_after'] > 0 ? $fwPhone['retry_after'] : (int) ($cfg['sms_phone_window'] ?? 600));
+            }
+
+            if ($ip !== null && $ip !== '') {
+                $fwIp = RateLimiter::attemptFixedWindow(
+                    RateLimiter::key('sms:ip_win', $ip),
+                    (int) ($cfg['sms_ip_max'] ?? 10),
+                    (int) ($cfg['sms_ip_window'] ?? 3600)
+                );
+                if (!$fwIp['allowed']) {
+                    throw new RateLimitedException($fwIp['retry_after'] > 0 ? $fwIp['retry_after'] : (int) ($cfg['sms_ip_window'] ?? 3600));
+                }
+            }
+
             $smsWindow = 3600;
             $phoneMax = max(1, (int) ($_ENV['AUTH_SMS_PHONE_HOURLY_MAX'] ?? 5));
             $phoneKey = RateLimiter::key('sms:phone', $mobile);
@@ -301,7 +327,7 @@ class AuthService
         ];
     }
 
-    public function changePassword(int $userId, string $currentPassword, string $newPassword): void
+    public function changePassword(int $userId, string $currentPassword, string $newPassword): array
     {
         $user = User::findById($userId);
         if (!$user) {
@@ -317,6 +343,11 @@ class AuthService
         }
 
         User::update($userId, ['password' => $newPassword]);
+
+        // Revoke all previously issued tokens, then issue a fresh session so the caller remains logged in.
+        JwtRevocation::revokeAllForUser($userId);
+
+        return $this->sessionForUser($userId);
     }
 
     public function updateProfile(int $userId, array $data): array

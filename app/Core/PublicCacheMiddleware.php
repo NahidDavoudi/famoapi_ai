@@ -33,6 +33,24 @@ class PublicCacheMiddleware implements MiddlewareInterface
         if ( str_starts_with($path, '/api/v1/public/exam-results/') ) {
             return $handler->handle($request);
         }
+
+        // Landing page roster endpoints (/supporters, /instructors, /courses) must reflect
+        // newly added records and uploaded profile photos immediately without browser/CDN staleness.
+        $isLiveLandingRoster = in_array($path, [
+            '/api/v1/public/supporters',
+            '/api/v1/public/instructors',
+            '/api/v1/public/courses',
+        ], true);
+        if ($isLiveLandingRoster) {
+            Cache::forget(self::GROUP, 'http_response:' . $path);
+            $response = $handler->handle($request);
+            return $response
+                ->withHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+                ->withHeader('Pragma', 'no-cache')
+                ->withHeader('X-Cache', 'BYPASS')
+                ->withAddedHeader('Vary', 'Origin');
+        }
+
         $query = $request->getUri()->getQuery();
         // Individual blog post detail increments views on each visit in BlogService::getPost
         $isPostDetailWithViewCounter = preg_match('#^/api/v1/public/blog/posts/[^/]+$#', $path) === 1;

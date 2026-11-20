@@ -8,6 +8,9 @@ namespace App\Core;
  * 1. Native PHP ext-redis (\Redis) when available
  * 2. Pure-PHP RESP2 stream socket client when ext-redis is not installed
  * 3. In-memory driver for unit testing without an external Redis daemon
+ *
+ * Includes downtime state tracking & critical error logging with error message
+ * and downtime duration whenever Redis becomes unreachable or recovers.
  */
 final class RedisClient
 {
@@ -16,6 +19,14 @@ final class RedisClient
     private static $socket = null;
     private static ?bool $connected = null;
     private static bool $useInMemory = false;
+    private static bool $simulateFailure = false;
+    private static string $simulatedError = 'Simulated Redis connection failure';
+    private static ?int $testNow = null;
+
+    private static ?string $lastError = null;
+    private static ?string $customLogPath = null;
+    private static ?string $customDowntimeStatePath = null;
+    private static bool $inLogging = false;
 
     /** @var array<string, array{value: string, exp: ?int}> */
     private static array $memoryStrings = [];
@@ -36,22 +47,92 @@ final class RedisClient
     public static function useInMemoryDriver(bool $enable = true): void
     {
         self::$useInMemory = $enable;
+        self::$simulateFailure = false;
         self::$memoryStrings = [];
         self::$memorySets = [];
         self::$connected = $enable ? true : null;
+        self::$lastError = null;
+    }
+
+    public static function simulateFailure(bool $enable = true, string $errorMessage = 'Connection refused'): void
+    {
+        self::$simulateFailure = $enable;
+        self::$simulatedError = $errorMessage;
+        if ($enable) {
+            self::$connected = false;
+            self::recordFailure('simulateFailure', $errorMessage);
+        } else {
+            self::$connected = self::$useInMemory ? true : null;
+            self::recordRecoveryIfNeeded();
+        }
+    }
+
+    public static function setTestNow(?int $timestamp): void
+    {
+        self::$testNow = $timestamp;
+    }
+
+    public static function setLogPath(?string $path): void
+    {
+        self::$customLogPath = $path;
+    }
+
+    public static function setDowntimeStatePath(?string $path): void
+    {
+        self::$customDowntimeStatePath = $path;
     }
 
     public static function reset(): void
     {
         self::disconnect();
         self::$useInMemory = false;
+        self::$simulateFailure = false;
+        self::$testNow = null;
+        self::$lastError = null;
+        self::$customLogPath = null;
+        self::$customDowntimeStatePath = null;
         self::$memoryStrings = [];
         self::$memorySets = [];
         self::$config = [];
     }
 
+    public static function isEnabled(): bool
+    {
+        if (self::$useInMemory) {
+            return true;
+        }
+        $cfg = self::resolvedConfig();
+        return !empty($cfg['enabled']);
+    }
+
+    public static function getLastError(): ?string
+    {
+        return self::$lastError;
+    }
+
+    /**
+     * @return array{down_since: float, last_error: string, last_logged_at: float}|null
+     */
+    public static function getDowntimeState(): ?array
+    {
+        $path = self::downtimeStatePath();
+        if (!is_file($path)) {
+            return null;
+        }
+        $raw = @file_get_contents($path);
+        if (!is_string($raw) || $raw === '') {
+            return null;
+        }
+        $decoded = json_decode($raw, true);
+        return is_array($decoded) && isset($decoded['down_since']) ? $decoded : null;
+    }
+
     public static function isAvailable(): bool
     {
+        if (self::$simulateFailure) {
+            return false;
+        }
+
         if (self::$useInMemory) {
             return true;
         }
@@ -67,16 +148,25 @@ final class RedisClient
         }
 
         self::$connected = self::connect($cfg);
+        if (self::$connected) {
+            self::recordRecoveryIfNeeded();
+        }
         return self::$connected;
     }
 
     public static function ping(): bool
     {
+        if (self::$simulateFailure) {
+            self::recordFailure('PING', self::$simulatedError);
+            return false;
+        }
+
         if (!self::isAvailable()) {
             return false;
         }
 
         if (self::$useInMemory) {
+            self::recordRecoveryIfNeeded();
             return true;
         }
 
@@ -84,19 +174,24 @@ final class RedisClient
             if (self::$extClient !== null) {
                 $res = @self::$extClient->ping();
                 if ($res === true || $res === '+PONG' || $res === 'PONG') {
+                    self::recordRecoveryIfNeeded();
                     return true;
                 }
+                self::recordFailure('PING', 'Unexpected ext-redis PING reply');
                 self::disconnect();
                 return false;
             }
 
             $res = self::sendCommand(['PING']);
             if ($res === 'PONG' || $res === true) {
+                self::recordRecoveryIfNeeded();
                 return true;
             }
+            self::recordFailure('PING', 'Unexpected RESP PING reply');
             self::disconnect();
             return false;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            self::recordFailure('PING', $e->getMessage());
             self::disconnect();
             return false;
         }
@@ -145,7 +240,9 @@ final class RedisClient
             }
             $res = self::sendCommand(['GET', $prefixed]);
             return $res === null ? null : (string) $res;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            self::recordFailure('GET', $e->getMessage());
+            self::disconnect();
             return null;
         }
     }
@@ -162,7 +259,7 @@ final class RedisClient
         if (self::$useInMemory) {
             self::$memoryStrings[$prefixed] = [
                 'value' => $value,
-                'exp'   => time() + $ttl,
+                'exp'   => self::now() + $ttl,
             ];
             return true;
         }
@@ -173,7 +270,9 @@ final class RedisClient
             }
             $res = self::sendCommand(['SETEX', $prefixed, (string) $ttl, $value]);
             return $res === 'OK' || $res === true;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            self::recordFailure('SETEX', $e->getMessage());
+            self::disconnect();
             return false;
         }
     }
@@ -204,7 +303,9 @@ final class RedisClient
             }
             $res = self::sendCommand(['SET', $prefixed, $value]);
             return $res === 'OK' || $res === true;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            self::recordFailure('SET', $e->getMessage());
+            self::disconnect();
             return false;
         }
     }
@@ -237,7 +338,9 @@ final class RedisClient
                 return (int) self::$extClient->del($prefixedKeys);
             }
             return (int) self::sendCommand(array_merge(['DEL'], $prefixedKeys));
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            self::recordFailure('DEL', $e->getMessage());
+            self::disconnect();
             return 0;
         }
     }
@@ -271,7 +374,9 @@ final class RedisClient
             }
             $res = self::sendCommand(['INCR', $prefixed]);
             return $res === null ? null : (int) $res;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            self::recordFailure('INCR', $e->getMessage());
+            self::disconnect();
             return null;
         }
     }
@@ -288,7 +393,7 @@ final class RedisClient
         if (self::$useInMemory) {
             self::evictExpiredMemoryKey($prefixed);
             if (isset(self::$memoryStrings[$prefixed])) {
-                self::$memoryStrings[$prefixed]['exp'] = time() + $ttl;
+                self::$memoryStrings[$prefixed]['exp'] = self::now() + $ttl;
                 return true;
             }
             return false;
@@ -299,7 +404,9 @@ final class RedisClient
                 return (bool) self::$extClient->expire($prefixed, $ttl);
             }
             return (int) self::sendCommand(['EXPIRE', $prefixed, (string) $ttl]) === 1;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            self::recordFailure('EXPIRE', $e->getMessage());
+            self::disconnect();
             return false;
         }
     }
@@ -321,7 +428,7 @@ final class RedisClient
             if ($exp === null) {
                 return -1;
             }
-            return max(0, $exp - time());
+            return max(0, $exp - self::now());
         }
 
         try {
@@ -329,8 +436,54 @@ final class RedisClient
                 return (int) self::$extClient->ttl($prefixed);
             }
             return (int) self::sendCommand(['TTL', $prefixed]);
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            self::recordFailure('TTL', $e->getMessage());
+            self::disconnect();
             return -2;
+        }
+    }
+
+    /**
+     * Evaluate a Lua script atomically against Redis (ext-redis, RESP2 socket, or in-memory mirror).
+     * Keys passed in $keys are automatically prefixed with REDIS_PREFIX.
+     *
+     * @param array<int, string> $keys
+     * @param array<int, scalar> $args
+     */
+    public static function eval(string $script, array $keys = [], array $args = []): mixed
+    {
+        if (!self::isAvailable()) {
+            return null;
+        }
+
+        $prefixedKeys = array_map([self::class, 'prefixKey'], $keys);
+        $strArgs = array_map(static fn ($v): string => (string) $v, $args);
+
+        if (self::$useInMemory) {
+            return self::evalInMemory($script, $prefixedKeys, $strArgs);
+        }
+
+        try {
+            if (self::$extClient !== null) {
+                $res = @self::$extClient->eval($script, array_merge($prefixedKeys, $strArgs), count($prefixedKeys));
+                if ($res === false) {
+                    $err = self::$extClient->getLastError() ?: 'Redis EVAL returned false';
+                    self::$extClient->clearLastError();
+                    self::recordFailure('EVAL', $err);
+                    return null;
+                }
+                return $res;
+            }
+
+            return self::sendCommand(array_merge(
+                ['EVAL', $script, (string) count($prefixedKeys)],
+                $prefixedKeys,
+                $strArgs
+            ));
+        } catch (\Throwable $e) {
+            self::recordFailure('EVAL', $e->getMessage());
+            self::disconnect();
+            return null;
         }
     }
 
@@ -361,7 +514,9 @@ final class RedisClient
                 return (int) self::$extClient->sAdd($prefixed, ...$members);
             }
             return (int) self::sendCommand(array_merge(['SADD', $prefixed], $members));
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            self::recordFailure('SADD', $e->getMessage());
+            self::disconnect();
             return 0;
         }
     }
@@ -388,16 +543,123 @@ final class RedisClient
             }
             $res = self::sendCommand(['SMEMBERS', $prefixed]);
             return is_array($res) ? array_values(array_map('strval', $res)) : [];
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            self::recordFailure('SMEMBERS', $e->getMessage());
+            self::disconnect();
             return [];
         }
+    }
+
+    /**
+     * In-memory evaluator mirroring Redis Lua semantics for fixed-window counters and core redis.call ops.
+     *
+     * @param array<int, string> $prefixedKeys
+     * @param array<int, string> $args
+     */
+    private static function evalInMemory(string $script, array $prefixedKeys, array $args): mixed
+    {
+        // Pattern 1: Fixed-window rate limiter script:
+        // INCR KEYS[1], conditional EXPIRE KEYS[1] ARGV[1], return {current, ttl}
+        if (str_contains($script, "redis.call('INCR'") || str_contains($script, 'redis.call("INCR"')) {
+            $prefixed = $prefixedKeys[0] ?? '';
+            if ($prefixed === '') {
+                return null;
+            }
+            $window = max(1, (int) ($args[0] ?? 60));
+
+            self::evictExpiredMemoryKey($prefixed);
+            $current = isset(self::$memoryStrings[$prefixed])
+                ? (int) self::$memoryStrings[$prefixed]['value']
+                : 0;
+            $exp = self::$memoryStrings[$prefixed]['exp'] ?? null;
+            $next = $current + 1;
+            self::$memoryStrings[$prefixed] = [
+                'value' => (string) $next,
+                'exp'   => $exp,
+            ];
+
+            $ttl = self::memoryTtlRaw($prefixed);
+            if ($next === 1 || $ttl < 0) {
+                self::$memoryStrings[$prefixed]['exp'] = self::now() + $window;
+                $ttl = $window;
+            }
+
+            // Also support optional lock key if script writes KEYS[2] when limit exceeded
+            if (isset($prefixedKeys[1]) && isset($args[1]) && isset($args[2])) {
+                $max = max(1, (int) $args[1]);
+                $lockout = max(1, (int) $args[2]);
+                if ($next >= $max) {
+                    $lockKey = $prefixedKeys[1];
+                    self::evictExpiredMemoryKey($lockKey);
+                    $existingLock = self::$memoryStrings[$lockKey]['value'] ?? null;
+                    $now = self::now();
+                    if ($existingLock === null || (int) $existingLock <= $now) {
+                        self::$memoryStrings[$lockKey] = [
+                            'value' => (string) ($now + $lockout),
+                            'exp'   => $now + $lockout,
+                        ];
+                    }
+                }
+            }
+
+            return [$next, max(0, $ttl)];
+        }
+
+        // Pattern 2: Simple GET / SET / SETEX / DEL single-op Lua scripts
+        if (str_contains($script, "redis.call('SETEX'") || str_contains($script, 'redis.call("SETEX"')) {
+            $prefixed = $prefixedKeys[0] ?? '';
+            $ttl = max(1, (int) ($args[0] ?? 1));
+            $value = (string) ($args[1] ?? '');
+            self::$memoryStrings[$prefixed] = [
+                'value' => $value,
+                'exp'   => self::now() + $ttl,
+            ];
+            return 'OK';
+        }
+
+        if (str_contains($script, "redis.call('GET'") || str_contains($script, 'redis.call("GET"')) {
+            $prefixed = $prefixedKeys[0] ?? '';
+            self::evictExpiredMemoryKey($prefixed);
+            return self::$memoryStrings[$prefixed]['value'] ?? null;
+        }
+
+        if (str_contains($script, "redis.call('DEL'") || str_contains($script, 'redis.call("DEL"')) {
+            $removed = 0;
+            foreach ($prefixedKeys as $k) {
+                if (isset(self::$memoryStrings[$k])) {
+                    unset(self::$memoryStrings[$k]);
+                    $removed++;
+                }
+            }
+            return $removed;
+        }
+
+        return null;
+    }
+
+    private static function memoryTtlRaw(string $prefixedKey): int
+    {
+        self::evictExpiredMemoryKey($prefixedKey);
+        if (!isset(self::$memoryStrings[$prefixedKey])) {
+            return -2;
+        }
+        $exp = self::$memoryStrings[$prefixedKey]['exp'];
+        if ($exp === null) {
+            return -1;
+        }
+        return max(0, $exp - self::now());
+    }
+
+    private static function now(): int
+    {
+        return self::$testNow ?? time();
     }
 
     private static function evictExpiredMemoryKey(string $prefixedKey): void
     {
         if (isset(self::$memoryStrings[$prefixedKey])) {
             $exp = self::$memoryStrings[$prefixedKey]['exp'];
-            if ($exp !== null && $exp <= time()) {
+            if ($exp !== null && $exp <= self::now()) {
                 unset(self::$memoryStrings[$prefixedKey]);
             }
         }
@@ -407,7 +669,110 @@ final class RedisClient
     {
         $cfg = self::resolvedConfig();
         $prefix = (string) ($cfg['prefix'] ?? 'famo:');
+        if ($prefix !== '' && str_starts_with($key, $prefix)) {
+            return $key;
+        }
         return $prefix . $key;
+    }
+
+    public static function recordFailure(string $context, string $errorMessage): void
+    {
+        self::$lastError = $errorMessage;
+        if (self::$inLogging || !self::isEnabled()) {
+            return;
+        }
+
+        self::$inLogging = true;
+        try {
+            $nowFloat = microtime(true);
+            $state = self::getDowntimeState();
+            $isInitialTransition = $state === null;
+            $downSince = $state['down_since'] ?? $nowFloat;
+            $lastLoggedAt = (float) ($state['last_logged_at'] ?? 0.0);
+            $duration = round(max(0.0, $nowFloat - (float) $downSince), 3);
+
+            $newState = [
+                'down_since'     => $downSince,
+                'last_error'     => $errorMessage,
+                'last_logged_at' => $isInitialTransition || ($nowFloat - $lastLoggedAt >= 60.0) ? $nowFloat : $lastLoggedAt,
+            ];
+            self::writeDowntimeState($newState);
+
+            // Log immediately on transition or every 60s while still unreachable
+            if ($isInitialTransition || ($nowFloat - $lastLoggedAt >= 60.0)) {
+                $msg = sprintf(
+                    '[%s] [CRITICAL] Redis unreachable (%s): error="%s" downtime_seconds=%.3f',
+                    gmdate('Y-m-d H:i:s'),
+                    $context,
+                    str_replace(["\r", "\n", '"'], [' ', ' ', "'"], $errorMessage),
+                    $duration
+                );
+                self::writeCriticalLog($msg);
+            }
+        } finally {
+            self::$inLogging = false;
+        }
+    }
+
+    public static function recordRecoveryIfNeeded(): void
+    {
+        if (self::$inLogging) {
+            return;
+        }
+
+        $state = self::getDowntimeState();
+        if ($state === null) {
+            return;
+        }
+
+        self::$inLogging = true;
+        try {
+            $duration = round(max(0.0, microtime(true) - (float) $state['down_since']), 3);
+            $lastError = (string) ($state['last_error'] ?? 'unknown');
+            $msg = sprintf(
+                '[%s] [CRITICAL] Redis recovered: downtime_seconds=%.3f last_error="%s"',
+                gmdate('Y-m-d H:i:s'),
+                $duration,
+                str_replace(["\r", "\n", '"'], [' ', ' ', "'"], $lastError)
+            );
+            self::writeCriticalLog($msg);
+            @unlink(self::downtimeStatePath());
+        } finally {
+            self::$inLogging = false;
+        }
+    }
+
+    public static function writeCriticalLog(string $line): void
+    {
+        error_log($line);
+        $logPath = self::$customLogPath ?? (__DIR__ . '/../../storage/logs/app.log');
+        $dir = dirname($logPath);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0750, true);
+        }
+        if (is_dir($dir)) {
+            @file_put_contents($logPath, $line . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+    }
+
+    private static function downtimeStatePath(): string
+    {
+        if (self::$customDowntimeStatePath !== null) {
+            return self::$customDowntimeStatePath;
+        }
+        return __DIR__ . '/../../storage/cache/redis_downtime.json';
+    }
+
+    private static function writeDowntimeState(array $state): void
+    {
+        $path = self::downtimeStatePath();
+        $dir = dirname($path);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0750, true);
+        }
+        if (is_dir($dir)) {
+            @file_put_contents($path, json_encode($state, JSON_UNESCAPED_UNICODE), LOCK_EX);
+        }
     }
 
     private static function resolvedConfig(): array
@@ -476,22 +841,29 @@ final class RedisClient
                 $host = $cfg['scheme'] === 'tls' ? 'tls://' . $cfg['host'] : $cfg['host'];
                 $ok = @$redis->connect($host, (int) $cfg['port'], (float) $cfg['timeout']);
                 if (!$ok) {
+                    $err = $redis->getLastError() ?: "Unable to connect to Redis {$host}:{$cfg['port']}";
+                    self::recordFailure('connect:ext-redis', $err);
                     return false;
                 }
                 if ($cfg['password'] !== null && $cfg['password'] !== '') {
                     if (!@$redis->auth((string) $cfg['password'])) {
+                        $err = $redis->getLastError() ?: 'Redis AUTH failed';
+                        self::recordFailure('auth:ext-redis', $err);
                         return false;
                     }
                 }
                 if ($cfg['database'] > 0) {
                     if (!@$redis->select((int) $cfg['database'])) {
+                        $err = $redis->getLastError() ?: 'Redis SELECT failed';
+                        self::recordFailure('select:ext-redis', $err);
                         return false;
                     }
                 }
                 self::$extClient = $redis;
                 return true;
-            } catch (\Throwable) {
+            } catch (\Throwable $e) {
                 self::$extClient = null;
+                self::recordFailure('connect:ext-redis', $e->getMessage());
                 return false;
             }
         }
@@ -503,6 +875,7 @@ final class RedisClient
             $errstr = '';
             $sock = @stream_socket_client($uri, $errno, $errstr, (float) $cfg['timeout']);
             if (!is_resource($sock)) {
+                self::recordFailure('connect:socket', $errstr !== '' ? "{$errstr} ({$errno})" : "Socket connection failed ({$errno})");
                 return false;
             }
             $sec = (int) floor((float) $cfg['timeout']);
@@ -513,6 +886,7 @@ final class RedisClient
             if ($cfg['password'] !== null && $cfg['password'] !== '') {
                 $authRes = self::sendCommand(['AUTH', (string) $cfg['password']]);
                 if ($authRes !== 'OK') {
+                    self::recordFailure('auth:socket', 'Redis AUTH failed');
                     self::disconnect();
                     return false;
                 }
@@ -520,12 +894,14 @@ final class RedisClient
             if ($cfg['database'] > 0) {
                 $selRes = self::sendCommand(['SELECT', (string) $cfg['database']]);
                 if ($selRes !== 'OK') {
+                    self::recordFailure('select:socket', 'Redis SELECT failed');
                     self::disconnect();
                     return false;
                 }
             }
             return true;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            self::recordFailure('connect:socket', $e->getMessage());
             self::disconnect();
             return false;
         }

@@ -61,6 +61,20 @@ class Cache
 
     public static function flushGroup(string $group): void
     {
+        if ($group === 'public') {
+            foreach ([
+                'supporters',
+                'instructors',
+                'courses',
+                'http_response:/api/v1/public/supporters',
+                'http_response:/api/v1/public/instructors',
+                'http_response:/api/v1/public/courses',
+                'http_response:/api/v1/public/blog/categories',
+            ] as $knownKey) {
+                self::forget($group, $knownKey);
+            }
+        }
+
         if (RedisClient::isAvailable()) {
             $groupSetKey = self::redisGroupSetKey($group);
             $members = RedisClient::sMembers($groupSetKey);
@@ -78,8 +92,21 @@ class Cache
         if (!is_dir($dir)) {
             return;
         }
-        foreach (glob($dir . '/*.cache') ?: [] as $file) {
-            @unlink($file);
+
+        $entries = @scandir($dir);
+        if (is_array($entries)) {
+            foreach ($entries as $entry) {
+                if ($entry === '.' || $entry === '..') {
+                    continue;
+                }
+                if (str_ends_with($entry, '.cache') || str_ends_with($entry, '.tmp')) {
+                    @unlink($dir . '/' . $entry);
+                }
+            }
+        } else {
+            foreach (@glob($dir . '/*.cache') ?: [] as $file) {
+                @unlink($file);
+            }
         }
     }
 

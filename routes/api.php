@@ -54,6 +54,7 @@ use App\Modules\Stats\ContentAccessMiddleware;
 use App\Modules\Stats\StatsController;
 use App\Modules\Stats\StatsService;
 use App\Modules\ActivityLogs\ActivityLogController;
+use App\Modules\Settings\SmsSettingsController;
 use App\Modules\Threads\SupporterThreadController;
 use App\Modules\Threads\ThreadController;
 use App\Modules\Threads\ThreadService;
@@ -64,6 +65,12 @@ use Slim\Exception\HttpNotFoundException;
 
 return function (App $app) {
     $authMiddleware = new AuthMiddleware();
+    $authRateLimit = \App\Core\RateLimitMiddleware::forAuthenticatedUser();
+    $publicIpLimit = \App\Core\RateLimitMiddleware::forPublicIp();
+    $publicExamLimit = \App\Core\RateLimitMiddleware::forPublicExam();
+    $authAttemptLimit = \App\Core\RateLimitMiddleware::forAuthAttempt();
+    $smsIpLimit = \App\Core\RateLimitMiddleware::forSmsEndpoint();
+    $smsShareIpLimit = \App\Core\RateLimitMiddleware::forSmsEndpoint('send_sms');
     $requireAdmin = new Authorization('admin');
     $requireSupporter = new Authorization('supporter');
     $requireTeacher = new Authorization('teacher');
@@ -97,6 +104,7 @@ return function (App $app) {
     $broadcastController = new BroadcastController(new BroadcastService());
     $statsController = new StatsController(new StatsService());
     $activityLogController = new ActivityLogController();
+    $smsSettingsController = new SmsSettingsController();
     $requireContentAccess = new ContentAccessMiddleware();
 
     // Health
@@ -132,20 +140,20 @@ return function (App $app) {
     $app->get('/api/v1/health', $healthHandler);
 
     // Auth
-    $app->post('/api/v1/auth/login', [$authController, 'login']);
-    $app->post('/api/v1/auth/register', [$authController, 'register']);
-    $app->post('/api/v1/auth/verify-2fa', [$authController, 'verify2fa']);
-    $app->get('/api/v1/auth/me', [$authController, 'me'])->add($authMiddleware);
-    $app->post('/api/v1/auth/change-password', [$authController, 'changePassword'])->add($authMiddleware);
-    $app->put('/api/v1/auth/profile', [$authController, 'updateProfile'])->add($authMiddleware);
-    // Logout only clears the shared auth cookie and must work for expired sessions.
-    $app->post('/api/v1/auth/logout', [$authController, 'logout']);
+    $app->post('/api/v1/auth/login', [$authController, 'login'])->add($authAttemptLimit);
+    $app->post('/api/v1/auth/register', [$authController, 'register'])->add($publicIpLimit);
+    $app->post('/api/v1/auth/verify-2fa', [$authController, 'verify2fa'])->add($authAttemptLimit);
+    $app->get('/api/v1/auth/me', [$authController, 'me'])->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/auth/change-password', [$authController, 'changePassword'])->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/auth/profile', [$authController, 'updateProfile'])->add($authRateLimit)->add($authMiddleware);
+    // Logout clears the shared auth cookie and blacklists the active JWT (must work for expired cookies too).
+    $app->post('/api/v1/auth/logout', [$authController, 'logout'])->add($publicIpLimit);
 
     // Telegram Login Widget handoff (public; no JWT, no bot service key).
-    $app->post('/api/v1/auth/telegram/verify', [$telegramAuthController, 'verify']);
-    $app->post('/api/v1/auth/telegram/register', [$telegramAuthController, 'register']);
-    $app->post('/api/v1/auth/telegram/link', [$telegramAuthController, 'link']);
-    $app->post('/api/v1/auth/telegram/verify-2fa', [$telegramAuthController, 'verify2fa']);
+    $app->post('/api/v1/auth/telegram/verify', [$telegramAuthController, 'verify'])->add($publicIpLimit);
+    $app->post('/api/v1/auth/telegram/register', [$telegramAuthController, 'register'])->add($publicIpLimit);
+    $app->post('/api/v1/auth/telegram/link', [$telegramAuthController, 'link'])->add($authAttemptLimit);
+    $app->post('/api/v1/auth/telegram/verify-2fa', [$telegramAuthController, 'verify2fa'])->add($authAttemptLimit);
 
     // Public
     $app->group('/api/v1/public', function ($group) use ($publicController, $blogController) {
@@ -158,94 +166,95 @@ return function (App $app) {
         $group->get('/blog/categories/{category}/posts', [$blogController, 'getPostsByCategory']);
     })
         ->add(new \App\Core\PublicCacheMiddleware(300))
-        ->add(new \App\Core\RateLimitMiddleware('public:ip'));
+        ->add($publicIpLimit);
 
     // Public shared exam result link (exempt from PublicCacheMiddleware; stricter 20/min rate limit)
     $app->get('/api/v1/public/exam-results/{token}', [$examController, 'getPublicSharedResult'])
-        ->add(new \App\Core\RateLimitMiddleware('public:exam_result:ip', 20, 60));
+        ->add($publicExamLimit);
 
     // Dashboard (protected)
-    $app->get('/api/v1/dashboard/stats', [$dashboardController, 'stats'])->add($requireSupporter)->add($authMiddleware);
+    $app->get('/api/v1/dashboard/stats', [$dashboardController, 'stats'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
 
     // Blog (protected)
-    $app->get('/api/v1/blog/categories', [$blogController, 'getCategories'])->add($requireSupporter)->add($authMiddleware);
-    $app->get('/api/v1/blog/posts', [$blogController, 'getAllPosts'])->add($requireSupporter)->add($authMiddleware);
-    $app->get('/api/v1/blog/posts/{id:[0-9]+}', [$blogController, 'getPostById'])->add($requireSupporter)->add($authMiddleware);
-    $app->post('/api/v1/blog/posts', [$blogController, 'createPost'])->add($requireAdmin)->add($authMiddleware);
-    $app->put('/api/v1/blog/posts/{id:[0-9]+}', [$blogController, 'updatePost'])->add($requireAdmin)->add($authMiddleware);
-    $app->delete('/api/v1/blog/posts/{id:[0-9]+}', [$blogController, 'deletePost'])->add($requireAdmin)->add($authMiddleware);
+    $app->get('/api/v1/blog/categories', [$blogController, 'getCategories'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/blog/posts', [$blogController, 'getAllPosts'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/blog/posts/{id:[0-9]+}', [$blogController, 'getPostById'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/blog/posts', [$blogController, 'createPost'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/blog/posts/{id:[0-9]+}', [$blogController, 'updatePost'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/blog/posts/{id:[0-9]+}', [$blogController, 'deletePost'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
     // Students (protected)
-    $app->get('/api/v1/students/list', [$studentController, 'getList'])->add($requireSupporter)->add($authMiddleware);
-    $app->get('/api/v1/students/overview', [$studentController, 'overview'])->add($requireAdmin)->add($authMiddleware);
-    $app->get('/api/v1/students', [$studentController, 'list'])->add($requireSupporter)->add($authMiddleware);
-    $app->post('/api/v1/students', [$studentController, 'create'])->add($requireAdmin)->add($authMiddleware);
-    $app->get('/api/v1/students/{id:[0-9]+}', [$studentController, 'get'])->add($authMiddleware);
-    $app->put('/api/v1/students/{id:[0-9]+}', [$studentController, 'update'])->add($requireAdmin)->add($authMiddleware);
-    $app->delete('/api/v1/students/{id:[0-9]+}', [$studentController, 'delete'])->add($requireAdmin)->add($authMiddleware);
-    $app->post('/api/v1/students/{id:[0-9]+}/create-account', [$studentController, 'createAccount'])->add($requireAdmin)->add($authMiddleware);
-    $app->post('/api/v1/students/{id:[0-9]+}/reset-password', [$studentController, 'resetPassword'])->add($requireAdmin)->add($authMiddleware);
-    $app->post('/api/v1/students/{id:[0-9]+}/toggle-status', [$studentController, 'toggleStatus'])->add($requireAdmin)->add($authMiddleware);
-    $app->get('/api/v1/students/{id:[0-9]+}/analytics/summary', [$studentController, 'analyticsSummary'])->add($authMiddleware);
-    $app->get('/api/v1/students/{id:[0-9]+}/analytics/week-detail', [$studentController, 'analyticsWeekDetail'])->add($authMiddleware);
-    $app->get('/api/v1/students/{id:[0-9]+}/analytics/subject-stats', [$studentController, 'analyticsSubjectStats'])->add($authMiddleware);
-    $app->get('/api/v1/students/{id:[0-9]+}/analytics/exam-trend', [$studentController, 'analyticsExamTrend'])->add($authMiddleware);
-    $app->get('/api/v1/students/{studentId:[0-9]+}/parent-contacts', [$parentContactController, 'list'])->add($requireSupporter)->add($authMiddleware);
-    $app->post('/api/v1/students/{studentId:[0-9]+}/parent-contacts', [$parentContactController, 'create'])->add($requireAdmin)->add($authMiddleware);
-    $app->put('/api/v1/students/{studentId:[0-9]+}/parent-contacts/{id:[0-9]+}', [$parentContactController, 'update'])->add($requireAdmin)->add($authMiddleware);
-    $app->delete('/api/v1/students/{studentId:[0-9]+}/parent-contacts/{id:[0-9]+}', [$parentContactController, 'delete'])->add($requireAdmin)->add($authMiddleware);
+    $app->get('/api/v1/students/list', [$studentController, 'getList'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/students/overview', [$studentController, 'overview'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/students', [$studentController, 'list'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/students', [$studentController, 'create'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/students/{id:[0-9]+}', [$studentController, 'get'])->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/students/{id:[0-9]+}', [$studentController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/students/{id:[0-9]+}', [$studentController, 'delete'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/students/{id:[0-9]+}/create-account', [$studentController, 'createAccount'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/students/{id:[0-9]+}/reset-password', [$studentController, 'resetPassword'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/students/{id:[0-9]+}/toggle-status', [$studentController, 'toggleStatus'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/students/{id:[0-9]+}/analytics/summary', [$studentController, 'analyticsSummary'])->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/students/{id:[0-9]+}/analytics/week-detail', [$studentController, 'analyticsWeekDetail'])->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/students/{id:[0-9]+}/analytics/subject-stats', [$studentController, 'analyticsSubjectStats'])->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/students/{id:[0-9]+}/analytics/exam-trend', [$studentController, 'analyticsExamTrend'])->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/students/{studentId:[0-9]+}/parent-contacts', [$parentContactController, 'list'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/students/{studentId:[0-9]+}/parent-contacts', [$parentContactController, 'create'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/students/{studentId:[0-9]+}/parent-contacts/{id:[0-9]+}', [$parentContactController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/students/{studentId:[0-9]+}/parent-contacts/{id:[0-9]+}', [$parentContactController, 'delete'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
     // Courses (protected)
-    $app->get('/api/v1/courses', [$courseController, 'list'])->add($requireSupporter)->add($authMiddleware);
-    $app->post('/api/v1/courses', [$courseController, 'create'])->add($requireAdmin)->add($authMiddleware);
-    $app->get('/api/v1/courses/{id:[0-9]+}', [$courseController, 'get'])->add($authMiddleware);
-    $app->put('/api/v1/courses/{id:[0-9]+}', [$courseController, 'update'])->add($requireAdmin)->add($authMiddleware);
-    $app->delete('/api/v1/courses/{id:[0-9]+}', [$courseController, 'delete'])->add($requireAdmin)->add($authMiddleware);
+    $app->get('/api/v1/courses', [$courseController, 'list'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/courses', [$courseController, 'create'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/courses/{id:[0-9]+}', [$courseController, 'get'])->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/courses/{id:[0-9]+}', [$courseController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/courses/{id:[0-9]+}', [$courseController, 'delete'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
     // Course Subscriptions (protected)
-    $app->get('/api/v1/subscriptions', [$subscriptionController, 'list'])->add($authMiddleware);
-    $app->get('/api/v1/subscriptions/me', [$subscriptionController, 'mySubscriptions'])->add($authMiddleware);
-    $app->post('/api/v1/subscriptions', [$subscriptionController, 'create'])->add($authMiddleware);
-    $app->get('/api/v1/subscriptions/{id:[0-9]+}', [$subscriptionController, 'get'])->add($authMiddleware);
-    $app->put('/api/v1/subscriptions/{id:[0-9]+}', [$subscriptionController, 'update'])->add($requireSupporter)->add($authMiddleware);
-    $app->patch('/api/v1/subscriptions/{id:[0-9]+}/status', [$subscriptionController, 'updateStatus'])->add($requireSupporter)->add($authMiddleware);
-    $app->put('/api/v1/subscriptions/{id:[0-9]+}/status', [$subscriptionController, 'updateStatus'])->add($requireSupporter)->add($authMiddleware);
-    $app->delete('/api/v1/subscriptions/{id:[0-9]+}', [$subscriptionController, 'delete'])->add($authMiddleware);
-    $app->get('/api/v1/students/{id:[0-9]+}/subscriptions', [$subscriptionController, 'studentSubscriptions'])->add($authMiddleware);
+    $app->get('/api/v1/subscriptions', [$subscriptionController, 'list'])->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/subscriptions/me', [$subscriptionController, 'mySubscriptions'])->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/subscriptions', [$subscriptionController, 'create'])->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/courses/{id:[0-9]+}/enroll', [$subscriptionController, 'enrollCourse'])->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/subscriptions/{id:[0-9]+}', [$subscriptionController, 'get'])->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/subscriptions/{id:[0-9]+}', [$subscriptionController, 'update'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->patch('/api/v1/subscriptions/{id:[0-9]+}/status', [$subscriptionController, 'updateStatus'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/subscriptions/{id:[0-9]+}/status', [$subscriptionController, 'updateStatus'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->map(['PUT', 'PATCH'], '/api/v1/subscriptions/{id:[0-9]+}/tuition', [$subscriptionController, 'updateTuition'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/subscriptions/{id:[0-9]+}', [$subscriptionController, 'delete'])->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/students/{id:[0-9]+}/subscriptions', [$subscriptionController, 'studentSubscriptions'])->add($authRateLimit)->add($authMiddleware);
 
     // Instructors (protected)
-    $app->get('/api/v1/instructors', [$instructorController, 'list'])->add($requireSupporter)->add($authMiddleware);
-    $app->post('/api/v1/instructors', [$instructorController, 'create'])->add($requireAdmin)->add($authMiddleware);
-    $app->get('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'get'])->add($authMiddleware);
-    $app->put('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'update'])->add($requireAdmin)->add($authMiddleware);
-    $app->patch('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'update'])->add($requireAdmin)->add($authMiddleware);
-    $app->post('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'update'])->add($requireAdmin)->add($authMiddleware);
-    $app->delete('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'delete'])->add($requireAdmin)->add($authMiddleware);
+    $app->get('/api/v1/instructors', [$instructorController, 'list'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/instructors', [$instructorController, 'create'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'get'])->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->patch('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/instructors/{id:[0-9]+}', [$instructorController, 'delete'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
     // Supporters (protected)
-    $app->get('/api/v1/supporters', [$supporterController, 'list'])->add($requireSupporter)->add($authMiddleware);
-    $app->get('/api/v1/supporters/missing-phone', [$supporterController, 'missingPhone'])->add($requireAdmin)->add($authMiddleware);
-    $app->post('/api/v1/supporters', [$supporterController, 'create'])->add($requireAdmin)->add($authMiddleware);
-    $app->get('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'get'])->add($requireSupporter)->add($authMiddleware);
-    $app->put('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'update'])->add($requireAdmin)->add($authMiddleware);
-    $app->patch('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'update'])->add($requireAdmin)->add($authMiddleware);
-    $app->post('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'update'])->add($requireAdmin)->add($authMiddleware);
-    $app->post('/api/v1/supporters/{id:[0-9]+}/avatar', [$supporterController, 'uploadAvatar'])->add($requireAdmin)->add($authMiddleware);
-    $app->delete('/api/v1/supporters/{id:[0-9]+}/avatar', [$supporterController, 'deleteAvatar'])->add($requireAdmin)->add($authMiddleware);
-    $app->delete('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'delete'])->add($requireAdmin)->add($authMiddleware);
+    $app->get('/api/v1/supporters', [$supporterController, 'list'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/supporters/missing-phone', [$supporterController, 'missingPhone'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/supporters', [$supporterController, 'create'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'get'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->patch('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/supporters/{id:[0-9]+}/avatar', [$supporterController, 'uploadAvatar'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/supporters/{id:[0-9]+}/avatar', [$supporterController, 'deleteAvatar'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'delete'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
     // Student → supporter assignments (canonical). Admin only.
-    $app->get('/api/v1/assignments/students', [$assignmentController, 'listStudents'])->add($requireAdmin)->add($authMiddleware);
-    $app->post('/api/v1/assignments', [$assignmentController, 'assign'])->add($requireAdmin)->add($authMiddleware);
-    $app->delete('/api/v1/assignments/{studentId:[0-9]+}', [$assignmentController, 'unassign'])->add($requireAdmin)->add($authMiddleware);
-    $app->get('/api/v1/assignments/supporters/{supporterId:[0-9]+}/students', [$assignmentController, 'supporterStudents'])->add($requireAdmin)->add($authMiddleware);
-    $app->get('/api/v1/assignments/history/{studentId:[0-9]+}', [$assignmentController, 'history'])->add($requireAdmin)->add($authMiddleware);
-    $app->post('/api/v1/assignments/initial-fill', [$assignmentController, 'initialFill'])->add($requireAdmin)->add($authMiddleware);
+    $app->get('/api/v1/assignments/students', [$assignmentController, 'listStudents'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/assignments', [$assignmentController, 'assign'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/assignments/{studentId:[0-9]+}', [$assignmentController, 'unassign'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/assignments/supporters/{supporterId:[0-9]+}/students', [$assignmentController, 'supporterStudents'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/assignments/history/{studentId:[0-9]+}', [$assignmentController, 'history'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/assignments/initial-fill', [$assignmentController, 'initialFill'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
     // ─────────────────────────────────────────────────────────────
     // Bot gateway. Service-key protected, never JWT.
-    // Split into two groups because some endpoints act "on behalf of" a
-    // linked account (need actor headers), and some don't.
+    // Exempt from all per-IP rate limits (server-to-server single IP).
     // ─────────────────────────────────────────────────────────────
 
     // Group 1: service-key only (no actor). Used for ping, resolve, link,
@@ -307,84 +316,88 @@ return function (App $app) {
         ->add(new BotServiceMiddleware());
 
     // Exams (protected)
-    $app->get('/api/v1/exams', [$examController, 'getAll'])->add($authMiddleware);
-    $app->get('/api/v1/exams/dates', [$examController, 'getDates'])->add($authMiddleware);
-    $app->get('/api/v1/exams/students', [$examController, 'getStudents'])->add($requireSupporter)->add($authMiddleware);
-    $app->get('/api/v1/exams/details', [$examController, 'getDetails'])->add($authMiddleware);
-    $app->put('/api/v1/exams/comments', [$examController, 'upsertComment'])->add($requireStaff)->add($authMiddleware);
-    $app->get('/api/v1/exams/share-links', [$examController, 'listShareLinks'])->add($requireSupporter)->add($authMiddleware);
-    $app->post('/api/v1/exams/share-links', [$examController, 'createShareLink'])->add($requireSupporter)->add($authMiddleware);
-    $app->post('/api/v1/exams/share-links/send-sms', [$examController, 'sendShareLinkSms'])->add($requireSupporter)->add($authMiddleware);
-    $app->delete('/api/v1/exams/share-links/{id:[0-9]+}', [$examController, 'revokeShareLink'])->add($requireSupporter)->add($authMiddleware);
-    $app->post('/api/v1/exams/share-links/{id:[0-9]+}/revoke', [$examController, 'revokeShareLink'])->add($requireSupporter)->add($authMiddleware);
-    $app->post('/api/v1/exams', [$examController, 'save'])->add($requireAdmin)->add($authMiddleware);
+    $app->get('/api/v1/exams', [$examController, 'getAll'])->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/exams/dates', [$examController, 'getDates'])->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/exams/students', [$examController, 'getStudents'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/exams/details', [$examController, 'getDetails'])->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/exams/comments', [$examController, 'upsertComment'])->add($requireStaff)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/exams/share-links', [$examController, 'listShareLinks'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/exams/share-links', [$examController, 'createShareLink'])->add($smsShareIpLimit)->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/exams/share-links/send-sms', [$examController, 'sendShareLinkSms'])->add($smsIpLimit)->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/exams/share-links/{id:[0-9]+}', [$examController, 'revokeShareLink'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/exams/share-links/{id:[0-9]+}/revoke', [$examController, 'revokeShareLink'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/exams', [$examController, 'save'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
     // Weekly Plans (temporary: admin-only while the planner is being migrated)
-    $app->get('/api/v1/plans', [$planController, 'get'])->add($requireAdmin)->add($authMiddleware);
-    $app->post('/api/v1/plans', [$planController, 'save'])->add($requireAdmin)->add($authMiddleware);
-    $app->delete('/api/v1/plans', [$planController, 'clear'])->add($requireAdmin)->add($authMiddleware);
-    $app->get('/api/v1/plans/{id:[0-9]+}', [$planController, 'getOne'])->add($requireAdmin)->add($authMiddleware);
-    $app->put('/api/v1/plans/{id:[0-9]+}', [$planController, 'update'])->add($requireAdmin)->add($authMiddleware);
-    $app->delete('/api/v1/plans/{id:[0-9]+}', [$planController, 'deleteOne'])->add($requireAdmin)->add($authMiddleware);
-    $app->get('/api/v1/plans/templates', [$planController, 'getTemplates'])->add($requireAdmin)->add($authMiddleware);
-    $app->get('/api/v1/plans/templates/{id:[0-9]+}', [$planController, 'getTemplate'])->add($requireAdmin)->add($authMiddleware);
-    $app->post('/api/v1/plans/templates', [$planController, 'saveTemplate'])->add($requireAdmin)->add($authMiddleware);
-    $app->delete('/api/v1/plans/templates/{id:[0-9]+}', [$planController, 'deleteTemplate'])->add($requireAdmin)->add($authMiddleware);
-    $app->post('/api/v1/plans/templates/{id:[0-9]+}/apply', [$planController, 'applyTemplate'])->add($requireAdmin)->add($authMiddleware);
+    $app->get('/api/v1/plans', [$planController, 'get'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/plans', [$planController, 'save'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/plans', [$planController, 'clear'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/plans/{id:[0-9]+}', [$planController, 'getOne'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/plans/{id:[0-9]+}', [$planController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/plans/{id:[0-9]+}', [$planController, 'deleteOne'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/plans/templates', [$planController, 'getTemplates'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/plans/templates/{id:[0-9]+}', [$planController, 'getTemplate'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/plans/templates', [$planController, 'saveTemplate'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/plans/templates/{id:[0-9]+}', [$planController, 'deleteTemplate'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/plans/templates/{id:[0-9]+}/apply', [$planController, 'applyTemplate'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
     // Reports (protected)
-    $app->get('/api/v1/reports', [$reportController, 'list'])->add($requireSupporter)->add($authMiddleware);
-    $app->get('/api/v1/reports/stats', [$reportController, 'stats'])->add($requireSupporter)->add($authMiddleware);
+    $app->get('/api/v1/reports', [$reportController, 'list'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/reports/stats', [$reportController, 'stats'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
 
     // Files (protected)
-    $app->get('/api/v1/files', [$fileController, 'list'])->add($authMiddleware);
-    $app->post('/api/v1/files/upload', [$fileController, 'upload'])->add($authMiddleware);
-    $app->get('/api/v1/files/{id:[0-9]+}/download', [$fileController, 'download'])->add($authMiddleware);
-    $app->delete('/api/v1/files/{id:[0-9]+}', [$fileController, 'delete'])->add($authMiddleware);
+    $app->get('/api/v1/files', [$fileController, 'list'])->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/files/upload', [$fileController, 'upload'])->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/files/{id:[0-9]+}/download', [$fileController, 'download'])->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/files/{id:[0-9]+}', [$fileController, 'delete'])->add($authRateLimit)->add($authMiddleware);
 
     // Topics (protected)
-    $app->get('/api/v1/topics', [$topicController, 'getChildren'])->add($requireSupporter)->add($authMiddleware);
-    $app->get('/api/v1/topics/{parent_id:[0-9]+}', [$topicController, 'getChildren'])->add($requireSupporter)->add($authMiddleware);
-    $app->get('/api/v1/topics/search', [$topicController, 'search'])->add($requireSupporter)->add($authMiddleware);
-    $app->get('/api/v1/topics/{id:[0-9]+}/path', [$topicController, 'getPath'])->add($requireSupporter)->add($authMiddleware);
-    $app->get('/api/v1/subjects/{grade:[0-9]+}', [$topicController, 'getSubjectsForGrade'])->add($requireSupporter)->add($authMiddleware);
+    $app->get('/api/v1/topics', [$topicController, 'getChildren'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/topics/{parent_id:[0-9]+}', [$topicController, 'getChildren'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/topics/search', [$topicController, 'search'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/topics/{id:[0-9]+}/path', [$topicController, 'getPath'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/subjects/{grade:[0-9]+}', [$topicController, 'getSubjectsForGrade'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
 
     // Appointments (protected)
-    $app->get('/api/v1/appointments', [$appointmentController, 'list'])->add($requireSupporter)->add($authMiddleware);
-    $app->post('/api/v1/appointments', [$appointmentController, 'create'])->add($requireSupporter)->add($authMiddleware);
-    $app->map(['PUT', 'PATCH'], '/api/v1/appointments/{id:[0-9]+}', [$appointmentController, 'update'])->add($requireSupporter)->add($authMiddleware);
-    $app->put('/api/v1/appointments/{id:[0-9]+}/status', [$appointmentController, 'updateStatus'])->add($requireSupporter)->add($authMiddleware);
-    $app->delete('/api/v1/appointments/{id:[0-9]+}', [$appointmentController, 'delete'])->add($requireSupporter)->add($authMiddleware);
+    $app->get('/api/v1/appointments', [$appointmentController, 'list'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/appointments', [$appointmentController, 'create'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->map(['PUT', 'PATCH'], '/api/v1/appointments/{id:[0-9]+}', [$appointmentController, 'update'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/appointments/{id:[0-9]+}/status', [$appointmentController, 'updateStatus'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/appointments/{id:[0-9]+}', [$appointmentController, 'delete'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
 
     // Appointment Weekly SMS Reminders (admin only)
-    $app->get('/api/v1/appointments/sms/preview', [$appointmentController, 'previewSms'])->add($requireAdmin)->add($authMiddleware);
-    $app->post('/api/v1/appointments/sms/send', [$appointmentController, 'sendSms'])->add($requireAdmin)->add($authMiddleware);
-    $app->get('/api/v1/appointments/sms/log', [$appointmentController, 'smsLog'])->add($requireAdmin)->add($authMiddleware);
+    $app->get('/api/v1/appointments/sms/preview', [$appointmentController, 'previewSms'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/appointments/sms/send', [$appointmentController, 'sendSms'])->add($smsIpLimit)->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/appointments/sms/log', [$appointmentController, 'smsLog'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
     // Attendance (protected)
-    $app->get('/api/v1/attendance', [$attendanceController, 'list'])->add($requireSupporter)->add($authMiddleware);
-    $app->get('/api/v1/attendance/print', [$attendanceController, 'printList'])->add($requireSupporter)->add($authMiddleware);
-    $app->put('/api/v1/attendance/entries', [$attendanceController, 'upsertEntry'])->add($requireSupporter)->add($authMiddleware);
-    $app->patch('/api/v1/attendance/{id:[0-9]+}/times', [$attendanceController, 'setTime'])->add($requireSupporter)->add($authMiddleware);
-    $app->post('/api/v1/attendance/guests', [$attendanceController, 'addGuest'])->add($requireSupporter)->add($authMiddleware);
+    $app->get('/api/v1/attendance', [$attendanceController, 'list'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/attendance/print', [$attendanceController, 'printList'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/attendance/entries', [$attendanceController, 'upsertEntry'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->patch('/api/v1/attendance/{id:[0-9]+}/times', [$attendanceController, 'setTime'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/attendance/guests', [$attendanceController, 'addGuest'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
 
     // Tutoring (teacher panel + live board)
-    $app->get('/api/v1/tutoring/me', [$tutoringController, 'me'])->add($requireTeacher)->add($authMiddleware);
-    $app->put('/api/v1/tutoring/status', [$tutoringController, 'setStatus'])->add($requireTeacher)->add($authMiddleware);
-    $app->get('/api/v1/tutoring/students', [$tutoringController, 'students'])->add($requireTeacher)->add($authMiddleware);
-    $app->post('/api/v1/tutoring/sessions', [$tutoringController, 'startSession'])->add($requireTeacher)->add($authMiddleware);
-    $app->post('/api/v1/tutoring/sessions/{id:[0-9]+}/end', [$tutoringController, 'endSession'])->add($requireTeacher)->add($authMiddleware);
-    $app->get('/api/v1/tutoring/board', [$tutoringController, 'board'])->add($requireStaff)->add($authMiddleware);
-    $app->get('/api/v1/tutoring/classrooms', [$tutoringController, 'listClassrooms'])->add($requireStaff)->add($authMiddleware);
-    $app->post('/api/v1/tutoring/classrooms', [$tutoringController, 'createClassroom'])->add($requireStaff)->add($authMiddleware);
-    $app->get('/api/v1/tutoring/classrooms/audit-logs', [$tutoringController, 'listClassroomAuditLogs'])->add($requireStaff)->add($authMiddleware);
-    $app->get('/api/v1/tutoring/classrooms/{id:[0-9]+}/audit-logs', [$tutoringController, 'listClassroomAuditLogs'])->add($requireStaff)->add($authMiddleware);
-    $app->map(['PUT', 'PATCH'], '/api/v1/tutoring/classrooms/{id:[0-9]+}', [$tutoringController, 'updateClassroom'])->add($requireStaff)->add($authMiddleware);
-    $app->delete('/api/v1/tutoring/classrooms/{id:[0-9]+}', [$tutoringController, 'deleteClassroom'])->add($requireStaff)->add($authMiddleware);
+    $app->get('/api/v1/tutoring/me', [$tutoringController, 'me'])->add($requireTeacher)->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/tutoring/status', [$tutoringController, 'setStatus'])->add($requireTeacher)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/tutoring/students', [$tutoringController, 'students'])->add($requireTeacher)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/tutoring/sessions', [$tutoringController, 'startSession'])->add($requireTeacher)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/tutoring/sessions/{id:[0-9]+}/end', [$tutoringController, 'endSession'])->add($requireTeacher)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/tutoring/board', [$tutoringController, 'board'])->add($requireStaff)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/tutoring/classrooms', [$tutoringController, 'listClassrooms'])->add($requireStaff)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/tutoring/classrooms', [$tutoringController, 'createClassroom'])->add($requireStaff)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/tutoring/classrooms/audit-logs', [$tutoringController, 'listClassroomAuditLogs'])->add($requireStaff)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/tutoring/classrooms/{id:[0-9]+}/audit-logs', [$tutoringController, 'listClassroomAuditLogs'])->add($requireStaff)->add($authRateLimit)->add($authMiddleware);
+    $app->map(['PUT', 'PATCH'], '/api/v1/tutoring/classrooms/{id:[0-9]+}', [$tutoringController, 'updateClassroom'])->add($requireStaff)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/tutoring/classrooms/{id:[0-9]+}', [$tutoringController, 'deleteClassroom'])->add($requireStaff)->add($authRateLimit)->add($authMiddleware);
 
     // Admin activity logs (monitor actions of admins, supporters, and teachers)
-    $app->get('/api/v1/admin/activity-logs', [$activityLogController, 'list'])->add($requireAdmin)->add($authMiddleware);
-    $app->get('/api/v1/admin/activity-logs/stats', [$activityLogController, 'stats'])->add($requireAdmin)->add($authMiddleware);
+    $app->get('/api/v1/admin/activity-logs', [$activityLogController, 'list'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/admin/activity-logs/stats', [$activityLogController, 'stats'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+
+    // Admin SMS pattern settings (separate Melipayamak bodyId per purpose: auth_2fa, appointment_reminder, exam_result)
+    $app->get('/api/v1/admin/sms/patterns', [$smsSettingsController, 'getPatterns'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->map(['PUT', 'PATCH'], '/api/v1/admin/sms/patterns', [$smsSettingsController, 'updatePatterns'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
     // Admin statistics (admin JWT). Content reading has a separate permission.
     $app->group('/api/v1/admin/stats', function ($group) use ($statsController, $activityLogController, $requireContentAccess) {
@@ -397,7 +410,7 @@ return function (App $app) {
         $group->get('/students/{id:[0-9]+}/thread', [$statsController, 'thread'])->add($requireContentAccess);
         $group->get('/activity-logs', [$activityLogController, 'list']);
         $group->get('/activity-logs/stats', [$activityLogController, 'stats']);
-    })->add($requireAdmin)->add($authMiddleware);
+    })->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
     // Preflight OPTIONS catch-all
     $app->options('/{routes:.+}', function (Request $request, Response $response) {

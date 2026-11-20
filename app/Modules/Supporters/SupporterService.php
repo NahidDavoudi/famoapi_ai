@@ -6,6 +6,7 @@ use App\Core\ApiException;
 use App\Core\AssetUrl;
 use App\Core\Cache;
 use App\Core\Database;
+use App\Core\JwtRevocation;
 use App\Core\Pagination;
 use App\Core\PhoneNumber;
 use App\Core\Storage;
@@ -211,6 +212,13 @@ class SupporterService
             $scopes = $this->normalizeScopes([['field' => $field, 'grade' => $grade]]);
         }
 
+        $syncedActive = null;
+        if (array_key_exists('is_active', $data)) {
+            $rawActive = $data['is_active'];
+            $syncedActive = ($rawActive === true || $rawActive === 1 || $rawActive === '1') ? 1 : 0;
+            $data['is_active'] = $syncedActive;
+        }
+
         $db = Database::getConnection();
         $db->beginTransaction();
 
@@ -269,6 +277,17 @@ class SupporterService
                 ]);
             }
 
+            if ($syncedActive !== null) {
+                $stmtActive = $db->prepare(
+                    'UPDATE users SET is_active = :is_active WHERE linked_id = :linked_id AND role = :role'
+                );
+                $stmtActive->execute([
+                    'is_active' => $syncedActive,
+                    'linked_id' => $id,
+                    'role'      => 'supporter',
+                ]);
+            }
+
             if ($scopes !== null) {
                 Supporter::replaceScopes($id, $scopes);
             }
@@ -279,6 +298,10 @@ class SupporterService
                 $db->rollBack();
             }
             throw $e;
+        }
+
+        if (!empty($supporter['user_id']) && ($syncedActive === 0 || isset($data['password']))) {
+            JwtRevocation::revokeAllForUser((int) $supporter['user_id']);
         }
 
         Cache::flushGroup('public');
@@ -293,12 +316,18 @@ class SupporterService
             throw new \App\Core\ApiException('پشتیبان یافت نشد', 404, 'NOT_FOUND');
         }
 
+        $linkedUserId = !empty($supporter['user_id']) ? (int) $supporter['user_id'] : 0;
+
         // حذف فایل آواتار در صورت وجود
         if (!empty($supporter['avatar'])) {
             Storage::delete($supporter['avatar']);
         }
 
         Supporter::delete($id);
+
+        if ($linkedUserId > 0) {
+            JwtRevocation::revokeAllForUser($linkedUserId);
+        }
 
         Cache::flushGroup('public');
     }

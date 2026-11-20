@@ -162,8 +162,9 @@ class ExamService
             );
 
             if (!$sent) {
+                $smsError = $this->sms->getLastError();
                 throw new \App\Core\ApiException(
-                    'ارسال پیامک نتیجه آزمون با مشکل مواجه شد. لطفاً دقایقی بعد تلاش کنید.',
+                    $smsError ?: 'ارسال پیامک نتیجه آزمون با مشکل مواجه شد. لطفاً دقایقی بعد تلاش کنید.',
                     502,
                     'SMS_SEND_FAILED'
                 );
@@ -315,6 +316,16 @@ class ExamService
 
     private function enforceSmsRateLimits(string $mobile, int $studentId, string $examDate, ?string $ip = null): void
     {
+        $cfg = RateLimiter::config();
+        $fwPhone = RateLimiter::attemptFixedWindow(
+            RateLimiter::key('sms:phone_win', $mobile),
+            (int) ($cfg['sms_phone_max'] ?? 3),
+            (int) ($cfg['sms_phone_window'] ?? 600)
+        );
+        if (!$fwPhone['allowed']) {
+            throw new RateLimitedException($fwPhone['retry_after'] > 0 ? $fwPhone['retry_after'] : (int) ($cfg['sms_phone_window'] ?? 600));
+        }
+
         $cooldownWindow = 120;
         $cooldownKey = RateLimiter::key('exam_sms:cooldown', "{$studentId}:{$examDate}:{$mobile}");
         $cooldownStatus = RateLimiter::status($cooldownKey, 1);

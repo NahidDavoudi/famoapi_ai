@@ -378,12 +378,14 @@ The repository maintains two OpenAPI 3.1.0 specifications:
 
 | Method | Endpoint | Access / Role | Description |
 | :---: | :--- | :--- | :--- |
-| `GET` | `/api/v1/subscriptions` | Authenticated (`StudentScope`) | Paginated & filterable list (`student_id`, `course_id`, `status`, `is_active`, `search`) |
-| `GET` | `/api/v1/subscriptions/me` | Student | List subscriptions for the currently authenticated student (`only_active` filter) |
+| `GET` | `/api/v1/subscriptions` | Authenticated (`StudentScope`) | Paginated & filterable list (`student_id`, `course_id`, `status`, `tuition_status`, `is_active`, `search`) |
+| `GET` | `/api/v1/subscriptions/me` | Student | List subscriptions for the currently authenticated student (includes `monthly_fee`, `tuition_status`, `tuition_due_date`, `last_payment_date`) |
 | `GET` | `/api/v1/students/{id}/subscriptions` | Authenticated (`StudentScope`) | List all subscriptions for a specific student (`only_active` filter) |
-| `GET` | `/api/v1/subscriptions/{id}` | Authenticated (`StudentScope`) | Get single subscription with nested `course` and `student` objects |
-| `POST` | `/api/v1/subscriptions` | Authenticated | Create subscription (student self-enrolls as `pending`; staff can set status/dates) |
-| `PUT` | `/api/v1/subscriptions/{id}` | Supporter / Admin | Update subscription fields (`course_id`, `student_id`, `status`, `is_active`, `note`, dates) |
+| `GET` | `/api/v1/subscriptions/{id}` | Authenticated (`StudentScope`) | Get single subscription with nested `course`, `student`, and tuition tracking details |
+| `POST` | `/api/v1/courses/{id}/enroll` | Authenticated (`StudentScope`) | Direct course enrollment (student self-enrolls into course `{id}`; defaults monthly fee from course and sets tuition status to `unpaid`) |
+| `POST` | `/api/v1/subscriptions` | Authenticated | Create subscription (student self-enrolls as `pending`; staff can specify `monthly_fee`, `tuition_status`, and dates) |
+| `PUT` | `/api/v1/subscriptions/{id}` | Supporter / Admin | Update subscription fields (`course_id`, `student_id`, `status`, `is_active`, `monthly_fee`, `tuition_status`, `note`, dates) |
+| `PATCH` / `PUT` | `/api/v1/subscriptions/{id}/tuition` | Supporter / Admin | Update monthly tuition & payment status (`paid`, `unpaid`, `pending`, `exempt`, `partial`), due date, and payment notes |
 | `PATCH` / `PUT` | `/api/v1/subscriptions/{id}/status` | Supporter / Admin | Update subscription status (`pending`, `active`, `expired`, `cancelled`, `rejected`) & `note` |
 | `DELETE` | `/api/v1/subscriptions/{id}` | Authenticated (`StudentScope`) | Delete subscription (students can cancel/delete their own `pending` subscriptions) |
 
@@ -403,8 +405,10 @@ The repository maintains two OpenAPI 3.1.0 specifications:
 
 | Method | Endpoint | Access / Role | Description |
 | :---: | :--- | :--- | :--- |
-| `GET` | `/api/v1/appointments/sms/preview` | Admin | Preview weekly appointment reminder SMS status per student (`will_send`, `already_sent`, `changed_since_sent`, `failed`, `no_phone`, `no_appointment`, `multiple_appointments`) |
-| `POST` | `/api/v1/appointments/sms/send` | Admin | Bulk-send weekly appointment reminder SMS to primary parents via Melipayamak (`MELIPAYAMAK_APPOINTMENT_BODY_ID`) with `mode` (`unsent`, `failed`, `changed`), per-student `try/catch`, double-click lock, and separate rate limits (`appointment_sms:phone`, `appointment_sms:user`) |
+| `GET` | `/api/v1/admin/sms/patterns` | Admin | View active Melipayamak `bodyId` values, templates, and sources (`database`, `env`, `unset`) for `auth_2fa`, `appointment_reminder`, and `exam_result` |
+| `PUT` / `PATCH` | `/api/v1/admin/sms/patterns` | Admin | Configure/persist separate Melipayamak `bodyId` (`appointment_body_id`, `exam_body_id`, `auth_body_id`) and pattern template text in `sms_pattern_settings` |
+| `GET` | `/api/v1/appointments/sms/preview` | Admin | Preview weekly appointment reminder SMS status per student (`will_send`, `already_sent`, `changed_since_sent`, `failed`, `no_phone`, `no_appointment`, `multiple_appointments`), active `pattern` metadata, and rendered `sms_preview_text` |
+| `POST` | `/api/v1/appointments/sms/send` | Admin | Bulk-send weekly appointment reminder SMS to primary parents via Melipayamak (`appointment_reminder` pattern: DB `sms_pattern_settings` → `MELIPAYAMAK_APPOINTMENT_BODY_ID` → optional request `body_id`, never falling back to 2FA login `MELIPAYAMAK_PATTERN_BODY_ID`; `422 APPOINTMENT_PATTERN_NOT_CONFIGURED` if unset) |
 | `GET` | `/api/v1/appointments/sms/log` | Admin | Paginated `appointment_sms_log` audit history filterable by `week_date`, `student_id`, and `status` |
 
 ### Standard JSON Response Envelope

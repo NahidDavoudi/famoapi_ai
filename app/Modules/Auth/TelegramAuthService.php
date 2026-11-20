@@ -210,6 +210,28 @@ class TelegramAuthService
     private function issueSmsChallenge(object $claims, int $userId, string $phone, ?string $ip): array
     {
         $phone = PhoneNumber::normalize($phone) ?? $phone;
+        $cfg = RateLimiter::config();
+
+        $fwPhone = RateLimiter::attemptFixedWindow(
+            RateLimiter::key('sms:phone_win', $phone),
+            (int) ($cfg['sms_phone_max'] ?? 3),
+            (int) ($cfg['sms_phone_window'] ?? 600)
+        );
+        if (!$fwPhone['allowed']) {
+            throw new RateLimitedException($fwPhone['retry_after'] > 0 ? $fwPhone['retry_after'] : (int) ($cfg['sms_phone_window'] ?? 600));
+        }
+
+        if ($ip !== null && $ip !== '') {
+            $fwIp = RateLimiter::attemptFixedWindow(
+                RateLimiter::key('sms:ip_win', $ip),
+                (int) ($cfg['sms_ip_max'] ?? 10),
+                (int) ($cfg['sms_ip_window'] ?? 3600)
+            );
+            if (!$fwIp['allowed']) {
+                throw new RateLimitedException($fwIp['retry_after'] > 0 ? $fwIp['retry_after'] : (int) ($cfg['sms_ip_window'] ?? 3600));
+            }
+        }
+
         $phoneKey = RateLimiter::key('sms:phone', $phone);
         $phoneMax = max(1, (int) ($_ENV['AUTH_SMS_PHONE_HOURLY_MAX'] ?? 5));
         $phoneStatus = RateLimiter::attempt($phoneKey, $phoneMax, 3600, 3600);
