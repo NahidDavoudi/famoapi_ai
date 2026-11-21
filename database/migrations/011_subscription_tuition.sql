@@ -1,6 +1,6 @@
 -- =============================================================================
 -- Migration 011: Subscription Monthly Tuition & Tuition Payment Status
--- Target Engine: MySQL 8.0+ / 8.4+ / PostgreSQL 15+
+-- Target Engine: MySQL 8.0+ / 8.4+
 -- =============================================================================
 
 ALTER TABLE subscriptions

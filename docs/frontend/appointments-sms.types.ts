@@ -447,7 +447,7 @@ export interface ParentContactRecord {
   /** Normalized Iranian mobile (`09XXXXXXXXX`) */
   phone: string;
   /**
-   * `SMALLINT` (`0 | 1`) in PostgreSQL PDO responses, documented as `boolean` in OpenAPI.
+   * `TINYINT(1)` (`0 | 1`) in MySQL PDO responses, documented as `boolean` in OpenAPI.
    * Check with `Boolean(contact.is_primary)`.
    */
   is_primary: boolean | 0 | 1;

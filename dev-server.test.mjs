@@ -396,7 +396,6 @@ test('Exam Comments & Share Links Stage 1 — Migration 006, PUT /api/v1/exams/c
     new URL('./database/migrations/006_exam_comments_and_share_links.sql', import.meta.url),
     'utf8'
   );
-  const schemaSql = fs.readFileSync(new URL('./database/schema.postgres.sql', import.meta.url), 'utf8');
   const authPhp = fs.readFileSync(new URL('./app/Core/Authorization.php', import.meta.url), 'utf8');
   const examResPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamResult.php', import.meta.url), 'utf8');
   const examSvcPhp = fs.readFileSync(new URL('./app/Modules/Exams/ExamService.php', import.meta.url), 'utf8');
@@ -886,7 +885,6 @@ test('Weekly Appointment SMS Reminders — Migration 007, preview, bulk send mod
     new URL('./database/migrations/007_appointment_sms_log.sql', import.meta.url),
     'utf8'
   );
-  const schemaSql = fs.readFileSync(new URL('./database/schema.postgres.sql', import.meta.url), 'utf8');
   const envExample = fs.readFileSync(new URL('./.env.example', import.meta.url), 'utf8');
   const authPhp = fs.readFileSync(new URL('./app/Core/Authorization.php', import.meta.url), 'utf8');
   const smsPhp = fs.readFileSync(new URL('./app/Core/SmsService.php', import.meta.url), 'utf8');
@@ -1291,7 +1289,6 @@ test('Tutoring classrooms endpoints (POST/PUT/DELETE /api/v1/tutoring/classrooms
     'utf8'
   );
   const upgradeSql = fs.readFileSync('database/mysql_upgrade_from_dump.sql', 'utf8');
-  const schemaPostgres = fs.readFileSync('database/schema.postgres.sql', 'utf8');
   const tutoringPhp = fs.readFileSync('app/Modules/Tutoring/Tutoring.php', 'utf8');
   const tutoringSvcPhp = fs.readFileSync('app/Modules/Tutoring/TutoringService.php', 'utf8');
   const tutoringCtrlPhp = fs.readFileSync('app/Modules/Tutoring/TutoringController.php', 'utf8');
@@ -1299,14 +1296,13 @@ test('Tutoring classrooms endpoints (POST/PUT/DELETE /api/v1/tutoring/classrooms
   const rootSpec = fs.readFileSync('openapi.yaml', 'utf8');
   const publicSpec = fs.readFileSync('public/openapi.yaml', 'utf8');
 
-  // 1. Verify Migration 008, Upgrade SQL, and Postgres Schema
+  // 1. Verify Migration 008 and Upgrade SQL
   assert.match(mig008, /CREATE TABLE IF NOT EXISTS tutoring_classroom_audit_logs/);
   assert.match(mig008, /actor_user_id/);
   assert.match(mig008, /actor_instructor_id/);
   assert.match(mig008, /changes_json\s+JSON/);
   assert.match(upgradeSql, /CREATE TABLE IF NOT EXISTS `tutoring_classroom_audit_logs`/);
   assert.match(upgradeSql, /008_tutoring_classroom_audit_log\.sql/);
-  assert.match(schemaPostgres, /008_tutoring_classroom_audit_log\.sql/);
 
   // 2. Verify PHP Model, Service, Controller, Routes, and OpenAPI
   assert.equal(rootSpec, publicSpec);
@@ -1460,10 +1456,6 @@ test('Admin Staff Activity Monitoring (/api/v1/admin/activity-logs & /stats) —
     new URL('./database/migrations/009_staff_activity_logs.sql', import.meta.url),
     'utf8'
   );
-  const pgSchemaSql = fs.readFileSync(
-    new URL('./database/schema.postgres.sql', import.meta.url),
-    'utf8'
-  );
   const mysqlUpgradeSql = fs.readFileSync(
     new URL('./database/mysql_upgrade_from_dump.sql', import.meta.url),
     'utf8'
@@ -1490,7 +1482,6 @@ test('Admin Staff Activity Monitoring (/api/v1/admin/activity-logs & /stats) —
 
   // 1. Verify schema, PHP implementation, AuthMiddleware hook, routes, and OpenAPI spec
   assert.match(migrationSql, /CREATE TABLE IF NOT EXISTS `staff_activity_logs`/);
-  assert.match(pgSchemaSql, /009_staff_activity_logs\.sql/);
   assert.match(mysqlUpgradeSql, /009_staff_activity_logs\.sql/);
 
   assert.match(activityLogPhp, /public static function recordFromRequest\(/);

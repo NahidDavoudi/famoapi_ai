@@ -1153,7 +1153,7 @@ paths:
         Returns a student's exam result breakdown, average percentage, and teacher/staff comments
         for a valid, unrevoked, non-expired share token.
         - **Security & Privacy**:
-          - Only SHA-256 (`token_hash`) is stored in PostgreSQL (`exam_result_links`), with a 14-day TTL.
+          - Only SHA-256 (`token_hash`) is stored in MySQL (`exam_result_links`), with a 14-day TTL.
           - Response excludes `national_id` and `phone`.
           - Exempt from `PublicCacheMiddleware`; emits `Cache-Control: no-store, no-cache, must-revalidate`, `X-Robots-Tag: noindex, nofollow`, and `Referrer-Policy: no-referrer`.
           - Stricter IP rate limit (`20` requests per `60` seconds).
@@ -3765,7 +3765,7 @@ paths:
       summary: Upsert a teacher/staff comment on a student's exam result
       description: >
         Creates or updates a comment for `(student_id, exam_date, teacher_user_id)`
-        using PostgreSQL `ON CONFLICT (student_id, exam_date, teacher_user_id) DO UPDATE`.
+        using MySQL `ON DUPLICATE KEY UPDATE` on `(student_id, exam_date, teacher_user_id)`.
         Accessible by `teacher`, `supporter`, and `admin` roles.
       operationId: examUpsertComment
       security:
@@ -3855,7 +3855,7 @@ paths:
       summary: Generate a 14-day shareable parent link for a student's exam result with optional Melipayamak SMS dispatch (supporter/admin)
       description: >
         Generates a base64url token from `random_bytes(32)`, stores only its `SHA-256` hash
-        in PostgreSQL (`exam_result_links`) with a 14-day expiration (`expires_at`), and optionally
+        in MySQL (`exam_result_links`) with a 14-day expiration (`expires_at`), and optionally
         dispatches the link via Melipayamak pattern SMS when `send_sms: true` is passed (enforcing
         per-phone, per-IP, and cooldown rate limits). Accessible by `supporter` and `admin`.
       operationId: examCreateShareLink

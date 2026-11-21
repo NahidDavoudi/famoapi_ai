@@ -5006,7 +5006,6 @@ const REQUIRED_PHP_FILES = [
   'openapi.yaml',
   'public/openapi.yaml',
   'README.md',
-  'database/schema.postgres.sql',
   'database/migrations/008_tutoring_classroom_audit_log.sql',
   'database/migrations/009_staff_activity_logs.sql',
   'database/migrations/010_supporter_description.sql',
