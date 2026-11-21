@@ -70,6 +70,8 @@ class Cache
                 'http_response:/api/v1/public/instructors',
                 'http_response:/api/v1/public/courses',
                 'http_response:/api/v1/public/blog/categories',
+                'http_response:/api/v1/public/admissions',
+                'http_response:/api/v1/public/testimonials',
             ] as $knownKey) {
                 self::forget($group, $knownKey);
             }

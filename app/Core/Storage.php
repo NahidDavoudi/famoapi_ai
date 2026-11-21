@@ -104,6 +104,7 @@ class Storage
     {
         return match ($module) {
             'instructors', 'supporters' => ['max_width' => 800,  'max_height' => 800,  'quality' => 85],
+            'admissions'                => ['max_width' => 800,  'max_height' => 800,  'quality' => 85],
             'blog'                      => ['max_width' => 1600, 'max_height' => 1600, 'quality' => 82],
             'courses'                   => ['max_width' => 1920, 'max_height' => 1920, 'quality' => 82],
             default                     => ['max_width' => 1920, 'max_height' => 1920, 'quality' => 82],

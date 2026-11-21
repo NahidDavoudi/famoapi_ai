@@ -7429,6 +7429,992 @@ paths:
         "422":
           $ref: "#/components/responses/ValidationError"
 
+  /api/v1/public/admissions:
+    get:
+      tags: [Public, Admissions]
+      summary: List published admissions / achievers (public, cached 300s)
+      description: |
+        Returns published and consent-confirmed (`status = 'published' AND consent_confirmed = 1`)
+        student admission records for the public website.
+        Cached for 300 seconds via `PublicCacheMiddleware(300)` under cache group `public`
+        and automatically flushed on any admin admission mutation.
+        Supports filtering by Jalali `year`, `exam_type`, `field`, `featured`, and grouping with `group_by=year`.
+      operationId: publicListAdmissions
+      parameters:
+        - name: year
+          in: query
+          required: false
+          description: Filter by Jalali year (1380–1450)
+          schema:
+            type: integer
+            minimum: 1380
+            maximum: 1450
+        - name: exam_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [konkur, tizhooshan, nemoone, olympiad, other]
+        - name: field
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 60
+        - name: featured
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - name: group_by
+          in: query
+          required: false
+          description: Set to `year` to return records grouped by Jalali year descending (`groups` array instead of paginated `items`)
+          schema:
+            type: string
+            enum: [year]
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: Published admissions list (paginated or grouped by Jalali year)
+          headers:
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimitHeader"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemainingHeader"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          years:
+                            type: array
+                            items:
+                              type: integer
+                            description: Distinct Jalali years with at least one published & consented record
+                          items:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/AdmissionPublic"
+                            description: Present when `group_by` is not `year`
+                          groups:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/AdmissionYearGroup"
+                            description: Present when `group_by=year`
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/public/testimonials:
+    get:
+      tags: [Public, Testimonials]
+      summary: List approved testimonials (public, cached 300s)
+      description: |
+        Returns only `approved` testimonials ordered by `is_featured DESC, display_order ASC, id DESC`,
+        along with aggregate `summary` (`total_approved`, `average_rating`).
+        Cached for 300 seconds via `PublicCacheMiddleware(300)` under cache group `public`
+        and automatically flushed on any admin testimonial mutation.
+      operationId: publicListTestimonials
+      parameters:
+        - name: role
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [student, parent, graduate, other]
+        - name: featured
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - name: course_id
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: instructor_id
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: Approved public testimonials and rating summary
+          headers:
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimitHeader"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemainingHeader"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/TestimonialPublic"
+                          summary:
+                            $ref: "#/components/schemas/TestimonialSummary"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    post:
+      tags: [Public, Testimonials]
+      summary: Submit a public testimonial for admin moderation
+      description: |
+        Accepts a testimonial from the public website and stores it with `status = 'pending'`
+        and `source = 'public_form'`.
+        - Does not collect phone numbers or persist IP hashes in MySQL.
+        - Ignores `course_id`, `instructor_id`, `status`, `is_featured`, and `display_order` (admin links/moderates later).
+        - Protected by strict per-IP rate limiting (default 5 submissions/hour), a silent `website` honeypot field,
+          and short-TTL (600s) Redis deduplication keyed with server-secret HMAC-SHA256.
+      operationId: publicSubmitTestimonial
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublicTestimonialSubmitRequest"
+      responses:
+        "201":
+          description: Testimonial submitted and queued for moderation
+          headers:
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimitHeader"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemainingHeader"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PublicTestimonialSubmitResponse"
+        "409":
+          description: Duplicate submission detected within the 10-minute Redis deduplication window (`DUPLICATE_TESTIMONIAL`)
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/admissions:
+    get:
+      tags: [Admissions]
+      summary: List all admissions (admin)
+      operationId: adminListAdmissions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: year
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1380
+            maximum: 1450
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [draft, published]
+        - name: exam_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [konkur, tizhooshan, nemoone, olympiad, other]
+        - name: field
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: featured
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - name: consent_confirmed
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - name: q
+          in: query
+          required: false
+          description: Search across student_name, result_title, and rank_value
+          schema:
+            type: string
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [jalali_year, student_name, display_order, status, created_at, published_at]
+            default: jalali_year
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: Paginated admissions list for admin
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/AdmissionAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    post:
+      tags: [Admissions]
+      summary: Create an admission record (admin)
+      description: |
+        Creates a new admission record. Publishing (`status: "published"`) requires
+        `consent_confirmed: true`; otherwise returns `422 CONSENT_REQUIRED`.
+        Supports JSON or `multipart/form-data` with optional `image` upload (JPG, PNG, WebP).
+      operationId: adminCreateAdmission
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdmissionWriteRequest"
+          multipart/form-data:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AdmissionWriteRequest"
+                - type: object
+                  properties:
+                    image:
+                      type: string
+                      format: binary
+                      description: Optional student portrait (JPG, PNG, WebP; resized/converted to WebP)
+      responses:
+        "201":
+          description: Admission record created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AdmissionAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/admissions/{id}:
+    get:
+      tags: [Admissions]
+      summary: Get single admission record (admin)
+      operationId: adminGetAdmission
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Admission record details
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AdmissionAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Admissions]
+      summary: Update an admission record (admin)
+      operationId: adminUpdateAdmission
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdmissionWriteRequest"
+          multipart/form-data:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AdmissionWriteRequest"
+                - type: object
+                  properties:
+                    image:
+                      type: string
+                      format: binary
+                    remove_image:
+                      type: boolean
+      responses:
+        "200":
+          description: Admission record updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AdmissionAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    patch:
+      tags: [Admissions]
+      summary: Partially update an admission record (admin)
+      operationId: adminPatchAdmission
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdmissionWriteRequest"
+          multipart/form-data:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AdmissionWriteRequest"
+                - type: object
+                  properties:
+                    image:
+                      type: string
+                      format: binary
+                    remove_image:
+                      type: boolean
+      responses:
+        "200":
+          description: Admission record updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AdmissionAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    post:
+      tags: [Admissions]
+      summary: Update an admission record via POST multipart/form-data (admin)
+      operationId: adminPostUpdateAdmission
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AdmissionWriteRequest"
+                - type: object
+                  properties:
+                    image:
+                      type: string
+                      format: binary
+                    remove_image:
+                      type: boolean
+      responses:
+        "200":
+          description: Admission record updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AdmissionAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [Admissions]
+      summary: Delete an admission record and its uploaded portrait (admin)
+      operationId: adminDeleteAdmission
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Admission record deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admissions/{id}/status:
+    patch:
+      tags: [Admissions]
+      summary: Publish or revert an admission to draft (admin)
+      description: Enforces `consent_confirmed = true` before transitioning to `published` (`422 CONSENT_REQUIRED`).
+      operationId: adminPatchAdmissionStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdmissionStatusUpdateRequest"
+      responses:
+        "200":
+          description: Admission status updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AdmissionAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      tags: [Admissions]
+      summary: Publish or revert an admission to draft via PUT (admin)
+      operationId: adminPutAdmissionStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdmissionStatusUpdateRequest"
+      responses:
+        "200":
+          description: Admission status updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AdmissionAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/testimonials:
+    get:
+      tags: [Testimonials]
+      summary: List all testimonials for admin moderation queue
+      operationId: adminListTestimonials
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, approved, rejected]
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [public_form, admin]
+        - name: role
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [student, parent, graduate, other]
+        - name: rating
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+        - name: featured
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - name: course_id
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: instructor_id
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: q
+          in: query
+          required: false
+          description: Search across author_name, author_meta, and content
+          schema:
+            type: string
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [created_at, rating, display_order, status, author_name]
+            default: created_at
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: Paginated testimonials list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/TestimonialAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    post:
+      tags: [Testimonials]
+      summary: Create a testimonial directly as admin (defaults to approved)
+      description: |
+        Allows admins to insert testimonials directly (for example, migrating legacy testimonials).
+        Defaults to `status: "approved"` and sets `source: "admin"`.
+        Optionally links `course_id` and/or `instructor_id`. Flushes the `public` cache group.
+      operationId: adminCreateTestimonial
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestimonialAdminCreateRequest"
+      responses:
+        "201":
+          description: Testimonial created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/TestimonialAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/testimonials/bulk-reject:
+    post:
+      tags: [Testimonials]
+      summary: Bulk-reject up to 100 testimonials (admin)
+      description: |
+        Marks up to 100 testimonials as `rejected` in a single parameterized SQL update,
+        recording `moderated_by`, `moderated_at`, and optional `rejection_reason`,
+        and flushes the `public` cache group.
+      operationId: adminBulkRejectTestimonials
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestimonialBulkRejectRequest"
+      responses:
+        "200":
+          description: Bulk rejection summary
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/TestimonialBulkRejectResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/testimonials/{id}:
+    get:
+      tags: [Testimonials]
+      summary: Get a single testimonial (admin)
+      operationId: adminGetTestimonial
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Testimonial details
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/TestimonialAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Testimonials]
+      summary: Update a testimonial (admin)
+      operationId: adminUpdateTestimonial
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestimonialAdminUpdateRequest"
+      responses:
+        "200":
+          description: Testimonial updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/TestimonialAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    patch:
+      tags: [Testimonials]
+      summary: Partially update a testimonial (admin)
+      operationId: adminPatchTestimonial
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestimonialAdminUpdateRequest"
+      responses:
+        "200":
+          description: Testimonial updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/TestimonialAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [Testimonials]
+      summary: Delete a testimonial (admin)
+      operationId: adminDeleteTestimonial
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Testimonial deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/testimonials/{id}/moderate:
+    patch:
+      tags: [Testimonials]
+      summary: Approve, reject, or revert a testimonial to pending (admin)
+      operationId: adminPatchModerateTestimonial
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestimonialModerateRequest"
+      responses:
+        "200":
+          description: Testimonial moderation updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/TestimonialAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      tags: [Testimonials]
+      summary: Approve, reject, or revert a testimonial to pending via PUT (admin)
+      operationId: adminPutModerateTestimonial
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestimonialModerateRequest"
+      responses:
+        "200":
+          description: Testimonial moderation updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/TestimonialAdmin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -10075,6 +11061,427 @@ components:
           format: date-time
       required: [id, student_id, week_date, recipient_type, status, attempts]
 
+    AdmissionPublic:
+      type: object
+      properties:
+        id:
+          type: integer
+        student_name:
+          type: string
+          maxLength: 150
+        jalali_year:
+          type: integer
+          minimum: 1380
+          maximum: 1450
+        exam_type:
+          type: string
+          enum: [konkur, tizhooshan, nemoone, olympiad, other]
+        field:
+          type: string
+          nullable: true
+          maxLength: 60
+        result_title:
+          type: string
+          maxLength: 255
+        rank_value:
+          type: string
+          nullable: true
+          maxLength: 50
+        quote:
+          type: string
+          nullable: true
+          maxLength: 500
+        image_url:
+          type: string
+          nullable: true
+        display_order:
+          type: integer
+        is_featured:
+          type: boolean
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+      required: [id, student_name, jalali_year, exam_type, result_title, display_order, is_featured]
+
+    AdmissionYearGroup:
+      type: object
+      properties:
+        jalali_year:
+          type: integer
+        count:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdmissionPublic"
+      required: [jalali_year, count, items]
+
+    AdmissionAdmin:
+      allOf:
+        - $ref: "#/components/schemas/AdmissionPublic"
+        - type: object
+          properties:
+            consent_confirmed:
+              type: boolean
+            consent_confirmed_at:
+              type: string
+              format: date-time
+              nullable: true
+            consent_confirmed_by:
+              type: integer
+              nullable: true
+            status:
+              type: string
+              enum: [draft, published]
+            created_by:
+              type: integer
+              nullable: true
+            updated_by:
+              type: integer
+              nullable: true
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+          required: [consent_confirmed, status]
+
+    AdmissionWriteRequest:
+      type: object
+      properties:
+        student_name:
+          type: string
+          minLength: 1
+          maxLength: 150
+        jalali_year:
+          type: integer
+          minimum: 1380
+          maximum: 1450
+        exam_type:
+          type: string
+          enum: [konkur, tizhooshan, nemoone, olympiad, other]
+          default: konkur
+        field:
+          type: string
+          nullable: true
+          maxLength: 60
+        result_title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        rank_value:
+          type: string
+          nullable: true
+          maxLength: 50
+        quote:
+          type: string
+          nullable: true
+          maxLength: 500
+        display_order:
+          type: integer
+          minimum: 0
+          default: 0
+        is_featured:
+          type: boolean
+          default: false
+        consent_confirmed:
+          type: boolean
+          default: false
+          description: Must be `true` before setting `status` to `published`
+        status:
+          type: string
+          enum: [draft, published]
+          default: draft
+
+    AdmissionStatusUpdateRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [draft, published]
+        consent_confirmed:
+          type: boolean
+          description: Optional; can be set alongside status change
+      required: [status]
+
+    TestimonialPublic:
+      type: object
+      properties:
+        id:
+          type: integer
+        author_name:
+          type: string
+          maxLength: 120
+        author_role:
+          type: string
+          enum: [student, parent, graduate, other]
+        author_meta:
+          type: string
+          nullable: true
+          maxLength: 150
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        content:
+          type: string
+        course_id:
+          type: integer
+          nullable: true
+        course_name:
+          type: string
+          nullable: true
+        instructor_id:
+          type: integer
+          nullable: true
+        instructor_name:
+          type: string
+          nullable: true
+        is_featured:
+          type: boolean
+        display_order:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+      required: [id, author_name, author_role, rating, content, is_featured, display_order]
+
+    TestimonialSummary:
+      type: object
+      properties:
+        total_approved:
+          type: integer
+        average_rating:
+          type: number
+          format: float
+      required: [total_approved, average_rating]
+
+    TestimonialAdmin:
+      allOf:
+        - $ref: "#/components/schemas/TestimonialPublic"
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [pending, approved, rejected]
+            source:
+              type: string
+              enum: [public_form, admin]
+            moderated_by:
+              type: integer
+              nullable: true
+            moderated_at:
+              type: string
+              format: date-time
+              nullable: true
+            rejection_reason:
+              type: string
+              nullable: true
+              maxLength: 300
+            updated_at:
+              type: string
+              format: date-time
+          required: [status, source]
+
+    PublicTestimonialSubmitRequest:
+      type: object
+      properties:
+        author_name:
+          type: string
+          minLength: 2
+          maxLength: 120
+        author_role:
+          type: string
+          enum: [student, parent, graduate, other]
+          default: student
+        author_meta:
+          type: string
+          nullable: true
+          maxLength: 150
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        content:
+          type: string
+          minLength: 10
+          maxLength: 1500
+        website:
+          type: string
+          description: Hidden anti-spam honeypot field; must be left empty by real users
+      required: [author_name, rating, content]
+
+    PublicTestimonialSubmitResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          nullable: true
+        author_name:
+          type: string
+        author_role:
+          type: string
+          enum: [student, parent, graduate, other]
+        author_meta:
+          type: string
+          nullable: true
+        rating:
+          type: integer
+        content:
+          type: string
+        status:
+          type: string
+          enum: [pending]
+        created_at:
+          type: string
+          format: date-time
+      required: [status, created_at]
+
+    TestimonialAdminCreateRequest:
+      type: object
+      properties:
+        author_name:
+          type: string
+          minLength: 2
+          maxLength: 120
+        author_role:
+          type: string
+          enum: [student, parent, graduate, other]
+          default: student
+        author_meta:
+          type: string
+          nullable: true
+          maxLength: 150
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          default: 5
+        content:
+          type: string
+          minLength: 10
+          maxLength: 1500
+        course_id:
+          type: integer
+          nullable: true
+          minimum: 1
+        instructor_id:
+          type: integer
+          nullable: true
+          minimum: 1
+        status:
+          type: string
+          enum: [pending, approved, rejected]
+          default: approved
+        is_featured:
+          type: boolean
+          default: false
+        display_order:
+          type: integer
+          minimum: 0
+          default: 0
+        rejection_reason:
+          type: string
+          nullable: true
+          maxLength: 300
+      required: [author_name, content]
+
+    TestimonialAdminUpdateRequest:
+      type: object
+      properties:
+        author_name:
+          type: string
+          minLength: 2
+          maxLength: 120
+        author_role:
+          type: string
+          enum: [student, parent, graduate, other]
+        author_meta:
+          type: string
+          nullable: true
+          maxLength: 150
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        content:
+          type: string
+          minLength: 10
+          maxLength: 1500
+        course_id:
+          type: integer
+          nullable: true
+        instructor_id:
+          type: integer
+          nullable: true
+        status:
+          type: string
+          enum: [pending, approved, rejected]
+        is_featured:
+          type: boolean
+        display_order:
+          type: integer
+          minimum: 0
+        rejection_reason:
+          type: string
+          nullable: true
+          maxLength: 300
+
+    TestimonialModerateRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [pending, approved, rejected]
+        rejection_reason:
+          type: string
+          nullable: true
+          maxLength: 300
+        is_featured:
+          type: boolean
+        display_order:
+          type: integer
+          minimum: 0
+        course_id:
+          type: integer
+          nullable: true
+        instructor_id:
+          type: integer
+          nullable: true
+      required: [status]
+
+    TestimonialBulkRejectRequest:
+      type: object
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: integer
+            minimum: 1
+        rejection_reason:
+          type: string
+          nullable: true
+          maxLength: 300
+      required: [ids]
+
+    TestimonialBulkRejectResponse:
+      type: object
+      properties:
+        rejected_count:
+          type: integer
+        requested_ids:
+          type: array
+          items:
+            type: integer
+        rejection_reason:
+          type: string
+          nullable: true
+      required: [rejected_count, requested_ids]
+
   responses:
     BadRequest:
       description: Bad request
@@ -10332,3 +11739,7 @@ tags:
     description: Supporter broadcasts (service key)
   - name: Outbox
     description: Telegram outbox pull/report protocol (service key)
+  - name: Admissions
+    description: Student admissions & achievers showcase (admin management & public display)
+  - name: Testimonials
+    description: Public testimonial submissions & admin moderation queue

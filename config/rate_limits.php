@@ -45,6 +45,10 @@ return [
     'public_exam_ip_max'     => $envInt('RATE_LIMIT_PUBLIC_EXAM_IP_MAX', 20),
     'public_exam_ip_window'  => $envInt('RATE_LIMIT_PUBLIC_EXAM_IP_WINDOW', 60),
 
+    // Public testimonial submission per IP (5 submissions per hour by default)
+    'public_testimonial_ip_max'    => $envInt('RATE_LIMIT_PUBLIC_TESTIMONIAL_IP_MAX', 5),
+    'public_testimonial_ip_window' => $envInt('RATE_LIMIT_PUBLIC_TESTIMONIAL_IP_WINDOW', 3600),
+
     // Path prefixes exempt from all per-IP limits (server-to-server bot gateway)
     'exempt_prefixes'        => ['/api/v1/bot'],
 

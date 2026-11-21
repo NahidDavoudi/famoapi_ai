@@ -670,6 +670,8 @@ class ActivityLog
             'plans'         => ['type' => 'weekly_plan', 'label' => 'برنامه هفتگی'],
             'blog'          => ['type' => 'blog_post', 'label' => 'مقاله وبلاگ'],
             'files'         => ['type' => 'file', 'label' => 'فایل'],
+            'admissions'    => ['type' => 'admission', 'label' => 'قبولی دانش‌آموز'],
+            'testimonials'  => ['type' => 'testimonial', 'label' => 'نظر کاربران'],
         ];
 
         if (isset($moduleLabels[$first])) {

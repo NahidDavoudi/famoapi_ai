@@ -49,6 +49,17 @@ final class RateLimitMiddleware implements MiddlewareInterface
         );
     }
 
+    public static function forPublicTestimonialSubmit(): self
+    {
+        $cfg = RateLimiter::config();
+        return new self(
+            'public:testimonial_submit:ip',
+            (int) ($cfg['public_testimonial_ip_max'] ?? 5),
+            (int) ($cfg['public_testimonial_ip_window'] ?? 3600),
+            self::MODE_IP
+        );
+    }
+
     public static function forAuthenticatedUser(): self
     {
         return new self('api:user', null, null, self::MODE_AUTH_USER);

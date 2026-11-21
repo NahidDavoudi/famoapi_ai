@@ -34,7 +34,7 @@
 
 - **Modular Domain Architecture**: Clean separation into `Controller → Service → Model` modules under `app/Modules/*`.
 - **MySQL 8.0+ / 8.4+ Schema & Migrations**:
-  - 12 ordered `InnoDB` / `utf8mb4` SQL migrations in `database/migrations/` (`001` through `012`) plus a legacy-dump upgrade script (`database/mysql_upgrade_from_dump.sql`).
+  - 13 ordered `InnoDB` / `utf8mb4` SQL migrations in `database/migrations/` (`001` through `013`) plus a legacy-dump upgrade script (`database/mysql_upgrade_from_dump.sql`).
   - MySQL generated columns for computed metrics and active/open uniqueness constraints (`exam_results.percentage` `STORED`, `student_supporter_assignments.active_student_id` `STORED`, `tutoring_sessions.open_student_key` `VIRTUAL`).
   - Named-lock protected (`GET_LOCK('famo_schema_migrations', 30)`) SQL migration runner (`App\Core\Migrator`) intended for manual / CLI execution (not executed automatically on HTTP boot).
 - **Multi-Role Authentication & Security**:
@@ -96,14 +96,14 @@ famo-api/
 │   └── Modules/                     # Domain modules (Controller, Service, Model)
 │       ├── ActivityLogs/            ├── Courses/           ├── Public/
 │       ├── Admins/                  ├── Dashboard/         ├── Reports/
-│       ├── Appointments/            ├── Exams/             ├── Settings/
-│       ├── Assignments/             ├── Files/             ├── Stats/
-│       ├── Attendance/              ├── Instructors/       ├── Students/
-│       ├── Auth/                    ├── Linking/           ├── Subscription/
-│       ├── Blog/                    ├── Outbox/            ├── Supporters/
-│       ├── Bot/                     ├── ParentContacts/    ├── Threads/
-│       ├── Broadcasts/              ├── Topics/            └── WeeklyPlans/
-│       └── Tutoring/
+│       ├── Admissions/              ├── Exams/             ├── Settings/
+│       ├── Appointments/            ├── Files/             ├── Stats/
+│       ├── Assignments/             ├── Instructors/       ├── Students/
+│       ├── Attendance/              ├── Linking/           ├── Subscription/
+│       ├── Auth/                    ├── Outbox/            ├── Supporters/
+│       ├── Blog/                    ├── ParentContacts/    ├── Testimonials/
+│       ├── Bot/                     ├── Threads/           ├── Topics/
+│       ├── Broadcasts/              ├── Tutoring/          └── WeeklyPlans/
 ├── bootstrap/
 │   └── app.php                      # Slim 4 bootstrap, middleware pipeline, error handler
 ├── config/
@@ -111,7 +111,7 @@ famo-api/
 │   ├── rate_limits.php              # Auth, SMS, public, and API rate-limit policies
 │   └── redis.php                    # Redis connection, prefix, & timeout settings
 ├── database/
-│   ├── migrations/                  # Ordered MySQL 8.0+ / 8.4+ migrations (001..012)
+│   ├── migrations/                  # Ordered MySQL 8.0+ / 8.4+ migrations (001..013)
 │   └── mysql_upgrade_from_dump.sql  # Upgrade script for legacy MySQL production dumps
 ├── docker/                          # Production PHP/Apache & RemoteIP tuning configs
 │   ├── apache-tune.conf             # Apache MPM prefork, KeepAlive & security headers tuning
@@ -184,7 +184,7 @@ mkdir -p storage/cache storage/logs uploads
 
 **Option A — Run via `App\Core\Migrator` (recommended for clean databases or incremental updates):**
 
-`Migrator::run()` acquires MySQL lock `GET_LOCK('famo_schema_migrations', 30)`, ensures the `migrations` tracking table exists, and executes every unapplied `database/migrations/*.sql` file in lexicographical order (`001`..`012`):
+`Migrator::run()` acquires MySQL lock `GET_LOCK('famo_schema_migrations', 30)`, ensures the `migrations` tracking table exists, and executes every unapplied `database/migrations/*.sql` file in lexicographical order (`001`..`013`):
 
 ```bash
 php -r '
@@ -341,6 +341,7 @@ Copy `.env.example` to `.env` and configure the variables for your environment. 
 | | `CACHE_ENABLED` | No | `true` | Master toggle for application caching |
 | **Rate Limiting** | `RATE_LIMIT_PUBLIC_IP_MAX` / `_WINDOW` | No | `120` / `60` | Max requests per IP per window (seconds) on `/api/v1/public/*` |
 | | `RATE_LIMIT_PUBLIC_EXAM_IP_MAX` / `_WINDOW` | No | `20` / `60` | Stricter per-IP limit on `/api/v1/public/exam-results/{token}` |
+| | `RATE_LIMIT_PUBLIC_TESTIMONIAL_IP_MAX` / `_WINDOW` | No | `5` / `3600` | Per-IP submission limit on `POST /api/v1/public/testimonials` |
 | | `RATE_LIMIT_API_STUDENT_MAX` / `STAFF_MAX` | No | `120` / `300` | Per-user authenticated API limit per `RATE_LIMIT_API_AUTH_WINDOW` (`60`s) |
 | | `RATE_LIMIT_AUTH_USER_IP_MAX` / `_WINDOW` | No | `5` / `60` | Auth attempt limit per user+IP |
 | | `RATE_LIMIT_AUTH_IP_MAX` / `_WINDOW` | No | `100` / `900` | Auth attempt limit per IP |
@@ -371,7 +372,7 @@ Public site endpoints under `/api/v1/public/*` (excluding `/api/v1/public/exam-r
    - Caches underlying database query results in `PublicService` and `BlogService` for **600 seconds**.
    - `GET /api/v1/public/blog/posts/{slug}` caches the article body (`blog_post:{slug}`) while atomically incrementing live article views in Redis (`blog_post_views:{id}`).
 3. **Automatic Cache Invalidation**:
-   - Creating, updating, or deleting courses, instructors, supporters, or blog posts automatically invokes `Cache::flushGroup('public')`.
+   - Creating, updating, or deleting courses, instructors, supporters, blog posts, admissions, or testimonials automatically invokes `Cache::flushGroup('public')`.
 
 ### Rate Limiting
 
@@ -443,6 +444,9 @@ The repository maintains a complete OpenAPI 3.1.0 specification in [`openapi.yam
 | `GET` | `/api/v1/public/blog/posts/{slug}` | Single blog post by slug + atomic Redis view increment | Service Redis Cache + Rate Limit |
 | `GET` | `/api/v1/public/blog/categories` | Blog categories with published post counts | Redis Cache (300s) + Rate Limit |
 | `GET` | `/api/v1/public/blog/categories/{category}/posts` | Paginated posts filtered by category | Redis Cache (300s) + Rate Limit |
+| `GET` | `/api/v1/public/admissions` | Published & consent-confirmed admissions (`year`, `exam_type`, `field`, `featured`, `group_by=year`) | Redis Cache (300s) + Rate Limit |
+| `GET` | `/api/v1/public/testimonials` | Approved testimonials with `summary` (`total_approved`, `average_rating`) | Redis Cache (300s) + Rate Limit |
+| `POST` | `/api/v1/public/testimonials` | Public testimonial submission (starts `pending`, honeypot + HMAC-SHA256 Redis dedup) | 5/hour IP Rate Limit |
 | `POST` | `/api/v1/auth/login` | User login (returns JWT or `202` 2FA challenge; supports `STUDENT_2FA_MODE=off|new_device|always`) | Auth Rate Limit |
 | `POST` | `/api/v1/auth/register` | Student self-registration | Auth Rate Limit |
 | `POST` | `/api/v1/auth/verify-2fa` | Verify 6-digit OTP (`code`, `user_id`; sets 30-day `HttpOnly` `famo_td` cookie for students in `new_device` mode) | 2FA Rate Limit (fail-closed Redis for student OTP) |
@@ -492,6 +496,18 @@ The repository maintains a complete OpenAPI 3.1.0 specification in [`openapi.yam
 | `GET` | `/api/v1/appointments/sms/preview` | Admin | Preview weekly appointment reminder SMS status per student (`will_send`, `already_sent`, `changed_since_sent`, `failed`, `no_phone`, `no_appointment`, `multiple_appointments`), active `pattern` metadata, and rendered `sms_preview_text` |
 | `POST` | `/api/v1/appointments/sms/send` | Admin | Bulk-send weekly appointment reminder SMS to primary parents via Melipayamak (`appointment_reminder` pattern: DB `sms_pattern_settings` → `MELIPAYAMAK_APPOINTMENT_BODY_ID` → optional request `body_id`, never falling back to 2FA login `MELIPAYAMAK_PATTERN_BODY_ID`; `422 APPOINTMENT_PATTERN_NOT_CONFIGURED` if unset) |
 | `GET` | `/api/v1/appointments/sms/log` | Admin | Paginated `appointment_sms_log` audit history filterable by `week_date`, `student_id`, and `status` |
+
+### Admissions & Testimonials (`Admissions`, `Testimonials`)
+
+| Method | Endpoint | Access / Role | Description |
+| :---: | :--- | :--- | :--- |
+| `GET` / `POST` | `/api/v1/admissions` | Admin | List (`year`, `status`, `exam_type`, `consent_confirmed`, `q`, sorting) or create admission record (optional portrait upload; requires `consent_confirmed=true` to publish) |
+| `GET` / `PUT` / `PATCH` / `POST` / `DELETE` | `/api/v1/admissions/{id}` | Admin | Fetch, update (including multipart photo replacement/removal), or delete admission record |
+| `PATCH` / `PUT` | `/api/v1/admissions/{id}/status` | Admin | Publish or revert admission to `draft` (enforces `consent_confirmed=true` on publish) |
+| `GET` / `POST` | `/api/v1/testimonials` | Admin | List moderation queue or create testimonial directly (`status` defaults to `approved`, `source='admin'`) |
+| `POST` | `/api/v1/testimonials/bulk-reject` | Admin | Bulk-reject up to 100 testimonial IDs with optional shared `rejection_reason` |
+| `GET` / `PUT` / `PATCH` / `DELETE` | `/api/v1/testimonials/{id}` | Admin | Fetch, edit (including linking optional `course_id`/`instructor_id`), or delete testimonial |
+| `PATCH` / `PUT` | `/api/v1/testimonials/{id}/moderate` | Admin | Approve, reject, or revert testimonial to `pending` |
 
 ### Standard JSON Response Envelope
 
@@ -553,7 +569,7 @@ npm test
 ## 🗺 Technical Notes
 
 - User accounts (`users`) authenticate by mobile phone number (`phone`), normalized to canonical Iranian mobile format (`09XXXXXXXXX`) via `App\Core\PhoneNumber`.
-- Course subscriptions (`App\Modules\Subscription`), staff activity logs (`App\Modules\ActivityLogs`), SMS pattern settings (`App\Modules\Settings`), and server-side list sorting (`App\Core\Sorting`) are all backed by MySQL migrations `001`–`012`.
+- Course subscriptions (`App\Modules\Subscription`), staff activity logs (`App\Modules\ActivityLogs`), SMS pattern settings (`App\Modules\Settings`), admissions (`App\Modules\Admissions`), testimonials (`App\Modules\Testimonials`), and server-side list sorting (`App\Core\Sorting`) are all backed by MySQL migrations `001`–`013`.
 - Protected `GET /api/v1/blog/categories`, `excused` attendance status in `PUT /api/v1/attendance/entries`, and `PATCH` support in the catch-all 404 route are wired in `routes/api.php`.
 
 ---

@@ -58,6 +58,10 @@ use App\Modules\Settings\SmsSettingsController;
 use App\Modules\Threads\SupporterThreadController;
 use App\Modules\Threads\ThreadController;
 use App\Modules\Threads\ThreadService;
+use App\Modules\Admissions\AdmissionController;
+use App\Modules\Admissions\AdmissionService;
+use App\Modules\Testimonials\TestimonialController;
+use App\Modules\Testimonials\TestimonialService;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Slim\App;
@@ -68,6 +72,7 @@ return function (App $app) {
     $authRateLimit = \App\Core\RateLimitMiddleware::forAuthenticatedUser();
     $publicIpLimit = \App\Core\RateLimitMiddleware::forPublicIp();
     $publicExamLimit = \App\Core\RateLimitMiddleware::forPublicExam();
+    $publicTestimonialSubmitLimit = \App\Core\RateLimitMiddleware::forPublicTestimonialSubmit();
     $authAttemptLimit = \App\Core\RateLimitMiddleware::forAuthAttempt();
     $smsIpLimit = \App\Core\RateLimitMiddleware::forSmsEndpoint();
     $smsShareIpLimit = \App\Core\RateLimitMiddleware::forSmsEndpoint('send_sms');
@@ -105,6 +110,8 @@ return function (App $app) {
     $statsController = new StatsController(new StatsService());
     $activityLogController = new ActivityLogController();
     $smsSettingsController = new SmsSettingsController();
+    $admissionController = new AdmissionController(new AdmissionService());
+    $testimonialController = new TestimonialController(new TestimonialService());
     $requireContentAccess = new ContentAccessMiddleware();
 
     // Health
@@ -163,7 +170,7 @@ return function (App $app) {
     $app->post('/api/v1/auth/telegram/verify-2fa', [$telegramAuthController, 'verify2fa'])->add($authAttemptLimit);
 
     // Public
-    $app->group('/api/v1/public', function ($group) use ($publicController, $blogController) {
+    $app->group('/api/v1/public', function ($group) use ($publicController, $blogController, $admissionController, $testimonialController) {
         $group->get('/courses', [$publicController, 'getCourses']);
         $group->get('/instructors', [$publicController, 'getInstructors']);
         $group->get('/supporters', [$publicController, 'getSupporters']);
@@ -171,9 +178,15 @@ return function (App $app) {
         $group->get('/blog/posts/{slug}', [$blogController, 'getPost']);
         $group->get('/blog/categories', [$blogController, 'getCategories']);
         $group->get('/blog/categories/{category}/posts', [$blogController, 'getPostsByCategory']);
+        $group->get('/admissions', [$admissionController, 'listPublic']);
+        $group->get('/testimonials', [$testimonialController, 'listPublic']);
     })
         ->add(new \App\Core\PublicCacheMiddleware(300))
         ->add($publicIpLimit);
+
+    // Public testimonial submission (exempt from PublicCacheMiddleware; strict per-IP rate limit)
+    $app->post('/api/v1/public/testimonials', [$testimonialController, 'submitPublic'])
+        ->add($publicTestimonialSubmitLimit);
 
     // Public shared exam result link (exempt from PublicCacheMiddleware; stricter 20/min rate limit)
     $app->get('/api/v1/public/exam-results/{token}', [$examController, 'getPublicSharedResult'])
@@ -250,6 +263,28 @@ return function (App $app) {
     $app->post('/api/v1/supporters/{id:[0-9]+}/avatar', [$supporterController, 'uploadAvatar'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
     $app->delete('/api/v1/supporters/{id:[0-9]+}/avatar', [$supporterController, 'deleteAvatar'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
     $app->delete('/api/v1/supporters/{id:[0-9]+}', [$supporterController, 'delete'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+
+    // Admissions / Achievers (admin only)
+    $app->get('/api/v1/admissions', [$admissionController, 'list'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/admissions', [$admissionController, 'create'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/admissions/{id:[0-9]+}', [$admissionController, 'get'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/admissions/{id:[0-9]+}', [$admissionController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->patch('/api/v1/admissions/{id:[0-9]+}', [$admissionController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/admissions/{id:[0-9]+}', [$admissionController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/admissions/{id:[0-9]+}/status', [$admissionController, 'updateStatus'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->patch('/api/v1/admissions/{id:[0-9]+}/status', [$admissionController, 'updateStatus'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/admissions/{id:[0-9]+}', [$admissionController, 'delete'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+
+    // Testimonials (admin moderation + direct creation)
+    $app->get('/api/v1/testimonials', [$testimonialController, 'list'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/testimonials', [$testimonialController, 'create'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/testimonials/bulk-reject', [$testimonialController, 'bulkReject'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/testimonials/{id:[0-9]+}', [$testimonialController, 'get'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/testimonials/{id:[0-9]+}', [$testimonialController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->patch('/api/v1/testimonials/{id:[0-9]+}', [$testimonialController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/testimonials/{id:[0-9]+}/moderate', [$testimonialController, 'moderate'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->patch('/api/v1/testimonials/{id:[0-9]+}/moderate', [$testimonialController, 'moderate'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/testimonials/{id:[0-9]+}', [$testimonialController, 'delete'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
     // Student → supporter assignments (canonical). Admin only.
     $app->get('/api/v1/assignments/students', [$assignmentController, 'listStudents'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
