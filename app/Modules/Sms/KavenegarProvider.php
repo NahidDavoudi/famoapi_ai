@@ -188,7 +188,7 @@ final class KavenegarProvider implements SmsProvider
             );
         }
 
-n        $returnStatus = isset($json['return']['status']) && is_numeric($json['return']['status'])
+        $returnStatus = isset($json['return']['status']) && is_numeric($json['return']['status'])
             ? (int) $json['return']['status']
             : null;
         $returnMessage = isset($json['return']['message']) && is_string($json['return']['message'])
