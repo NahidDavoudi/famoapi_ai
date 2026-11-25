@@ -20,6 +20,7 @@ protected function adminJsonRequest(string $method, string $uri, array $data = [
         $token = \App\Core\Auth::encode([
             'id' => 1,
             'role' => 'admin',
+            'two_fa_verified' => true,
         ]);
         
         $headers = array_merge($headers, [

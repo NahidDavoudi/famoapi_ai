@@ -34,12 +34,13 @@
 
 - **Modular Domain Architecture**: Clean separation into `Controller → Service → Model` modules under `app/Modules/*`.
 - **MySQL 8.0+ / 8.4+ Schema & Migrations**:
-  - 13 ordered `InnoDB` / `utf8mb4` SQL migrations in `database/migrations/` (`001` through `013`) plus a legacy-dump upgrade script (`database/mysql_upgrade_from_dump.sql`).
+  - 14 ordered `InnoDB` / `utf8mb4` SQL migrations in `database/migrations/` (`001` through `014`) plus a legacy-dump upgrade script (`database/mysql_upgrade_from_dump.sql`).
   - MySQL generated columns for computed metrics and active/open uniqueness constraints (`exam_results.percentage` `STORED`, `student_supporter_assignments.active_student_id` `STORED`, `tutoring_sessions.open_student_key` `VIRTUAL`).
   - Named-lock protected (`GET_LOCK('famo_schema_migrations', 30)`) SQL migration runner (`App\Core\Migrator`) intended for manual / CLI execution (not executed automatically on HTTP boot).
 - **Multi-Role Authentication & Security**:
-  - JWT authentication (`HS256`) supporting both `Authorization: Bearer <token>` headers and cross-subdomain `HttpOnly` cookies, with Redis-backed token revocation (`JwtRevocation`).
-  - SMS OTP via Melipayamak (`OtpService`, `SmsService`, `SmsPatternSettings`) for staff 2FA (`admin`, `supporter`, `teacher`), optional student 2FA (`STUDENT_2FA_MODE=off|new_device|always` with `TrustedDevice`), and password reset flows.
+  - JWT authentication (`HS256`) supporting both `Authorization: Bearer <token>` headers and cross-subdomain `HttpOnly` cookies, with Redis-backed token revocation (`JwtRevocation`) and mandatory `two_fa_verified` enforcement on admin routes.
+  - Admin Authenticator-App TOTP 2FA (`TotpService` + `SecretBox`, RFC 6238 SHA1 / 6 digits / 30s / ±1 drift, replay protection, AES-256-GCM encrypted secrets, single-use hashed recovery codes, bootstrap CLI `php nad admin:totp-setup`), switchable back to SMS via `ADMIN_2FA_METHOD=sms`.
+  - SMS OTP via Melipayamak (`OtpService`, `SmsService`, `SmsPatternSettings`) for `supporter`/`teacher` 2FA (and `admin` when `ADMIN_2FA_METHOD=sms`), optional student 2FA (`STUDENT_2FA_MODE=off|new_device|always` with `TrustedDevice`), and password reset flows.
   - Telegram Login Widget cryptographic verification (`HMAC-SHA256`) and account linking handoff.
   - Fine-grained authorization (`Authorization`) and student-scope isolation (`StudentScope`) for supporters.
 - **Redis Caching & Atomic View Counters**:
@@ -184,7 +185,7 @@ mkdir -p storage/cache storage/logs uploads
 
 **Option A — Run via `App\Core\Migrator` (recommended for clean databases or incremental updates):**
 
-`Migrator::run()` acquires MySQL lock `GET_LOCK('famo_schema_migrations', 30)`, ensures the `migrations` tracking table exists, and executes every unapplied `database/migrations/*.sql` file in lexicographical order (`001`..`013`):
+`Migrator::run()` acquires MySQL lock `GET_LOCK('famo_schema_migrations', 30)`, ensures the `migrations` tracking table exists, and executes every unapplied `database/migrations/*.sql` file in lexicographical order (`001`..`014`):
 
 ```bash
 php -r '
@@ -330,6 +331,10 @@ Copy `.env.example` to `.env` and configure the variables for your environment. 
 | | `JWT_COOKIE_SAMESITE` | No | `Lax` | Cookie SameSite policy (`Lax`, `Strict`, `None`) |
 | | `AUTH_REVOCATION_FAIL_MODE` | No | `open` | Behavior for non-admin JWT revocation check if Redis is down (`open` / `closed`) |
 | | `AUTH_REVOCATION_ADMIN_FAIL_MODE` | No | `closed` | Behavior for admin JWT revocation check if Redis is down (`closed` / `open`) |
+| | `ADMIN_2FA_METHOD` | No | `totp` | Admin panel 2FA method (`totp` for authenticator app, `sms` to switch back to SMS OTP) |
+| | `TOTP_ENCRYPTION_KEY` | No | *(derived from `JWT_SECRET`)* | Optional dedicated key for AES-256-GCM encryption of `users.totp_secret` at rest |
+| | `TOTP_ISSUER` | No | `FAMO Academy` | Issuer label displayed in Microsoft Authenticator / Google Authenticator / Aegis |
+| | `AUTH_2FA_MAX_ATTEMPTS` / `_WINDOW_SECONDS` / `_LOCKOUT_SECONDS` | No | `5` / `600` / `600` | Failed 2FA verification cap per account and per IP (5 attempts per 10 minutes) |
 | | `STUDENT_2FA_MODE` | No | `off` | Student SMS 2FA mode (`off`, `new_device`, `always`); `new_device` uses 30-day `HttpOnly` cookie `famo_td` (stored HMAC-hashed per user in Redis) |
 | **Redis & Cache** | `REDIS_ENABLED` | No | `true` (if host/url set) | Enable Redis for caching, OTP, revocation, and rate limiting |
 | | `REDIS_URL` | No | — | Full Redis URI (`redis://[:password@]host:port[/db]`) |
@@ -356,6 +361,56 @@ Copy `.env.example` to `.env` and configure the variables for your environment. 
 | | `TELEGRAM_BOT_URL` | No | — | Telegram Bot deep-link base URL |
 
 See [`.env.example`](./.env.example) for the complete list of optional tuning knobs (SMTP, upload paths, trusted proxies, and per-route SMS quotas).
+
+---
+
+## 🔐 Admin TOTP 2FA (Microsoft Authenticator / Google Authenticator / Aegis)
+
+Admin panel login defaults to **RFC 6238 TOTP** (`SHA1`, 6 digits, 30-second period, ±1 step clock-drift window, powered by `pragmarx/google2fa`) so admins do not depend on an SMS subscription. All admin routes require a `two_fa_verified: true` session token minted only after step 2 completes.
+
+### 1. Bootstrap Enrollment (CLI — no panel login required)
+
+After applying migration `014_admin_totp_2fa.sql` and installing dependencies (`composer install` / `composer update`), enroll an admin account directly over SSH:
+
+```bash
+php nad admin:totp-setup <admin-username-or-id>
+# Optional custom issuer label:
+php nad admin:totp-setup 1 --issuer="FAMO Academy"
+```
+
+The command:
+- Generates a 160-bit Base32 secret and stores it **AES-256-GCM encrypted** in `users.totp_secret` with `totp_enabled = 1` (never plaintext).
+- Prints a scannable terminal QR code, the `otpauth://totp/...` URI, and the raw Base32 secret for manual entry in **Microsoft Authenticator** (*Add account → Other account → Enter code manually* or *Scan QR*).
+- Generates **8 one-time recovery codes**, prints them **once**, and stores only their salted hashes in `users.recovery_codes`. Save them in a password manager immediately.
+
+To inspect enrollment status and remaining recovery codes without exposing secrets:
+
+```bash
+php nad admin:totp-status <admin-username-or-id>
+```
+
+### 2. Recovering Admin Access
+
+- **Using a one-time recovery code**: Complete step 1 (`POST /api/v1/auth/login`), then submit one of your saved recovery codes (e.g., `XXXXX-XXXXX`) in the `code` field of `POST /api/v1/auth/verify-2fa`. Each code works **once** and is immediately invalidated.
+- **If you lost both your authenticator device and recovery codes (CLI reset)**:
+  ```bash
+  # Immediately wipe old secret/codes and generate a new enrollment:
+  php nad admin:totp-reset <admin-username-or-id> --re-enroll
+
+  # Or disable/wipe TOTP without re-enrolling yet:
+  php nad admin:totp-reset <admin-username-or-id>
+  ```
+  Resetting also revokes active JWT sessions for that admin (when Redis is connected).
+
+### 3. Switching Back to SMS OTP
+
+The existing SMS OTP login path is preserved intact behind `ADMIN_2FA_METHOD`. Once your SMS panel subscription is renewed, set the following in `.env` (no code changes or migration rollback needed):
+
+```dotenv
+ADMIN_2FA_METHOD=sms
+```
+
+Set `ADMIN_2FA_METHOD=totp` (or omit it, since `totp` is the default) to use authenticator-app TOTP again.
 
 ---
 
@@ -569,7 +624,7 @@ npm test
 ## 🗺 Technical Notes
 
 - User accounts (`users`) authenticate by mobile phone number (`phone`), normalized to canonical Iranian mobile format (`09XXXXXXXXX`) via `App\Core\PhoneNumber`.
-- Course subscriptions (`App\Modules\Subscription`), staff activity logs (`App\Modules\ActivityLogs`), SMS pattern settings (`App\Modules\Settings`), admissions (`App\Modules\Admissions`), testimonials (`App\Modules\Testimonials`), and server-side list sorting (`App\Core\Sorting`) are all backed by MySQL migrations `001`–`013`.
+- Course subscriptions (`App\Modules\Subscription`), staff activity logs (`App\Modules\ActivityLogs`), SMS pattern settings (`App\Modules\Settings`), admissions (`App\Modules\Admissions`), testimonials (`App\Modules\Testimonials`), admin TOTP 2FA (`App\Core\TotpService`, `App\Core\SecretBox`), and server-side list sorting (`App\Core\Sorting`) are all backed by MySQL migrations `001`–`014`.
 - Protected `GET /api/v1/blog/categories`, `excused` attendance status in `PUT /api/v1/attendance/entries`, and `PATCH` support in the catch-all 404 route are wired in `routes/api.php`.
 
 ---

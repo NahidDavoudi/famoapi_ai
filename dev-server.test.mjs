@@ -2313,3 +2313,77 @@ test('Exam Result Update — PUT/PATCH /api/v1/exams/{id} (teacher/admin RBAC, v
   assert.equal(detailsRes.body.data.subjects[0].percentage, 84);
 });
 
+test('Admin TOTP 2FA (Migration 014, pragmarx/google2fa, AES-256-GCM SecretBox, CLI nad, replay protection, recovery codes, rate limits, two_fa_verified guard, SMS fallback)', () => {
+  const composerJson = JSON.parse(fs.readFileSync(new URL('./composer.json', import.meta.url), 'utf8'));
+  const migration014 = fs.readFileSync(new URL('./database/migrations/014_admin_totp_2fa.sql', import.meta.url), 'utf8');
+  const secretBox = fs.readFileSync(new URL('./app/Core/SecretBox.php', import.meta.url), 'utf8');
+  const totpService = fs.readFileSync(new URL('./app/Core/TotpService.php', import.meta.url), 'utf8');
+  const nadCli = fs.readFileSync(new URL('./nad', import.meta.url), 'utf8');
+  const authCore = fs.readFileSync(new URL('./app/Core/Auth.php', import.meta.url), 'utf8');
+  const authMiddleware = fs.readFileSync(new URL('./app/Modules/Auth/AuthMiddleware.php', import.meta.url), 'utf8');
+  const authorization = fs.readFileSync(new URL('./app/Core/Authorization.php', import.meta.url), 'utf8');
+  const authService = fs.readFileSync(new URL('./app/Modules/Auth/AuthService.php', import.meta.url), 'utf8');
+  const authController = fs.readFileSync(new URL('./app/Modules/Auth/AuthController.php', import.meta.url), 'utf8');
+  const envValidator = fs.readFileSync(new URL('./app/Core/EnvValidator.php', import.meta.url), 'utf8');
+  const envExample = fs.readFileSync(new URL('./.env.example', import.meta.url), 'utf8');
+  const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
+  const publicSpec = fs.readFileSync(new URL('./public/openapi.yaml', import.meta.url), 'utf8');
+  const readmeMd = fs.readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+  const phpUnitTest = fs.readFileSync(new URL('./tests/Modules/Auth/AdminTotp2faTest.php', import.meta.url), 'utf8');
+
+  // 1. Composer dependency & migration 014 columns
+  assert.ok(composerJson.require['pragmarx/google2fa']);
+  assert.match(migration014, /ADD COLUMN totp_secret TEXT/);
+  assert.match(migration014, /ADD COLUMN totp_enabled TINYINT\(1\) NOT NULL DEFAULT 0/);
+  assert.match(migration014, /ADD COLUMN totp_last_used_step BIGINT UNSIGNED/);
+  assert.match(migration014, /ADD COLUMN recovery_codes TEXT/);
+
+  // 2. AES-256-GCM encryption at rest & RFC 6238 library usage
+  assert.match(secretBox, /aes-256-gcm/);
+  assert.match(secretBox, /openssl_encrypt/);
+  assert.match(secretBox, /openssl_decrypt/);
+  assert.match(secretBox, /hash_hkdf/);
+
+  assert.match(totpService, /use PragmaRX\\Google2FA\\Google2FA;/);
+  assert.match(totpService, /Google2FAConstants::SHA1/);
+  assert.match(totpService, /DEFAULT_WINDOW = 1/);
+  assert.match(totpService, /verifyKeyNewer\(/);
+  assert.match(totpService, /totp_last_used_step < :step_check/);
+  assert.match(totpService, /password_hash\(self::canonicalizeRecoveryCode\(\$code\), PASSWORD_DEFAULT\)/);
+  assert.match(totpService, /password_verify\(\$canonical, \$hash\)/);
+  assert.match(totpService, /ADMIN_2FA_METHOD/);
+
+  // 3. Bootstrap CLI commands
+  assert.match(nadCli, /admin:totp-setup/);
+  assert.match(nadCli, /admin:totp-reset/);
+  assert.match(nadCli, /admin:totp-status/);
+  assert.match(nadCli, /otpauth_uri/);
+  assert.match(nadCli, /recovery_codes/);
+
+  // 4. Auth flow, per-account + per-IP 2FA rate limiting, session rotation, and two_fa_verified guards
+  assert.match(authCore, /'two_fa_verified'\s*=>\s*\(bool\)\s*\(\$user\['two_fa_verified'\]\s*\?\?\s*false\)/);
+  assert.match(authMiddleware, /two_fa_verified/);
+  assert.match(authorization, /two_fa_verified/);
+  assert.match(authService, /TotpService::admin2faMethod\(\)\s*===\s*TotpService::METHOD_TOTP/);
+  assert.match(authService, /createPendingTotpChallenge/);
+  assert.match(authService, /assertPendingTotpChallenge/);
+  assert.match(authController, /RateLimiter::key\('2fa:user'/);
+  assert.match(authController, /RateLimiter::key\('2fa:ip'/);
+  assert.match(authController, /JwtRevocation::blacklistToken\(/);
+  assert.match(authController, /session_regenerate_id\(true\)/);
+
+  // 5. Env validation, OpenAPI byte-identical sync, README, and PHPUnit suite
+  assert.match(envValidator, /ADMIN_2FA_METHOD/);
+  assert.match(envExample, /^ADMIN_2FA_METHOD=totp$/m);
+  assert.equal(rootSpec, publicSpec);
+  assert.match(rootSpec, /two_fa_method:/);
+  assert.match(rootSpec, /remaining_recovery_codes:/);
+  assert.match(readmeMd, /php nad admin:totp-setup/);
+  assert.match(readmeMd, /php nad admin:totp-reset/);
+  assert.match(readmeMd, /ADMIN_2FA_METHOD=sms/);
+  assert.match(phpUnitTest, /testValidTotpLoginIssuesVerifiedSessionWithZeroSmsAndRejectsReplay/);
+  assert.match(phpUnitTest, /testRecoveryCodeWorksOnceAndIsImmediatelyInvalidated/);
+  assert.match(phpUnitTest, /testRateLimitEnforcesFiveAttemptsPerTenMinutesPerAccountAndPerIp/);
+});
+
+

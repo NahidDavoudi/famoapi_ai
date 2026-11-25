@@ -23,7 +23,9 @@ final class EnvValidator
         'JWT_TTL',
         'UPLOAD_MAX_SIZE',
         'AUTH_2FA_CHALLENGE_TTL',
+        'AUTH_2FA_LOCKOUT_SECONDS',
         'AUTH_2FA_MAX_ATTEMPTS',
+        'AUTH_2FA_WINDOW_SECONDS',
         'AUTH_LOGIN_IP_MAX_ATTEMPTS',
         'AUTH_LOGIN_LOCKOUT_SECONDS',
         'AUTH_LOGIN_MAX_ATTEMPTS',
@@ -318,6 +320,11 @@ final class EnvValidator
         $student2faMode = self::get('STUDENT_2FA_MODE');
         if ($student2faMode !== null && $student2faMode !== '' && !in_array(strtolower(trim($student2faMode)), TrustedDevice::VALID_MODES, true)) {
             $errors[] = 'متغیر محیطی STUDENT_2FA_MODE باید یکی از مقادیر off، new_device یا always باشد';
+        }
+
+        $admin2faMethod = self::get('ADMIN_2FA_METHOD');
+        if ($admin2faMethod !== null && $admin2faMethod !== '' && !in_array(strtolower(trim($admin2faMethod)), TotpService::VALID_METHODS, true)) {
+            $errors[] = 'متغیر محیطی ADMIN_2FA_METHOD باید یکی از مقادیر totp یا sms باشد';
         }
 
         foreach (self::BOOLEAN_KEYS as $key) {

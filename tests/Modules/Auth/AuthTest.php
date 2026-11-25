@@ -6,13 +6,27 @@ use Tests\TestCase;
 
 class AuthTest extends TestCase
 {
+    private ?string $admin2faMethodBackup = null;
+
     protected function setUp(): void
     {
         parent::setUp();
-        
+
+        $this->admin2faMethodBackup = isset($_ENV['ADMIN_2FA_METHOD']) ? (string) $_ENV['ADMIN_2FA_METHOD'] : null;
+
         $this->db->exec("DELETE FROM login_codes");
         $this->db->exec("DELETE FROM users WHERE username LIKE 'test_%'");
         $this->db->exec("DELETE FROM students WHERE phone LIKE '0999999999%'");
+    }
+
+    protected function tearDown(): void
+    {
+        if ($this->admin2faMethodBackup === null) {
+            unset($_ENV['ADMIN_2FA_METHOD']);
+        } else {
+            $_ENV['ADMIN_2FA_METHOD'] = $this->admin2faMethodBackup;
+        }
+        parent::tearDown();
     }
 
     protected function authJsonRequest(string $method, string $uri, array $data = [], array $headers = []): \Psr\Http\Message\ServerRequestInterface
@@ -181,6 +195,7 @@ class AuthTest extends TestCase
 
     public function testVerify2faSuccess(): void
     {
+        $_ENV['ADMIN_2FA_METHOD'] = 'sms';
         $phone = '09999999996';
         $password = 'password123';
         

@@ -932,7 +932,21 @@ class ActivityLog
 
     private static function sanitizePayload(array $payload): array
     {
-        $sensitiveKeys = ['password', 'current_password', 'new_password', 'token', 'code', 'two_factor_code', 'secret'];
+        $sensitiveKeys = [
+            'password',
+            'current_password',
+            'new_password',
+            'token',
+            'challenge_token',
+            'code',
+            'otp',
+            'totp_code',
+            'two_factor_code',
+            'secret',
+            'totp_secret',
+            'recovery_code',
+            'recovery_codes',
+        ];
         $clean = [];
         foreach ($payload as $k => $v) {
             $lowerKey = strtolower((string) $k);

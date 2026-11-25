@@ -1,0 +1,236 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+
+if (PHP_SAPI !== 'cli') {
+    http_response_code(403);
+    exit("CLI only.\n");
+}
+
+$autoload = __DIR__ . '/vendor/autoload.php';
+if (!is_file($autoload)) {
+    fwrite(STDERR, "Error: vendor/autoload.php not found. Run `composer install` first.\n");
+    exit(1);
+}
+
+require_once $autoload;
+
+$dotenv = Dotenv\Dotenv::createImmutable(__DIR__);
+$dotenv->safeLoad();
+
+foreach ((array) getenv() as $envKey => $envVal) {
+    if (!isset($_ENV[$envKey]) && is_string($envVal)) {
+        $_ENV[$envKey] = $envVal;
+    }
+}
+
+date_default_timezone_set('UTC');
+
+use App\Core\RedisClient;
+use App\Core\TotpService;
+
+RedisClient::configure();
+
+/**
+ * Parse CLI arguments into command, positional arguments, and --key[=value] options.
+ *
+ * @param array<int, string> $argv
+ * @return array{command: string, args: array<int, string>, options: array<string, string|bool>}
+ */
+function parseCliArgs(array $argv): array
+{
+    $command = $argv[1] ?? 'help';
+    $args = [];
+    $options = [];
+
+    for ($i = 2, $len = count($argv); $i < $len; $i++) {
+        $token = $argv[$i];
+        if (str_starts_with($token, '--')) {
+            $eqPos = strpos($token, '=');
+            if ($eqPos !== false) {
+                $key = substr($token, 2, $eqPos - 2);
+                $val = substr($token, $eqPos + 1);
+                $options[$key] = $val;
+            } else {
+                $key = substr($token, 2);
+                $options[$key] = true;
+            }
+        } else {
+            $args[] = $token;
+        }
+    }
+
+    return [
+        'command' => $command,
+        'args'    => $args,
+        'options' => $options,
+    ];
+}
+
+function printUsage(): void
+{
+    $usage = <<<'TEXT'
+FAMO API Admin CLI (nad)
+
+Usage:
+  php nad admin:totp-setup  <admin-username-or-id> [--issuer="FAMO Academy"]
+  php nad admin:totp-reset  <admin-username-or-id> [--re-enroll] [--issuer="FAMO Academy"]
+  php nad admin:totp-status <admin-username-or-id>
+
+Commands:
+  admin:totp-setup   Generate a new RFC 6238 TOTP secret (SHA1, 6 digits, 30s),
+                     save it encrypted at rest with totp_enabled = 1, and print
+                     the otpauth:// URI, manual Base32 secret, terminal QR code,
+                     and 8 one-time recovery codes (printed ONCE; only hashes stored).
+
+  admin:totp-reset   Disable and wipe TOTP + recovery codes for an admin account,
+                     and revoke active JWT sessions. Pass --re-enroll to immediately
+                     generate a replacement secret and recovery codes.
+
+  admin:totp-status  Display TOTP enrollment status and remaining recovery code count
+                     (never prints secrets or recovery codes).
+
+TEXT;
+    fwrite(STDOUT, $usage);
+}
+
+/**
+ * Print enrollment details once to STDOUT (never logged to disk).
+ *
+ * @param array{user_id: int, username: string, issuer: string, secret: string, otpauth_uri: string, recovery_codes: array<int, string>} $enrolled
+ */
+function printEnrollmentOutput(array $enrolled): void
+{
+    $formattedSecret = trim(chunk_split($enrolled['secret'], 4, ' '));
+
+    fwrite(STDOUT, "\n");
+    fwrite(STDOUT, "======================================================================\n");
+    fwrite(STDOUT, "  ADMIN TOTP 2FA ENROLLMENT COMPLETE\n");
+    fwrite(STDOUT, "======================================================================\n");
+    fwrite(STDOUT, "Admin ID   : {$enrolled['user_id']}\n");
+    fwrite(STDOUT, "Username   : {$enrolled['username']}\n");
+    fwrite(STDOUT, "Issuer     : {$enrolled['issuer']}\n");
+    fwrite(STDOUT, "Standard   : RFC 6238 (SHA1, 6 digits, 30s period, +/-1 step drift)\n");
+    fwrite(STDOUT, "----------------------------------------------------------------------\n");
+    fwrite(STDOUT, "Manual Base32 Secret (for Microsoft Authenticator / Google Auth / Aegis):\n");
+    fwrite(STDOUT, "  {$enrolled['secret']}\n");
+    fwrite(STDOUT, "  (grouped: {$formattedSecret})\n\n");
+    fwrite(STDOUT, "otpauth:// URI:\n");
+    fwrite(STDOUT, "  {$enrolled['otpauth_uri']}\n\n");
+
+    $qr = TotpService::renderTerminalQr($enrolled['otpauth_uri']);
+    if ($qr !== null) {
+        fwrite(STDOUT, "Scan QR code in Microsoft Authenticator:\n\n");
+        fwrite(STDOUT, $qr . "\n\n");
+    }
+
+    fwrite(STDOUT, "----------------------------------------------------------------------\n");
+    fwrite(STDOUT, "ONE-TIME RECOVERY CODES (SHOWN ONCE - SAVE THEM IN A PASSWORD MANAGER):\n");
+    foreach ($enrolled['recovery_codes'] as $index => $code) {
+        $num = str_pad((string) ($index + 1), 2, ' ', STR_PAD_LEFT);
+        fwrite(STDOUT, "  {$num}. {$code}\n");
+    }
+    fwrite(STDOUT, "----------------------------------------------------------------------\n");
+    fwrite(STDOUT, "Each recovery code works ONCE and is immediately invalidated upon use.\n");
+    fwrite(STDOUT, "Only encrypted secret and hashed recovery codes were saved in MySQL.\n");
+    fwrite(STDOUT, "======================================================================\n\n");
+}
+
+$parsed = parseCliArgs($argv);
+$command = $parsed['command'];
+$args = $parsed['args'];
+$options = $parsed['options'];
+
+if ($command === 'help' || $command === '--help' || $command === '-h') {
+    printUsage();
+    exit(0);
+}
+
+try {
+    $totp = new TotpService();
+
+    if ($command === 'admin:totp-setup') {
+        $identifier = $args[0] ?? '';
+        if ($identifier === '') {
+            fwrite(STDERR, "Error: missing <admin-username-or-id>.\n");
+            printUsage();
+            exit(2);
+        }
+
+        $admin = TotpService::findAdminByIdentifier($identifier);
+        if (!$admin) {
+            fwrite(STDERR, "Error: admin user not found for identifier '{$identifier}'.\n");
+            exit(1);
+        }
+
+        $issuer = isset($options['issuer']) && is_string($options['issuer']) ? $options['issuer'] : null;
+        $enrolled = $totp->enrollAdmin((int) $admin['id'], $issuer);
+        printEnrollmentOutput($enrolled);
+        exit(0);
+    }
+
+    if ($command === 'admin:totp-reset') {
+        $identifier = $args[0] ?? '';
+        if ($identifier === '') {
+            fwrite(STDERR, "Error: missing <admin-username-or-id>.\n");
+            printUsage();
+            exit(2);
+        }
+
+        $admin = TotpService::findAdminByIdentifier($identifier);
+        if (!$admin) {
+            fwrite(STDERR, "Error: admin user not found for identifier '{$identifier}'.\n");
+            exit(1);
+        }
+
+        $reEnroll = !empty($options['re-enroll']);
+        if ($reEnroll) {
+            $issuer = isset($options['issuer']) && is_string($options['issuer']) ? $options['issuer'] : null;
+            $enrolled = $totp->enrollAdmin((int) $admin['id'], $issuer);
+            fwrite(STDOUT, "Previous TOTP secret and recovery codes cleared. Re-enrolled admin #{$enrolled['user_id']}:\n");
+            printEnrollmentOutput($enrolled);
+            exit(0);
+        }
+
+        $totp->resetAdmin((int) $admin['id']);
+        fwrite(STDOUT, "\nTOTP 2FA has been reset and disabled for admin #{$admin['id']} ({$admin['username']}).\n");
+        fwrite(STDOUT, "Active JWT sessions were revoked (when Redis is connected).\n");
+        fwrite(STDOUT, "Next steps:\n");
+        fwrite(STDOUT, "  - Re-enroll now: php nad admin:totp-setup {$admin['id']}\n");
+        fwrite(STDOUT, "  - Or temporarily switch to SMS in .env: ADMIN_2FA_METHOD=sms\n\n");
+        exit(0);
+    }
+
+    if ($command === 'admin:totp-status') {
+        $identifier = $args[0] ?? '';
+        if ($identifier === '') {
+            fwrite(STDERR, "Error: missing <admin-username-or-id>.\n");
+            printUsage();
+            exit(2);
+        }
+
+        $admin = TotpService::findAdminByIdentifier($identifier);
+        if (!$admin) {
+            fwrite(STDERR, "Error: admin user not found for identifier '{$identifier}'.\n");
+            exit(1);
+        }
+
+        $status = $totp->statusForUser((int) $admin['id']);
+        fwrite(STDOUT, "\nAdmin TOTP Status:\n");
+        fwrite(STDOUT, "  Admin ID                 : {$status['user_id']}\n");
+        fwrite(STDOUT, "  Username                 : {$status['username']}\n");
+        fwrite(STDOUT, "  ADMIN_2FA_METHOD         : " . TotpService::admin2faMethod() . "\n");
+        fwrite(STDOUT, "  TOTP Enabled             : " . ($status['totp_enabled'] ? 'yes' : 'no') . "\n");
+        fwrite(STDOUT, "  Encrypted Secret Stored  : " . ($status['has_secret'] ? 'yes' : 'no') . "\n");
+        fwrite(STDOUT, "  Remaining Recovery Codes : {$status['remaining_recovery_codes']}\n\n");
+        exit(0);
+    }
+
+    fwrite(STDERR, "Unknown command: {$command}\n\n");
+    printUsage();
+    exit(2);
+} catch (\Throwable $e) {
+    // Print sanitized error message without stack trace or secrets
+    fwrite(STDERR, "Error: {$e->getMessage()}\n");
+    exit(1);
+}

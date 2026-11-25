@@ -36,6 +36,10 @@ class AuthMiddleware implements MiddlewareInterface
             return $this->unauthorized('نشست کاربری لغو شده یا منقضی شده است');
         }
 
+        if (strtolower((string) ($decoded->role ?? '')) === 'admin' && (($decoded->two_fa_verified ?? false) !== true)) {
+            return $this->unauthorized('تأیید دو مرحله‌ای برای دسترسی مدیر الزامی است');
+        }
+
         if (Database::hasConnection() && isset($decoded->sub) && (int) $decoded->sub > 0) {
             try {
                 $userRow = User::findById((int) $decoded->sub);

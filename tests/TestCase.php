@@ -102,6 +102,7 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
         return $this->authenticatedRequest($method, $uri, [
             'id' => 1,
             'role' => 'admin',
+            'two_fa_verified' => true,
         ], $body, $headers);
     }
 

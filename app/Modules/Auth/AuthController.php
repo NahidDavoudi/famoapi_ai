@@ -136,6 +136,10 @@ class AuthController
             ->required('code', 'کد تأیید', $body['code'] ?? null)
             ->string('code', 'کد تأیید', $body['code'] ?? null);
 
+        if (isset($body['challenge_token']) && $body['challenge_token'] !== null) {
+            $validator->string('challenge_token', 'توکن چالش', $body['challenge_token']);
+        }
+
         if (!$validator->passes()) {
             $response->getBody()->write(json_encode([
                 'success'    => false,
@@ -150,23 +154,44 @@ class AuthController
         }
 
         $userId = (int) $body['user_id'];
-        $ttl = $this->envInt('AUTH_2FA_CHALLENGE_TTL', 300);
-        $twoFaKey = RateLimiter::key('2fa:user', (string) $userId);
+        $ip = ClientIp::fromRequest($request);
+        $maxAttempts = $this->envInt('AUTH_2FA_MAX_ATTEMPTS', 5);
+        $defaultWindow = isset($_ENV['AUTH_2FA_CHALLENGE_TTL']) && $_ENV['AUTH_2FA_CHALLENGE_TTL'] !== ''
+            ? $this->envInt('AUTH_2FA_CHALLENGE_TTL', 600)
+            : 600;
+        $window = $this->envInt('AUTH_2FA_WINDOW_SECONDS', $defaultWindow);
+        $lockout = $this->envInt('AUTH_2FA_LOCKOUT_SECONDS', $window);
+
+        $twoFaUserKey = RateLimiter::key('2fa:user', (string) $userId);
+        $twoFaIpKey = $ip !== null ? RateLimiter::key('2fa:ip', $ip) : null;
+        $challengeToken = isset($body['challenge_token']) && is_string($body['challenge_token'])
+            ? $body['challenge_token']
+            : null;
 
         try {
-            $status = RateLimiter::status($twoFaKey, $this->envInt('AUTH_2FA_MAX_ATTEMPTS', 5));
-            if (!$status['allowed']) {
-                throw new RateLimitedException($status['retry_after'] > 0 ? $status['retry_after'] : $ttl);
+            $userStatus = RateLimiter::status($twoFaUserKey, $maxAttempts);
+            if (!$userStatus['allowed']) {
+                throw new RateLimitedException($userStatus['retry_after'] > 0 ? $userStatus['retry_after'] : $lockout);
             }
 
-            $result = $this->service->verify2fa($userId, (string) $body['code']);
+            if ($twoFaIpKey !== null) {
+                $ipStatus = RateLimiter::status($twoFaIpKey, $maxAttempts);
+                if (!$ipStatus['allowed']) {
+                    throw new RateLimitedException($ipStatus['retry_after'] > 0 ? $ipStatus['retry_after'] : $lockout);
+                }
+            }
 
-            RateLimiter::clear($twoFaKey);
+            $result = $this->service->verify2fa($userId, (string) $body['code'], $challengeToken);
+
+            RateLimiter::clear($twoFaUserKey);
         } catch (RateLimitedException $e) {
             return $this->rateLimitedResponse($response, $e);
         } catch (\App\Core\ApiException $e) {
             if ($e->getErrorCode() !== 'OTP_SERVICE_UNAVAILABLE') {
-                RateLimiter::attempt($twoFaKey, $this->envInt('AUTH_2FA_MAX_ATTEMPTS', 5), $ttl, $ttl);
+                RateLimiter::attempt($twoFaUserKey, $maxAttempts, $window, $lockout);
+                if ($twoFaIpKey !== null) {
+                    RateLimiter::attempt($twoFaIpKey, $maxAttempts, $window, $lockout);
+                }
             }
 
             $response->getBody()->write(json_encode([
@@ -179,6 +204,18 @@ class AuthController
                 ],
             ], JSON_UNESCAPED_UNICODE));
             return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        // Regenerate session state after successful 2FA: revoke any prior token & rotate PHP session ID if active.
+        $priorAuthHeader = $request->getHeaderLine('Authorization');
+        $priorToken = str_starts_with($priorAuthHeader, 'Bearer ')
+            ? trim(substr($priorAuthHeader, 7))
+            : AuthCookie::tokenFromRequest($request);
+        if (is_string($priorToken) && $priorToken !== '') {
+            JwtRevocation::blacklistToken($priorToken);
+        }
+        if (function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) {
+            session_regenerate_id(true);
         }
 
         $token = $result['token'] ?? null;
@@ -199,7 +236,7 @@ class AuthController
                         'http_method'     => 'POST',
                         'endpoint'        => '/api/v1/auth/verify-2fa',
                         'status_code'     => 200,
-                        'ip_address'      => ClientIp::fromRequest($request),
+                        'ip_address'      => $ip,
                     ]);
                 } catch (\Throwable) {
                 }

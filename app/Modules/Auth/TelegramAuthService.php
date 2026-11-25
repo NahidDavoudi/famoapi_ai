@@ -199,7 +199,7 @@ class TelegramAuthService
             RateLimiter::clear(RateLimiter::key('login:user_ip', (string) $user['username'] . '|' . $ip));
         }
 
-        return $this->auth->sessionForUser((int) $user['id'])
+        return $this->auth->sessionForUser((int) $user['id'], true, ['pwd', 'sms'])
             + ['bot_redirect_url' => $this->botRedirect()];
     }
 

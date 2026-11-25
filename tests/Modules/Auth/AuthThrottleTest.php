@@ -56,8 +56,11 @@ class AuthThrottleTest extends TestCase
             'AUTH_LOGIN_LOCKOUT_SECONDS',
             'AUTH_LOGIN_IP_MAX_ATTEMPTS',
             'AUTH_LOGIN_USER_SOFT_MAX',
+            'ADMIN_2FA_METHOD',
             'AUTH_2FA_MAX_ATTEMPTS',
             'AUTH_2FA_CHALLENGE_TTL',
+            'AUTH_2FA_WINDOW_SECONDS',
+            'AUTH_2FA_LOCKOUT_SECONDS',
             'AUTH_SMS_PHONE_HOURLY_MAX',
             'AUTH_SMS_IP_HOURLY_MAX',
         ] as $key) {
@@ -181,6 +184,7 @@ class AuthThrottleTest extends TestCase
 
     public function testSmsPhoneCapReturns429(): void
     {
+        $_ENV['ADMIN_2FA_METHOD'] = 'sms';
         $_ENV['AUTH_SMS_PHONE_HOURLY_MAX'] = '1';
 
         $username = 'throttle_sms_admin';

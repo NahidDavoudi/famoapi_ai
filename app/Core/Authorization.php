@@ -78,6 +78,22 @@ class Authorization implements MiddlewareInterface
                 ->withHeader('Content-Type', 'application/json; charset=utf-8');
         }
 
+        if (strtolower((string) ($user->role ?? '')) === 'admin' && (($user->two_fa_verified ?? false) !== true)) {
+            $response = new SlimResponse();
+            $response->getBody()->write(json_encode([
+                'success' => false,
+                'data' => null,
+                'pagination' => null,
+                'error' => [
+                    'code' => 'FORBIDDEN',
+                    'message' => 'تأیید دو مرحله‌ای برای دسترسی مدیر الزامی است',
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response
+                ->withStatus(403)
+                ->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
         return $handler->handle($request);
     }
 }

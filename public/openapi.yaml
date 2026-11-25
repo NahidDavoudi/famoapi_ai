@@ -195,7 +195,10 @@ paths:
                                 nullable: true
                                 description: شناسه دانش‌آموز متصل (فقط برای نقش student)
         "202":
-          description: 2FA required (always for admin/supporter/teacher; optional for student according to STUDENT_2FA_MODE=off|new_device|always)
+          description: >
+            2FA required. Admins use authenticator-app TOTP (`two_fa_method=totp`, RFC 6238) by
+            default or SMS OTP when `ADMIN_2FA_METHOD=sms`. Supporters and teachers use SMS OTP;
+            students use SMS OTP according to `STUDENT_2FA_MODE=off|new_device|always`.
           content:
             application/json:
               schema:
@@ -208,12 +211,27 @@ paths:
                           requires_2fa:
                             type: boolean
                             enum: [true]
+                          two_fa_method:
+                            type: string
+                            enum: [totp, sms]
+                            description: روش احراز هویت دو مرحله‌ای (totp برای اپلیکیشن احراز هویت یا sms)
                           user_id:
                             type: integer
                             description: شناسه کاربر برای مرحله دوم ورود
+                          username:
+                            type: string
+                            description: نام کاربری
+                          role:
+                            type: string
+                            enum: [admin, supporter, student, teacher]
                           phone_mask:
                             type: string
-                            description: شماره موبایل ماسک شده کاربر
+                            nullable: true
+                            description: شماره موبایل ماسک شده کاربر (برای حالت totp مقدار null است)
+                          challenge_token:
+                            type: string
+                            nullable: true
+                            description: توکن چالش مرحله اول برای تایید TOTP (اختیاری در ارسال به verify-2fa)
         "401":
           $ref: "#/components/responses/Unauthorized"
         "422":
@@ -228,10 +246,13 @@ paths:
       tags: [Auth]
       summary: Verify 2FA code and complete login
       description: >
-        Verifies the 6-digit SMS OTP for staff (always) or students (when `STUDENT_2FA_MODE`
-        is `new_device` or `always`). For students under `STUDENT_2FA_MODE=new_device`, sets a
-        30-day `HttpOnly` per-user trusted-device cookie (`famo_td`) stored hashed in Redis.
-        Fails closed (`503`) for student OTP verification if Redis is unavailable.
+        Verifies the second authentication factor and issues a fresh session JWT with
+        `two_fa_verified: true`. For admins under `ADMIN_2FA_METHOD=totp` (default), accepts
+        either a 6-digit RFC 6238 TOTP code (SHA1, 30s period, ±1 step window with replay
+        protection) or a single-use recovery code. For admins under `ADMIN_2FA_METHOD=sms`,
+        supporters, teachers, or students (when `STUDENT_2FA_MODE` is `new_device` or `always`),
+        verifies the 6-digit SMS OTP. Rate-limited to 5 failed attempts per 10 minutes per
+        account and per IP.
       operationId: authVerify2fa
       requestBody:
         required: true
@@ -245,7 +266,10 @@ paths:
                   description: شناسه کاربر برگشتی از مرحله اول ورود
                 code:
                   type: string
-                  description: کد ۶ رقمی ارسال شده از طریق پیامک (SMS)
+                  description: کد ۶ رقمی TOTP / پیامک، یا یکی از کدهای بازیابی یک‌بارمصرف (برای مدیر در حالت totp)
+                challenge_token:
+                  type: string
+                  description: توکن چالش اختیاری برگشتی از مرحله اول ورود در حالت TOTP
               required: [user_id, code]
       responses:
         "200":
@@ -261,6 +285,14 @@ paths:
                         properties:
                           token:
                             type: string
+                          auth_method:
+                            type: string
+                            enum: [totp, recovery, sms]
+                            description: روش استفاده‌شده در تایید دومرحله‌ای
+                          remaining_recovery_codes:
+                            type: integer
+                            nullable: true
+                            description: تعداد کدهای بازیابی باقی‌مانده (فقط در صورت ورود با کد بازیابی)
                           user:
                             type: object
                             properties:

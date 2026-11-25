@@ -11,19 +11,23 @@ use App\Core\RateLimitedException;
 use App\Core\RateLimiter;
 use App\Core\RedisClient;
 use App\Core\SmsService;
+use App\Core\TotpService;
 use App\Core\TrustedDevice;
 
 class AuthService
 {
     private const PASSWORD_RESET_TOKEN_TTL = 600;
+    private const TOTP_CHALLENGE_SENTINEL = '__TOTP';
 
     private SmsService $sms;
     private OtpService $otp;
+    private TotpService $totp;
 
-    public function __construct(?SmsService $sms = null, ?OtpService $otp = null)
+    public function __construct(?SmsService $sms = null, ?OtpService $otp = null, ?TotpService $totp = null)
     {
         $this->sms = $sms ?? new SmsService();
         $this->otp = $otp ?? new OtpService();
+        $this->totp = $totp ?? new TotpService();
     }
 
     /**
@@ -47,7 +51,7 @@ class AuthService
         return $id > 0 ? $id : null;
     }
 
-    public function sessionForUser(int $userId): array
+    public function sessionForUser(int $userId, bool $twoFaVerified = false, ?array $amr = null): array
     {
         $user = User::findById($userId);
         if (!$user) {
@@ -60,12 +64,18 @@ class AuthService
         $studentId = $this->studentIdFor($user);
         $instructorId = $this->instructorIdFor($user);
 
-        $token = Auth::encode([
-            'id'            => $user['id'],
-            'role'          => $user['role'],
-            'student_id'    => $studentId,
-            'instructor_id' => $instructorId,
-        ]);
+        $claims = [
+            'id'              => $user['id'],
+            'role'            => $user['role'],
+            'student_id'      => $studentId,
+            'instructor_id'   => $instructorId,
+            'two_fa_verified' => $twoFaVerified,
+        ];
+        if ($amr !== null) {
+            $claims['amr'] = $amr;
+        }
+
+        $token = Auth::encode($claims);
 
         return [
             'token' => $token,
@@ -88,6 +98,12 @@ class AuthService
             '٠' => '0', '١' => '1', '٢' => '2', '٣' => '3', '٤' => '4',
             '٥' => '5', '٦' => '6', '٧' => '7', '٨' => '8', '٩' => '9',
         ]));
+
+        // SMS codes are strictly 6 ASCII digits; prevents any non-numeric challenge sentinel from ever matching.
+        if (preg_match('/^\d{6}$/', $normalizedCode) !== 1) {
+            throw new \App\Core\ApiException('کد تأیید نامعتبر یا منقضی شده است', 401, '2FA_ERROR');
+        }
+
         $now = gmdate('Y-m-d H:i:s');
 
         $stmt = $db->prepare(
@@ -108,7 +124,7 @@ class AuthService
         );
         $stmt->execute([$record['id'], $now]);
         if ($stmt->rowCount() !== 1) {
-            throw new \App\Core\ApiException('کد تأیید نامعتبر یا قبلاً استفاده شده است', 401, '2FA_ERROR');
+            throw new \App\Core\ApiException('کد تأیید نامعتبر یا منقضی شده است', 401, '2FA_ERROR');
         }
 
         $user = User::findById($userId);
@@ -204,6 +220,31 @@ class AuthService
 
         $role = $user['role'];
 
+        if ($role === 'admin' && TotpService::admin2faMethod() === TotpService::METHOD_TOTP) {
+            if (!TotpService::isEnrolled($user)) {
+                // Log non-sensitive operator hint without revealing credentials or which factor failed to the caller
+                error_log(
+                    '[' . date('Y-m-d H:i:s') . '] AuthService: Admin user #' . (int) $user['id']
+                    . ' attempted login without TOTP enrollment; run `php nad admin:totp-setup ' . (int) $user['id'] . '`' . PHP_EOL,
+                    3,
+                    __DIR__ . '/../../../storage/logs/app.log'
+                );
+                throw new \App\Core\ApiException('نام کاربری یا رمز عبور اشتباه است', 401, 'AUTH_ERROR');
+            }
+
+            $challengeToken = $this->createPendingTotpChallenge((int) $user['id']);
+
+            return [
+                'requires_2fa'    => true,
+                'two_fa_method'   => TotpService::METHOD_TOTP,
+                'user_id'         => (int) $user['id'],
+                'username'        => $user['username'],
+                'role'            => $role,
+                'phone_mask'      => null,
+                'challenge_token' => $challengeToken,
+            ];
+        }
+
         if ($role === 'admin' || $role === 'supporter' || $role === 'teacher') {
             $rawMobile = !empty($user['phone']) ? (string) $user['phone'] : (string) $user['username'];
             $mobile = PhoneNumber::normalize($rawMobile) ?? $rawMobile;
@@ -228,11 +269,12 @@ class AuthService
             }
 
             return [
-                'requires_2fa' => true,
-                'user_id'      => (int) $user['id'],
-                'username'     => $user['username'],
-                'role'         => $role,
-                'phone_mask'   => PhoneNumber::mask($mobile),
+                'requires_2fa'  => true,
+                'two_fa_method' => TotpService::METHOD_SMS,
+                'user_id'       => (int) $user['id'],
+                'username'      => $user['username'],
+                'role'          => $role,
+                'phone_mask'    => PhoneNumber::mask($mobile),
             ];
         }
 
@@ -299,11 +341,34 @@ class AuthService
         ];
     }
 
-    public function verify2fa(int $userId, string $code): array
+    public function verify2fa(int $userId, string $code, ?string $challengeToken = null): array
     {
         $user = User::findById($userId);
+        if (!$user) {
+            throw new \App\Core\ApiException('کد تأیید نامعتبر یا منقضی شده است', 401, '2FA_ERROR');
+        }
 
-        if ($user && ($user['role'] ?? '') === 'student') {
+        if (($user['role'] ?? '') === 'admin' && TotpService::admin2faMethod() === TotpService::METHOD_TOTP) {
+            if (isset($user['is_active']) && (int) $user['is_active'] === 0) {
+                throw new \App\Core\ApiException('کد تأیید نامعتبر یا منقضی شده است', 401, '2FA_ERROR');
+            }
+
+            // Ensure password factor (step 1) actually completed within the challenge window
+            $this->assertPendingTotpChallenge($userId, $challengeToken);
+
+            $verified = $this->totp->verifyAdminCode($user, $code);
+            $this->consumePendingTotpChallenge($userId);
+
+            $session = $this->sessionForUser($userId, true, ['pwd', $verified['method']]);
+            $session['auth_method'] = $verified['method'];
+            if ($verified['method'] === 'recovery' && isset($verified['remaining_recovery_codes'])) {
+                $session['remaining_recovery_codes'] = $verified['remaining_recovery_codes'];
+            }
+
+            return $session;
+        }
+
+        if (($user['role'] ?? '') === 'student') {
             if (isset($user['is_active']) && (int) $user['is_active'] === 0) {
                 throw new \App\Core\ApiException('حساب کاربری غیرفعال است', 403, 'FORBIDDEN');
             }
@@ -319,12 +384,89 @@ class AuthService
                 throw new \App\Core\ApiException('کد تأیید نامعتبر یا منقضی شده است', 401, '2FA_ERROR');
             }
 
-            return $this->sessionForUser($userId);
+            return $this->sessionForUser($userId, true, ['pwd', 'sms']);
         }
 
         $this->consume2faCode($userId, $code);
 
-        return $this->sessionForUser($userId);
+        return $this->sessionForUser($userId, true, ['pwd', 'sms']);
+    }
+
+    /**
+     * Record a server-side pending TOTP challenge after password verification succeeds,
+     * so `/auth/verify-2fa` cannot be called without first passing step 1.
+     */
+    private function createPendingTotpChallenge(int $userId): string
+    {
+        $ttl = max(60, (int) ($_ENV['AUTH_2FA_CHALLENGE_TTL'] ?? 300));
+        $challengeToken = bin2hex(random_bytes(32));
+        $tokenHash = $this->hashChallengeToken($userId, $challengeToken);
+
+        $db = Database::getConnection();
+        $expiresAt = gmdate('Y-m-d H:i:s', time() + $ttl);
+        $db->prepare('UPDATE login_codes SET used = 1 WHERE user_id = ? AND used = 0')
+           ->execute([$userId]);
+        $db->prepare('INSERT INTO login_codes (user_id, code, expires_at) VALUES (?, ?, ?)')
+           ->execute([$userId, self::TOTP_CHALLENGE_SENTINEL, $expiresAt]);
+
+        if (RedisClient::isAvailable()) {
+            RedisClient::setex(self::totpChallengeRedisKey($userId), $ttl, $tokenHash);
+        }
+
+        return $challengeToken;
+    }
+
+    private function assertPendingTotpChallenge(int $userId, ?string $challengeToken): void
+    {
+        $now = gmdate('Y-m-d H:i:s');
+        $db = Database::getConnection();
+        $stmt = $db->prepare(
+            'SELECT id FROM login_codes
+             WHERE user_id = ? AND code = ? AND used = 0 AND expires_at > ?
+             ORDER BY id DESC LIMIT 1'
+        );
+        $stmt->execute([$userId, self::TOTP_CHALLENGE_SENTINEL, $now]);
+        $dbChallenge = $stmt->fetch();
+
+        $redisHash = RedisClient::isAvailable()
+            ? RedisClient::get(self::totpChallengeRedisKey($userId))
+            : null;
+
+        if (!$dbChallenge && $redisHash === null) {
+            throw new \App\Core\ApiException('کد تأیید نامعتبر یا منقضی شده است', 401, '2FA_ERROR');
+        }
+
+        if ($challengeToken !== null && trim($challengeToken) !== '' && $redisHash !== null) {
+            $expected = $this->hashChallengeToken($userId, trim($challengeToken));
+            if (!hash_equals($redisHash, $expected)) {
+                throw new \App\Core\ApiException('کد تأیید نامعتبر یا منقضی شده است', 401, '2FA_ERROR');
+            }
+        }
+    }
+
+    private function consumePendingTotpChallenge(int $userId): void
+    {
+        try {
+            $db = Database::getConnection();
+            $db->prepare('UPDATE login_codes SET used = 1 WHERE user_id = ? AND code = ? AND used = 0')
+               ->execute([$userId, self::TOTP_CHALLENGE_SENTINEL]);
+        } catch (\Throwable) {
+        }
+
+        if (RedisClient::isAvailable()) {
+            RedisClient::del(self::totpChallengeRedisKey($userId));
+        }
+    }
+
+    private function hashChallengeToken(int $userId, string $token): string
+    {
+        $secret = (string) ($_ENV['JWT_SECRET'] ?? getenv('JWT_SECRET') ?: '');
+        return hash_hmac('sha256', $userId . '|' . $token, $secret);
+    }
+
+    private static function totpChallengeRedisKey(int $userId): string
+    {
+        return '2fa:totp_challenge:' . $userId;
     }
 
     /**
@@ -732,10 +874,11 @@ class AuthService
 
         User::update($userId, ['password' => $newPassword]);
 
-        // Revoke all previously issued tokens, then issue a fresh session so the caller remains logged in.
+        // Revoke all previously issued tokens, then issue a fresh session preserving verified 2FA state for admins.
         JwtRevocation::revokeAllForUser($userId);
 
-        return $this->sessionForUser($userId);
+        $preserveAdmin2fa = strtolower((string) ($user['role'] ?? '')) === 'admin';
+        return $this->sessionForUser($userId, $preserveAdmin2fa);
     }
 
     public function updateProfile(int $userId, array $data): array

@@ -235,7 +235,7 @@ class JwtRevocationTest extends TestCase
         $adminId = $this->createUser('revtest_closed_adm', 'secret123', 'admin');
 
         $studentToken = Auth::encode(['id' => $studentId, 'role' => 'student']);
-        $adminToken = Auth::encode(['id' => $adminId, 'role' => 'admin']);
+        $adminToken = Auth::encode(['id' => $adminId, 'role' => 'admin', 'two_fa_verified' => true]);
 
         RedisClient::simulateFailure(true, 'Redis connection lost');
 
