@@ -155,7 +155,7 @@ final class SmsModuleTest extends TestCase
         $this->assertSame('09123456789', SmsPhone::normalize('٠٩١٢ ٣٤٥ ٦٧٨٩'));
 
         // Invalid numbers return null and throw SmsInputException from normalizeOrFail().
-        foreach ['', '   ', '02112345678', '0912345678', '091234567890', 'abc', null, []] as $invalid) {
+        foreach (['', '   ', '02112345678', '0912345678', '091234567890', 'abc', null, []] as $invalid) {
             $this->assertNull(SmsPhone::normalize($invalid));
         }
 
