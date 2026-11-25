@@ -13,6 +13,7 @@ class SmsService
     private string $melipayamakAppointmentBodyId;
     private ?int $overrideAppointmentBodyId = null;
     private ?int $overrideExamBodyId = null;
+    private ?int $requestTimeoutOverride = null;
     private ?string $lastError = null;
 
     public function __construct()
@@ -35,6 +36,11 @@ class SmsService
     public function setExamBodyId(?int $bodyId): void
     {
         $this->overrideExamBodyId = ($bodyId !== null && $bodyId > 0) ? $bodyId : null;
+    }
+
+    public function setRequestTimeoutOverride(?int $timeoutSeconds): void
+    {
+        $this->requestTimeoutOverride = ($timeoutSeconds !== null && $timeoutSeconds > 0) ? $timeoutSeconds : null;
     }
 
     public function getLastError(): ?string
@@ -158,7 +164,7 @@ class SmsService
             return false;
         }
 
-        return $this->sendMelipayamakPattern($mobile, (int) $bodyId, $code, '2FA code');
+        return $this->sendMelipayamakPattern($mobile, (int) $bodyId, $code, '2FA code', $this->requestTimeoutOverride);
     }
 
     /**
@@ -201,7 +207,7 @@ class SmsService
         return $this->sendMelipayamakPattern($normalized, (int) $bodyId, $patternText, 'Exam result link');
     }
 
-    private function sendMelipayamakPattern(string $mobile, int $bodyId, string $text, string $contextLabel): bool
+    private function sendMelipayamakPattern(string $mobile, int $bodyId, string $text, string $contextLabel, ?int $timeoutSeconds = null): bool
     {
         $url = 'https://rest.payamak-panel.com/api/SendSMS/BaseServiceNumber';
         $jsonData = json_encode([
@@ -212,14 +218,17 @@ class SmsService
             'text'     => $text,
         ], JSON_UNESCAPED_UNICODE);
 
+        $timeout = $timeoutSeconds !== null ? max(1, $timeoutSeconds) : 15;
+        $connectTimeout = $timeoutSeconds !== null ? min($timeout, 4) : 10;
+
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_POST           => true,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HTTPHEADER     => ['Content-Type: application/json; charset=utf-8'],
             CURLOPT_POSTFIELDS     => $jsonData,
-            CURLOPT_TIMEOUT        => 15,
-            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT        => $timeout,
+            CURLOPT_CONNECTTIMEOUT => $connectTimeout,
         ]);
 
         $response = curl_exec($ch);

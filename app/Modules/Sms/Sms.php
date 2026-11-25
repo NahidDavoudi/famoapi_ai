@@ -142,6 +142,10 @@ final class Sms
             return ['id' => $id, 'status' => 'sent', 'providerMsgId' => $result->messageId];
         }
 
+        if (KavenegarProvider::isInsufficientBalanceCode($result->providerStatusCode)) {
+            BalanceMonitor::alertInsufficientBalance($redactedError, $config);
+        }
+
         if ($result->definitive) {
             // Provider explicitly refused the message (it will never go out).
             SmsLog::markFailed(
@@ -150,9 +154,6 @@ final class Sms
                 $result->providerStatusText,
                 mb_substr($redactedError, 0, 500)
             );
-            if (KavenegarProvider::isInsufficientBalanceCode($result->providerStatusCode)) {
-                BalanceMonitor::alertInsufficientBalance($redactedError);
-            }
             return ['id' => $id, 'status' => 'failed', 'providerMsgId' => null];
         }
 

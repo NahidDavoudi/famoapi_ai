@@ -43,6 +43,7 @@ final class EnvValidator
         'BOT_REPORT_NOTIFY_WINDOW',
         'TELEGRAM_AUTH_TICKET_TTL',
         'TELEGRAM_LOGIN_MAX_AGE',
+        'MAIL_PORT',
         'SMTP_PORT',
         'REDIS_PORT',
         'PUBLIC_RATE_LIMIT_MAX',
@@ -62,6 +63,10 @@ final class EnvValidator
         'RATE_LIMIT_SMS_IP_WINDOW',
         'RATE_LIMIT_SMS_PHONE_MAX',
         'RATE_LIMIT_SMS_PHONE_WINDOW',
+        'SMS_LOW_BALANCE_NOTIFY_MINUTES',
+        'SMS_RECONCILE_MAX_AGE_DAYS',
+        'SMS_RECONCILE_MIN_AGE_SECONDS',
+        'SMS_REQUEST_TIMEOUT_MS',
     ];
 
     private const NON_NEGATIVE_INT_KEYS = [
@@ -70,6 +75,7 @@ final class EnvValidator
     ];
 
     private const BOOLEAN_KEYS = [
+        'ADMIN_SMS_ENABLED',
         'APP_DEBUG',
         'CACHE_ENABLED',
         'JWT_COOKIE_SECURE',
@@ -325,6 +331,35 @@ final class EnvValidator
         $admin2faMethod = self::get('ADMIN_2FA_METHOD');
         if ($admin2faMethod !== null && $admin2faMethod !== '' && !in_array(strtolower(trim($admin2faMethod)), TotpService::VALID_METHODS, true)) {
             $errors[] = 'متغیر محیطی ADMIN_2FA_METHOD باید یکی از مقادیر totp یا sms باشد';
+        }
+
+        $admin2faChain = self::get('ADMIN_2FA_CHAIN');
+        if ($admin2faChain !== null && trim($admin2faChain) !== '') {
+            $parts = array_values(array_filter(array_map(static fn (string $p): string => strtolower(trim($p)), explode(',', $admin2faChain)), static fn (string $p): bool => $p !== ''));
+            $invalidParts = array_diff($parts, ['sms', 'email', 'totp']);
+            if ($parts === [] || $invalidParts !== []) {
+                $errors[] = 'متغیر محیطی ADMIN_2FA_CHAIN باید ترکیبی از مقادیر sms، email و totp باشد';
+            }
+        }
+
+        $mailEncryption = self::get('MAIL_ENCRYPTION');
+        if ($mailEncryption !== null && trim($mailEncryption) !== '' && !in_array(strtolower(trim($mailEncryption)), ['ssl', 'smtps', 'tls', 'starttls', 'none'], true)) {
+            $errors[] = 'متغیر محیطی MAIL_ENCRYPTION باید یکی از مقادیر ssl، tls یا none باشد';
+        }
+
+        $mailFrom = self::get('MAIL_FROM');
+        if ($mailFrom !== null && trim($mailFrom) !== '' && filter_var(trim($mailFrom), FILTER_VALIDATE_EMAIL) === false) {
+            $errors[] = 'متغیر محیطی MAIL_FROM باید یک آدرس ایمیل معتبر باشد';
+        }
+
+        $smsProvider = self::get('SMS_PROVIDER');
+        if ($smsProvider !== null && $smsProvider !== '' && !in_array(strtolower(trim($smsProvider)), ['kavenegar', 'fake'], true)) {
+            $errors[] = 'متغیر محیطی SMS_PROVIDER باید یکی از مقادیر kavenegar یا fake باشد';
+        }
+
+        $smsLowBalance = self::get('SMS_LOW_BALANCE_THRESHOLD');
+        if ($smsLowBalance !== null && $smsLowBalance !== '' && !is_numeric(trim($smsLowBalance))) {
+            $errors[] = 'متغیر محیطی SMS_LOW_BALANCE_THRESHOLD باید یک مقدار عددی (ریال) باشد';
         }
 
         foreach (self::BOOLEAN_KEYS as $key) {

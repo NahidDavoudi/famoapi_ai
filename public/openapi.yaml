@@ -196,8 +196,11 @@ paths:
                                 description: شناسه دانش‌آموز متصل (فقط برای نقش student)
         "202":
           description: >
-            2FA required. Admins use authenticator-app TOTP (`two_fa_method=totp`, RFC 6238) by
-            default or SMS OTP when `ADMIN_2FA_METHOD=sms`. Supporters and teachers use SMS OTP;
+            2FA required. Admins use the configurable multi-channel fallback chain
+            `ADMIN_2FA_CHAIN` (default `sms,email,totp`): SMS OTP (skipped immediately when
+            `ADMIN_SMS_ENABLED=false` or when the 3-failure / 10-minute SMS circuit breaker is open,
+            4s hard timeout) -> Email OTP via SMTP (8s hard timeout, same OTP) -> Authenticator app
+            TOTP (RFC 6238, SHA1, 6 digits, 30s, ±1 drift). Supporters and teachers use SMS OTP;
             students use SMS OTP according to `STUDENT_2FA_MODE=off|new_device|always`.
           content:
             application/json:
@@ -213,8 +216,23 @@ paths:
                             enum: [true]
                           two_fa_method:
                             type: string
-                            enum: [totp, sms]
-                            description: روش احراز هویت دو مرحله‌ای (totp برای اپلیکیشن احراز هویت یا sms)
+                            enum: [sms, email, totp]
+                            description: کانال فعال احراز هویت دو مرحله‌ای (sms، email یا totp)
+                          channel:
+                            type: string
+                            enum: [sms, email, totp]
+                            description: کانال فعال تحویل کد برای مدیر
+                          channel_message:
+                            type: string
+                            example: Code sent via email
+                            description: پیام انگلیسی کانال فعال ("Code sent via SMS" / "Code sent via email" / "Enter the code from your authenticator app")
+                          channel_message_fa:
+                            type: string
+                            description: پیام فارسی کانال فعال
+                          destination_mask:
+                            type: string
+                            nullable: true
+                            description: مقصد ماسک‌شده (موبایل یا ایمیل)؛ برای حالت totp مقدار null
                           user_id:
                             type: integer
                             description: شناسه کاربر برای مرحله دوم ورود
@@ -227,11 +245,46 @@ paths:
                           phone_mask:
                             type: string
                             nullable: true
-                            description: شماره موبایل ماسک شده کاربر (برای حالت totp مقدار null است)
+                            description: شماره موبایل ماسک شده کاربر (در صورت ارسال پیامک)
+                          email_mask:
+                            type: string
+                            nullable: true
+                            description: آدرس ایمیل ماسک شده کاربر (در صورت ارسال ایمیل)
                           challenge_token:
                             type: string
                             nullable: true
-                            description: توکن چالش مرحله اول برای تایید TOTP (اختیاری در ارسال به verify-2fa)
+                            description: توکن چالش مرحله اول متصل به نشست ورود (مورد نیاز برای verify-2fa، resend و switch-channel)
+                          expires_in:
+                            type: integer
+                            example: 300
+                            description: مدت اعتبار کد به ثانیه (پیش‌فرض ۵ دقیقه)
+                          resend_cooldown_seconds:
+                            type: integer
+                            example: 60
+                            description: زمان انتظار تا ارسال مجدد کد (۶۰ ثانیه)
+                          sends_used:
+                            type: integer
+                            example: 1
+                          max_sends:
+                            type: integer
+                            example: 3
+                          sends_remaining:
+                            type: integer
+                            example: 2
+                          available_channels:
+                            type: array
+                            items:
+                              type: string
+                              enum: [sms, email, totp]
+                          secondary_actions:
+                            type: object
+                            properties:
+                              resend_current:
+                                type: boolean
+                              send_via_email:
+                                type: boolean
+                              use_authenticator:
+                                type: boolean
         "401":
           $ref: "#/components/responses/Unauthorized"
         "422":
@@ -247,12 +300,11 @@ paths:
       summary: Verify 2FA code and complete login
       description: >
         Verifies the second authentication factor and issues a fresh session JWT with
-        `two_fa_verified: true`. For admins under `ADMIN_2FA_METHOD=totp` (default), accepts
-        either a 6-digit RFC 6238 TOTP code (SHA1, 30s period, ±1 step window with replay
-        protection) or a single-use recovery code. For admins under `ADMIN_2FA_METHOD=sms`,
-        supporters, teachers, or students (when `STUDENT_2FA_MODE` is `new_device` or `always`),
-        verifies the 6-digit SMS OTP. Rate-limited to 5 failed attempts per 10 minutes per
-        account and per IP.
+        `two_fa_verified: true`. For admins, verifies the sent 6-digit OTP (SMS or Email, salted
+        HMAC-SHA256 hash, constant-time comparison, 5-minute TTL, single-use), a 6-digit RFC 6238
+        TOTP code (SHA1, 30s period, ±1 step window with replay protection), or a single-use
+        recovery code depending on the active/selected channel. Rate-limited to 5 failed attempts
+        per 10 minutes per account and per IP.
       operationId: authVerify2fa
       requestBody:
         required: true
@@ -266,10 +318,14 @@ paths:
                   description: شناسه کاربر برگشتی از مرحله اول ورود
                 code:
                   type: string
-                  description: کد ۶ رقمی TOTP / پیامک، یا یکی از کدهای بازیابی یک‌بارمصرف (برای مدیر در حالت totp)
+                  description: کد ۶ رقمی پیامک/ایمیل/TOTP یا یکی از کدهای بازیابی یک‌بارمصرف
                 challenge_token:
                   type: string
-                  description: توکن چالش اختیاری برگشتی از مرحله اول ورود در حالت TOTP
+                  description: توکن چالش برگشتی از مرحله اول ورود
+                method:
+                  type: string
+                  enum: [sms, email, totp, recovery]
+                  description: روش اختیاری تایید (مثلاً totp یا recovery)
               required: [user_id, code]
       responses:
         "200":
@@ -287,7 +343,7 @@ paths:
                             type: string
                           auth_method:
                             type: string
-                            enum: [totp, recovery, sms]
+                            enum: [sms, email, totp, recovery]
                             description: روش استفاده‌شده در تایید دومرحله‌ای
                           remaining_recovery_codes:
                             type: integer
@@ -315,6 +371,84 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "503":
           description: OTP verification service unavailable (fail-closed when Redis is down)
+
+  /api/v1/auth/2fa/resend:
+    post:
+      tags: [Auth]
+      summary: Resend admin 2FA OTP on the active outbound channel
+      description: >
+        Generates a fresh CSPRNG 6-digit OTP and resends it on the active outbound channel (`sms`
+        or `email`) for the current admin login challenge. Enforces a 60-second cooldown and a
+        maximum of 3 outbound sends per login session, plus per-account and per-IP send limits.
+      operationId: authResend2fa
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id:
+                  type: integer
+                challenge_token:
+                  type: string
+              required: [user_id, challenge_token]
+      responses:
+        "200":
+          description: OTP resent on active channel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          description: Outbound channel delivery failed
+
+  /api/v1/auth/2fa/switch-channel:
+    post:
+      tags: [Auth]
+      summary: Switch admin 2FA channel ("Send via email" / "Use authenticator app instead")
+      description: >
+        Switches an active admin 2FA challenge to another configured channel: `email`
+        ("Didn't receive it? Send via email") dispatches a fresh OTP to the admin's email address,
+        or `totp` ("Use authenticator app instead") immediately switches the step to authenticator
+        app verification without consuming outbound send quota.
+      operationId: authSwitch2faChannel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id:
+                  type: integer
+                challenge_token:
+                  type: string
+                channel:
+                  type: string
+                  enum: [sms, email, totp]
+              required: [user_id, challenge_token, channel]
+      responses:
+        "200":
+          description: Channel switched successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          description: Target outbound channel delivery failed
 
   /api/v1/auth/password/forgot:
     post:

@@ -15,6 +15,8 @@ import {
   handleSubscriptionEndpoint,
   handleSmsPatternEndpoint,
   recordStaffActivity,
+  computeTotpCode,
+  renderAdminLoginHtml,
 } from './dev-server.mjs';
 
 test('Health endpoint (/health) returns current database and Redis connection status', () => {
@@ -2364,9 +2366,9 @@ test('Admin TOTP 2FA (Migration 014, pragmarx/google2fa, AES-256-GCM SecretBox, 
   assert.match(authCore, /'two_fa_verified'\s*=>\s*\(bool\)\s*\(\$user\['two_fa_verified'\]\s*\?\?\s*false\)/);
   assert.match(authMiddleware, /two_fa_verified/);
   assert.match(authorization, /two_fa_verified/);
-  assert.match(authService, /TotpService::admin2faMethod\(\)\s*===\s*TotpService::METHOD_TOTP/);
-  assert.match(authService, /createPendingTotpChallenge/);
-  assert.match(authService, /assertPendingTotpChallenge/);
+  assert.match(authService, /admin2fa->initiateChallenge\(/);
+  assert.match(authService, /admin2fa->verifyChallenge\(/);
+  assert.match(authService, /admin2fa->switchOrResend\(/);
   assert.match(authController, /RateLimiter::key\('2fa:user'/);
   assert.match(authController, /RateLimiter::key\('2fa:ip'/);
   assert.match(authController, /JwtRevocation::blacklistToken\(/);
@@ -2380,10 +2382,463 @@ test('Admin TOTP 2FA (Migration 014, pragmarx/google2fa, AES-256-GCM SecretBox, 
   assert.match(rootSpec, /remaining_recovery_codes:/);
   assert.match(readmeMd, /php nad admin:totp-setup/);
   assert.match(readmeMd, /php nad admin:totp-reset/);
-  assert.match(readmeMd, /ADMIN_2FA_METHOD=sms/);
+  assert.match(readmeMd, /ADMIN_SMS_ENABLED=true/);
   assert.match(phpUnitTest, /testValidTotpLoginIssuesVerifiedSessionWithZeroSmsAndRejectsReplay/);
   assert.match(phpUnitTest, /testRecoveryCodeWorksOnceAndIsImmediatelyInvalidated/);
   assert.match(phpUnitTest, /testRateLimitEnforcesFiveAttemptsPerTenMinutesPerAccountAndPerIp/);
 });
+
+test('Internal SMS module (App\\Modules\\Sms, Migration 015, Reconciler, BalanceMonitor, scripts/sms_cron.php, Unicode fixes, README, and PHPUnit suite)', () => {
+  const requiredFiles = [
+    './app/Modules/Sms/Sms.php',
+    './app/Modules/Sms/SmsConfig.php',
+    './app/Modules/Sms/SmsProvider.php',
+    './app/Modules/Sms/KavenegarProvider.php',
+    './app/Modules/Sms/FakeProvider.php',
+    './app/Modules/Sms/SmsLog.php',
+    './app/Modules/Sms/SmsPhone.php',
+    './app/Modules/Sms/SegmentCounter.php',
+    './app/Modules/Sms/Redactor.php',
+    './app/Modules/Sms/SmsSendResult.php',
+    './app/Modules/Sms/SmsMessageStatus.php',
+    './app/Modules/Sms/SmsException.php',
+    './app/Modules/Sms/SmsConfigException.php',
+    './app/Modules/Sms/SmsInputException.php',
+    './app/Modules/Sms/BalanceMonitor.php',
+    './app/Modules/Sms/Reconciler.php',
+    './app/Modules/Sms/README.md',
+    './database/migrations/015_sms_log.sql',
+    './scripts/sms_cron.php',
+    './tests/Modules/Sms/SmsModuleTest.php',
+  ];
+
+  for (const relPath of requiredFiles) {
+    assert.ok(fs.existsSync(new URL(relPath, import.meta.url)), `Expected file to exist: ${relPath}`);
+  }
+
+  const smsPhp = fs.readFileSync(new URL('./app/Modules/Sms/Sms.php', import.meta.url), 'utf8');
+  const segmentCounterPhp = fs.readFileSync(new URL('./app/Modules/Sms/SegmentCounter.php', import.meta.url), 'utf8');
+  const smsPhonePhp = fs.readFileSync(new URL('./app/Modules/Sms/SmsPhone.php', import.meta.url), 'utf8');
+  const smsLogPhp = fs.readFileSync(new URL('./app/Modules/Sms/SmsLog.php', import.meta.url), 'utf8');
+  const balanceMonitorPhp = fs.readFileSync(new URL('./app/Modules/Sms/BalanceMonitor.php', import.meta.url), 'utf8');
+  const reconcilerPhp = fs.readFileSync(new URL('./app/Modules/Sms/Reconciler.php', import.meta.url), 'utf8');
+  const smsCronPhp = fs.readFileSync(new URL('./scripts/sms_cron.php', import.meta.url), 'utf8');
+  const smsReadme = fs.readFileSync(new URL('./app/Modules/Sms/README.md', import.meta.url), 'utf8');
+  const migration015 = fs.readFileSync(new URL('./database/migrations/015_sms_log.sql', import.meta.url), 'utf8');
+  const envExample = fs.readFileSync(new URL('./.env.example', import.meta.url), 'utf8');
+  const envValidator = fs.readFileSync(new URL('./app/Core/EnvValidator.php', import.meta.url), 'utf8');
+  const phpUnitTest = fs.readFileSync(new URL('./tests/Modules/Sms/SmsModuleTest.php', import.meta.url), 'utf8');
+
+  // 1. Unicode escapes use double quotes so PHP evaluates \u{...} sequences (not literal ASCII)
+  assert.match(segmentCounterPhp, /private const GSM7_EXTENSION = "\^\{\}\\\\\[~\]\|\\u\{20AC\}";/);
+  assert.match(smsPhonePhp, /private const PERSIAN_DIGITS = \["\\u\{06F0\}"/);
+  assert.match(smsPhonePhp, /private const ARABIC_DIGITS = \["\\u\{0660\}"/);
+
+  // 2. Migration 015 matches SmsLog columns and dedup key
+  assert.match(migration015, /CREATE TABLE IF NOT EXISTS sms_log/);
+  assert.match(migration015, /UNIQUE KEY uq_sms_log_dedup \(client, purpose, receptor, ref\)/);
+  assert.match(migration015, /KEY idx_sms_log_reconcile \(status, created_at\)/);
+  assert.match(migration015, /ENGINE=InnoDB DEFAULT CHARSET=utf8mb4/);
+  assert.match(smsLogPhp, /migration 015/);
+
+  // 3. Core module wiring: BalanceMonitor, Reconciler, secret redaction, and zero domain/Redis coupling
+  assert.match(smsPhp, /BalanceMonitor::alertInsufficientBalance\(/);
+  assert.match(balanceMonitorPhp, /public static function alertInsufficientBalance\(/);
+  assert.match(balanceMonitorPhp, /public static function checkBalance\(/);
+  assert.match(balanceMonitorPhp, /Redactor::redactSecrets\(/);
+  assert.match(reconcilerPhp, /public static function reconcile\(/);
+  assert.match(reconcilerPhp, /public static function listUnknownWithoutMessageId\(/);
+  assert.doesNotMatch(balanceMonitorPhp, /RedisClient/);
+  assert.doesNotMatch(reconcilerPhp, /RedisClient/);
+
+  // 4. Cron runner, README ("Not verified"), env config, and PHPUnit suite
+  assert.match(smsCronPhp, /Reconciler::reconcile\(/);
+  assert.match(smsCronPhp, /BalanceMonitor::checkBalance\(/);
+  assert.match(smsCronPhp, /Reconciler::listUnknownWithoutMessageId\(/);
+  assert.match(smsCronPhp, /Redactor::redactSecrets\(/);
+  assert.match(smsReadme, /## Not Verified/);
+  assert.match(envExample, /^KAVENEGAR_API_KEY=/m);
+  assert.match(envExample, /^KAVENEGAR_SENDER=/m);
+  assert.match(envExample, /^SMS_PROVIDER=/m);
+  assert.match(envExample, /^SMS_LOW_BALANCE_THRESHOLD=/m);
+  assert.match(envValidator, /SMS_PROVIDER/);
+  assert.match(envValidator, /SMS_LOW_BALANCE_THRESHOLD/);
+  assert.match(envValidator, /SMS_REQUEST_TIMEOUT_MS/);
+  assert.match(phpUnitTest, /testSegmentCounterGsm7ExtensionCharsAndUcs2Boundaries/);
+  assert.match(phpUnitTest, /testSmsPhoneNormalizesPersianArabicDigitsAndInternationalPrefixes/);
+  assert.match(phpUnitTest, /testSmsSendRetryReusesFailedRowAndNeverAutoRetriesUnknownRow/);
+  assert.match(phpUnitTest, /testReconcilerAppliesDeliveredAndFailedStatusesAndListsUnknownWithoutMsgId/);
+  assert.match(phpUnitTest, /testBalanceMonitorRateLimitingCode411AlertAndStatusMap/);
+});
+
+test('Multi-channel Admin 2FA behavioral flow: all 6 scenarios, circuit breaker, rate limits, and zero secret logging', () => {
+  // Scenario 1: SMS disabled (ADMIN_SMS_ENABLED=false) -> SMS skipped immediately -> Email OTP sent & accepted
+  {
+    const ctx = createAppContext();
+    let nowSec = 1760000000;
+    ctx.admin2faConfig.now = () => nowSec;
+    ctx.admin2faConfig.smsEnabled = false;
+
+    const loginRes = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/login', {
+      username: 'admin_root',
+      password: 'admin123',
+    }, null, '198.51.100.1');
+    assert.equal(loginRes.status, 202);
+    assert.equal(loginRes.body.data.channel, 'email');
+    assert.equal(loginRes.body.data.channel_message, 'Code sent via email');
+    assert.equal(ctx.sentAdminSms.length, 0, 'SMS must not be invoked when disabled');
+    assert.equal(ctx.sentAdminEmails.length, 1);
+    const emailOtp = ctx.sentAdminEmails[0].code;
+    assert.match(emailOtp, /^\d{6}$/);
+    assert.match(ctx.sentAdminEmails[0].body, /5 minutes/);
+    assert.match(ctx.sentAdminEmails[0].body, /change your password/i);
+
+    const challengeRow = ctx.admin2faChallenges[0];
+    assert.ok(challengeRow.otp_salt && challengeRow.otp_hash);
+    assert.notEqual(challengeRow.otp_hash, emailOtp);
+
+    const verifyRes = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/verify-2fa', {
+      user_id: 1,
+      challenge_token: loginRes.body.data.challenge_token,
+      code: emailOtp,
+    }, null, '198.51.100.1');
+    assert.equal(verifyRes.status, 200);
+    assert.equal(verifyRes.body.data.auth_method, 'email');
+    const decoded = JSON.parse(Buffer.from(verifyRes.body.data.token, 'base64url').toString('utf8'));
+    assert.equal(decoded.two_fa_verified, true);
+  }
+
+  // Scenario 2: SMS and Email both fail -> falls back directly to Authenticator App (TOTP) & accepts valid code
+  {
+    const ctx = createAppContext();
+    let nowSec = 1760001000;
+    ctx.admin2faConfig.now = () => nowSec;
+    ctx.admin2faConfig.smsEnabled = true;
+    ctx.admin2faConfig.smsShouldFail = true;
+    ctx.admin2faConfig.emailShouldFail = true;
+
+    const loginRes = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/login', {
+      username: 'admin_root',
+      password: 'admin123',
+    }, null, '198.51.100.2');
+    assert.equal(loginRes.status, 202);
+    assert.equal(loginRes.body.data.channel, 'totp');
+    assert.equal(loginRes.body.data.channel_message, 'Enter the code from your authenticator app');
+
+    const admin = ctx.users.find((u) => u.id === 1);
+    const totpCode = computeTotpCode(admin.totp_secret, nowSec);
+    const verifyRes = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/verify-2fa', {
+      user_id: 1,
+      challenge_token: loginRes.body.data.challenge_token,
+      code: totpCode,
+    }, null, '198.51.100.2');
+    assert.equal(verifyRes.status, 200);
+    assert.equal(verifyRes.body.data.auth_method, 'totp');
+
+    // Replay protection: reusing the same TOTP code in the same 30s step fails on next login
+    const login2 = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/login', {
+      username: 'admin_root',
+      password: 'admin123',
+    }, null, '198.51.100.2');
+    const replayRes = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/verify-2fa', {
+      user_id: 1,
+      challenge_token: login2.body.data.challenge_token,
+      code: totpCode,
+    }, null, '198.51.100.2');
+    assert.equal(replayRes.status, 401);
+  }
+
+  // Scenario 3: Invalid, expired (>5 min), and reused OTP codes rejected
+  {
+    const ctx = createAppContext();
+    let nowSec = 1760002000;
+    ctx.admin2faConfig.now = () => nowSec;
+    ctx.admin2faConfig.smsEnabled = false;
+
+    const login1 = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/login', {
+      username: 'admin_root',
+      password: 'admin123',
+    }, null, '198.51.100.3');
+    const otp1 = ctx.sentAdminEmails[0].code;
+    const wrongOtp = otp1 === '000000' ? '111111' : '000000';
+
+    assert.equal(
+      handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/verify-2fa', {
+        user_id: 1,
+        challenge_token: login1.body.data.challenge_token,
+        code: wrongOtp,
+      }, null, '198.51.100.3').status,
+      401
+    );
+
+    assert.equal(
+      handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/verify-2fa', {
+        user_id: 1,
+        challenge_token: login1.body.data.challenge_token,
+        code: otp1,
+      }, null, '198.51.100.3').status,
+      200
+    );
+
+    assert.equal(
+      handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/verify-2fa', {
+        user_id: 1,
+        challenge_token: login1.body.data.challenge_token,
+        code: otp1,
+      }, null, '198.51.100.3').status,
+      401
+    );
+
+    const login2 = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/login', {
+      username: 'admin_root',
+      password: 'admin123',
+    }, null, '198.51.100.4');
+    const otp2 = ctx.sentAdminEmails[1].code;
+    nowSec += 301;
+    assert.equal(
+      handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/verify-2fa', {
+        user_id: 1,
+        challenge_token: login2.body.data.challenge_token,
+        code: otp2,
+      }, null, '198.51.100.4').status,
+      401
+    );
+  }
+
+  // Scenario 4: Single-use recovery code works once and fails on reuse
+  {
+    const ctx = createAppContext();
+    let nowSec = 1760003000;
+    ctx.admin2faConfig.now = () => nowSec;
+    ctx.admin2faConfig.smsEnabled = false;
+    const recovery = ctx.demoAdminRecoveryCodes[0];
+
+    const login1 = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/login', {
+      username: 'admin_root',
+      password: 'admin123',
+    }, null, '198.51.100.5');
+    const ok = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/verify-2fa', {
+      user_id: 1,
+      challenge_token: login1.body.data.challenge_token,
+      code: recovery,
+    }, null, '198.51.100.5');
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.data.auth_method, 'recovery');
+    assert.equal(ok.body.data.remaining_recovery_codes, 7);
+
+    const login2 = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/login', {
+      username: 'admin_root',
+      password: 'admin123',
+    }, null, '198.51.100.6');
+    const reuse = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/verify-2fa', {
+      user_id: 1,
+      challenge_token: login2.body.data.challenge_token,
+      code: recovery,
+    }, null, '198.51.100.6');
+    assert.equal(reuse.status, 401);
+  }
+
+  // Scenario 5: SMS circuit breaker (3 failures -> open 10 min), 60s resend cooldown, max 3 sends/session, and 5-attempt verify lockout
+  {
+    const ctx = createAppContext();
+    let nowSec = 1760004000;
+    ctx.admin2faConfig.now = () => nowSec;
+    ctx.admin2faConfig.smsEnabled = true;
+    ctx.admin2faConfig.smsShouldFail = true;
+
+    for (let i = 0; i < 3; i++) {
+      const r = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/login', {
+        username: 'admin_root',
+        password: 'admin123',
+      }, null, `198.51.100.2${i}`);
+      assert.equal(r.status, 202);
+      assert.equal(r.body.data.channel, 'email');
+    }
+    assert.equal(ctx.sentAdminSms.length, 3);
+    assert.ok(ctx.smsCircuitBreaker.openUntil > nowSec);
+
+    const login4 = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/login', {
+      username: 'admin_root',
+      password: 'admin123',
+    }, null, '198.51.100.24');
+    assert.equal(login4.status, 202);
+    assert.equal(ctx.sentAdminSms.length, 3, 'SMS circuit breaker must skip SMS while open');
+    assert.equal(login4.body.data.channel, 'email');
+
+    const tooSoon = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/2fa/resend', {
+      user_id: 1,
+      challenge_token: login4.body.data.challenge_token,
+    }, null, '198.51.100.24');
+    assert.equal(tooSoon.status, 429);
+    assert.ok(Number(tooSoon.headers['Retry-After']) > 0);
+
+    nowSec += 61;
+    assert.equal(
+      handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/2fa/resend', { user_id: 1, challenge_token: login4.body.data.challenge_token }, null, '198.51.100.24').status,
+      200
+    );
+    nowSec += 61;
+    assert.equal(
+      handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/2fa/resend', { user_id: 1, challenge_token: login4.body.data.challenge_token }, null, '198.51.100.24').status,
+      200
+    );
+    nowSec += 61;
+    assert.equal(
+      handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/2fa/resend', { user_id: 1, challenge_token: login4.body.data.challenge_token }, null, '198.51.100.24').status,
+      429
+    );
+
+    for (let i = 1; i <= 5; i++) {
+      assert.equal(
+        handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/verify-2fa', {
+          user_id: 1,
+          challenge_token: login4.body.data.challenge_token,
+          code: `00000${i}`,
+        }, null, '198.51.100.25').status,
+        401
+      );
+    }
+    assert.equal(
+      handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/verify-2fa', {
+        user_id: 1,
+        challenge_token: login4.body.data.challenge_token,
+        code: '123456',
+      }, null, '198.51.100.25').status,
+      429
+    );
+  }
+
+  // Scenario 6: Manual switch ("Didn't receive it? Send via email" + "Use authenticator app instead") & log hygiene
+  {
+    const ctx = createAppContext();
+    let nowSec = 1760005000;
+    ctx.admin2faConfig.now = () => nowSec;
+    ctx.admin2faConfig.smsEnabled = true;
+    ctx.admin2faConfig.smsShouldFail = false;
+
+    const loginRes = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/login', {
+      username: 'admin_root',
+      password: 'admin123',
+    }, null, '198.51.100.30');
+    assert.equal(loginRes.status, 202);
+    assert.equal(loginRes.body.data.channel, 'sms');
+    assert.equal(loginRes.body.data.channel_message, 'Code sent via SMS');
+    assert.equal(loginRes.body.data.secondary_actions.send_via_email, true);
+    assert.equal(loginRes.body.data.secondary_actions.use_authenticator, true);
+
+    const switchEmail = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/2fa/switch-channel', {
+      user_id: 1,
+      challenge_token: loginRes.body.data.challenge_token,
+      channel: 'email',
+    }, null, '198.51.100.30');
+    assert.equal(switchEmail.status, 200);
+    assert.equal(switchEmail.body.data.channel, 'email');
+    assert.equal(switchEmail.body.data.channel_message, 'Code sent via email');
+    assert.equal(ctx.sentAdminEmails.length, 1);
+
+    const switchTotp = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/2fa/switch-channel', {
+      user_id: 1,
+      challenge_token: loginRes.body.data.challenge_token,
+      channel: 'totp',
+    }, null, '198.51.100.30');
+    assert.equal(switchTotp.status, 200);
+    assert.equal(switchTotp.body.data.channel, 'totp');
+    assert.equal(switchTotp.body.data.channel_message, 'Enter the code from your authenticator app');
+
+    const admin = ctx.users.find((u) => u.id === 1);
+    const verifyTotp = handleAuthEndpoint(ctx, 'POST', '/api/v1/auth/verify-2fa', {
+      user_id: 1,
+      challenge_token: loginRes.body.data.challenge_token,
+      code: computeTotpCode(admin.totp_secret, nowSec),
+    }, null, '198.51.100.30');
+    assert.equal(verifyTotp.status, 200);
+    assert.equal(verifyTotp.body.data.auth_method, 'totp');
+
+    const allLogs = ctx.admin2faLogs.join('\n');
+    assert.ok(!allLogs.includes(ctx.sentAdminSms[0].code));
+    assert.ok(!allLogs.includes(ctx.sentAdminEmails[0].code));
+    assert.ok(!allLogs.includes(admin.totp_secret));
+    assert.ok(!allLogs.includes(ctx.demoAdminRecoveryCodes[0]));
+  }
+});
+
+test('Multi-channel Admin 2FA PHP architecture, migration 016, OpenAPI sync, .env.example, README, and login view', () => {
+  const requiredFiles = [
+    './database/migrations/016_admin_2fa_challenges.sql',
+    './app/Core/TwoFactor/ChannelDeliveryResult.php',
+    './app/Core/TwoFactor/TwoFactorChannelInterface.php',
+    './app/Core/TwoFactor/SmsCircuitBreaker.php',
+    './app/Core/TwoFactor/SmsChannel.php',
+    './app/Core/TwoFactor/EmailChannel.php',
+    './app/Core/TwoFactor/TotpChannel.php',
+    './app/Core/TwoFactor/AdminTwoFactorService.php',
+    './docs/frontend/admin-2fa.types.ts',
+    './tests/Modules/Auth/AdminMultiChannel2faTest.php',
+  ];
+  for (const relPath of requiredFiles) {
+    assert.ok(fs.existsSync(new URL(relPath, import.meta.url)), `Expected file to exist: ${relPath}`);
+  }
+
+  const composerJson = JSON.parse(fs.readFileSync(new URL('./composer.json', import.meta.url), 'utf8'));
+  const migration016 = fs.readFileSync(new URL('./database/migrations/016_admin_2fa_challenges.sql', import.meta.url), 'utf8');
+  const smsChannel = fs.readFileSync(new URL('./app/Core/TwoFactor/SmsChannel.php', import.meta.url), 'utf8');
+  const emailChannel = fs.readFileSync(new URL('./app/Core/TwoFactor/EmailChannel.php', import.meta.url), 'utf8');
+  const circuitBreaker = fs.readFileSync(new URL('./app/Core/TwoFactor/SmsCircuitBreaker.php', import.meta.url), 'utf8');
+  const admin2faService = fs.readFileSync(new URL('./app/Core/TwoFactor/AdminTwoFactorService.php', import.meta.url), 'utf8');
+  const routesApi = fs.readFileSync(new URL('./routes/api.php', import.meta.url), 'utf8');
+  const envExample = fs.readFileSync(new URL('./.env.example', import.meta.url), 'utf8');
+  const envValidator = fs.readFileSync(new URL('./app/Core/EnvValidator.php', import.meta.url), 'utf8');
+  const rootSpec = fs.readFileSync(new URL('./openapi.yaml', import.meta.url), 'utf8');
+  const publicSpec = fs.readFileSync(new URL('./public/openapi.yaml', import.meta.url), 'utf8');
+  const readmeMd = fs.readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+  const phpUnitTest = fs.readFileSync(new URL('./tests/Modules/Auth/AdminMultiChannel2faTest.php', import.meta.url), 'utf8');
+  const loginHtml = renderAdminLoginHtml();
+
+  assert.ok(composerJson.require['phpmailer/phpmailer'], 'PHPMailer must be listed in composer.json');
+  assert.match(migration016, /CREATE TABLE IF NOT EXISTS admin_2fa_challenges/);
+  assert.match(migration016, /ENGINE=InnoDB DEFAULT CHARSET=utf8mb4/);
+
+  assert.match(smsChannel, /HARD_TIMEOUT_SECONDS = 4/);
+  assert.match(smsChannel, /ADMIN_SMS_ENABLED/);
+  assert.match(smsChannel, /SmsCircuitBreaker::isOpen\(\)/);
+  assert.match(circuitBreaker, /FAILURE_THRESHOLD = 3/);
+  assert.match(circuitBreaker, /OPEN_SECONDS = 600/);
+  assert.match(emailChannel, /HARD_TIMEOUT_SECONDS = 8/);
+  assert.match(emailChannel, /PHPMailer/);
+  assert.match(emailChannel, /MAIL_HOST/);
+  assert.match(admin2faService, /hash_equals\(/);
+  assert.match(admin2faService, /RESEND_COOLDOWN_SECONDS = 60/);
+  assert.match(admin2faService, /MAX_SENDS_PER_SESSION = 3/);
+  assert.match(admin2faService, /Code sent via SMS/);
+  assert.match(admin2faService, /Code sent via email/);
+  assert.match(admin2faService, /Enter the code from your authenticator app/);
+
+  assert.match(routesApi, /\/auth\/2fa\/resend/);
+  assert.match(routesApi, /\/auth\/2fa\/switch-channel/);
+  assert.match(envExample, /^ADMIN_2FA_CHAIN=sms,email,totp$/m);
+  assert.match(envExample, /^ADMIN_SMS_ENABLED=true$/m);
+  assert.match(envExample, /^MAIL_HOST=smtp\.gmail\.com$/m);
+  assert.match(envExample, /^MAIL_PORT=465$/m);
+  assert.match(envExample, /^MAIL_ENCRYPTION=ssl$/m);
+  assert.match(envValidator, /ADMIN_2FA_CHAIN/);
+  assert.match(envValidator, /ADMIN_SMS_ENABLED/);
+
+  assert.equal(rootSpec, publicSpec);
+  assert.match(rootSpec, /\/api\/v1\/auth\/2fa\/resend:/);
+  assert.match(rootSpec, /\/api\/v1\/auth\/2fa\/switch-channel:/);
+  assert.match(readmeMd, /ADMIN_2FA_CHAIN/);
+  assert.match(readmeMd, /SmsCircuitBreaker/);
+  assert.match(phpUnitTest, /testSmsDisabledSkipsImmediatelyAndFallsBackToEmail/);
+  assert.match(phpUnitTest, /testSmsAndEmailBothFailFallsBackDirectlyToTotp/);
+  assert.match(phpUnitTest, /testInvalidExpiredAndReusedOtpRejected/);
+  assert.match(phpUnitTest, /testRecoveryCodeWorksOnceAndIsImmediatelyInvalidated|testRecoveryCodeWorksOnceAndFailsOnReuse/);
+  assert.match(phpUnitTest, /testRateLimitsCooldownMaxSendsAndSmsCircuitBreaker/);
+  assert.match(phpUnitTest, /testManualSwitchToEmailAndAuthenticatorAndZeroSecretLogging/);
+
+  assert.match(loginHtml, /Didn't receive it\? Send via email/);
+  assert.match(loginHtml, /Use authenticator app instead/);
+});
+
+
 
 

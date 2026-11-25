@@ -7,7 +7,7 @@ namespace App\Modules\Sms;
 use App\Core\Database;
 
 /**
- * Data access for the sms_log table (migration 014).
+ * Data access for the sms_log table (migration 015).
  *
  * The unique key (client, purpose, receptor, ref) is the dedup/idempotency
  * mechanism: SmsLog::insertPending() returns 0 when a row with the same key

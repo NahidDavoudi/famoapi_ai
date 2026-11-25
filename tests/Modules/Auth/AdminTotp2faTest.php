@@ -45,7 +45,9 @@ class AdminTotp2faTest extends TestCase
         parent::setUp();
 
         foreach ([
+            'ADMIN_2FA_CHAIN',
             'ADMIN_2FA_METHOD',
+            'ADMIN_SMS_ENABLED',
             'TOTP_ENCRYPTION_KEY',
             'TOTP_ISSUER',
             'AUTH_2FA_MAX_ATTEMPTS',
@@ -58,7 +60,9 @@ class AdminTotp2faTest extends TestCase
             $this->envBackup[$key] = $_ENV[$key] ?? null;
         }
 
+        unset($_ENV['ADMIN_2FA_CHAIN']);
         $_ENV['ADMIN_2FA_METHOD'] = 'totp';
+        $_ENV['ADMIN_SMS_ENABLED'] = 'true';
         $_ENV['TOTP_ENCRYPTION_KEY'] = 'unit-test-totp-encryption-key-32bytes-minimum!';
         $_ENV['TOTP_ISSUER'] = 'FAMO Academy';
         $_ENV['AUTH_2FA_MAX_ATTEMPTS'] = '5';
@@ -71,6 +75,7 @@ class AdminTotp2faTest extends TestCase
 
         RedisClient::reset();
         RedisClient::useInMemoryDriver(true);
+        \App\Core\TwoFactor\SmsCircuitBreaker::reset();
 
         $this->fakeSms = new NoOpCapturingSmsService();
         $this->google2fa = new Google2FA();
@@ -93,12 +98,18 @@ class AdminTotp2faTest extends TestCase
             }
         }
 
+        \App\Core\TwoFactor\SmsCircuitBreaker::reset();
         RedisClient::reset();
         parent::tearDown();
     }
 
     private function cleanupTestRows(): void
     {
+        try {
+            $this->db->exec("DELETE FROM admin_2fa_challenges WHERE user_id IN (SELECT id FROM users WHERE username LIKE 'totp_admin_%')");
+        } catch (\Throwable) {
+            // Table may not exist before migration 016 is applied
+        }
         $this->db->exec("DELETE FROM login_codes WHERE user_id IN (SELECT id FROM users WHERE username LIKE 'totp_admin_%')");
         $this->db->exec("DELETE FROM users WHERE username LIKE 'totp_admin_%'");
         $this->db->exec("DELETE FROM auth_throttle");

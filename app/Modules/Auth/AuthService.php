@@ -13,6 +13,10 @@ use App\Core\RedisClient;
 use App\Core\SmsService;
 use App\Core\TotpService;
 use App\Core\TrustedDevice;
+use App\Core\TwoFactor\AdminTwoFactorService;
+use App\Core\TwoFactor\EmailChannel;
+use App\Core\TwoFactor\SmsChannel;
+use App\Core\TwoFactor\TotpChannel;
 
 class AuthService
 {
@@ -22,12 +26,22 @@ class AuthService
     private SmsService $sms;
     private OtpService $otp;
     private TotpService $totp;
+    private AdminTwoFactorService $admin2fa;
 
-    public function __construct(?SmsService $sms = null, ?OtpService $otp = null, ?TotpService $totp = null)
-    {
+    public function __construct(
+        ?SmsService $sms = null,
+        ?OtpService $otp = null,
+        ?TotpService $totp = null,
+        ?AdminTwoFactorService $admin2fa = null
+    ) {
         $this->sms = $sms ?? new SmsService();
         $this->otp = $otp ?? new OtpService();
         $this->totp = $totp ?? new TotpService();
+        $this->admin2fa = $admin2fa ?? new AdminTwoFactorService(
+            new SmsChannel($this->sms),
+            new EmailChannel(),
+            new TotpChannel($this->totp)
+        );
     }
 
     /**
@@ -220,32 +234,11 @@ class AuthService
 
         $role = $user['role'];
 
-        if ($role === 'admin' && TotpService::admin2faMethod() === TotpService::METHOD_TOTP) {
-            if (!TotpService::isEnrolled($user)) {
-                // Log non-sensitive operator hint without revealing credentials or which factor failed to the caller
-                error_log(
-                    '[' . date('Y-m-d H:i:s') . '] AuthService: Admin user #' . (int) $user['id']
-                    . ' attempted login without TOTP enrollment; run `php nad admin:totp-setup ' . (int) $user['id'] . '`' . PHP_EOL,
-                    3,
-                    __DIR__ . '/../../../storage/logs/app.log'
-                );
-                throw new \App\Core\ApiException('نام کاربری یا رمز عبور اشتباه است', 401, 'AUTH_ERROR');
-            }
-
-            $challengeToken = $this->createPendingTotpChallenge((int) $user['id']);
-
-            return [
-                'requires_2fa'    => true,
-                'two_fa_method'   => TotpService::METHOD_TOTP,
-                'user_id'         => (int) $user['id'],
-                'username'        => $user['username'],
-                'role'            => $role,
-                'phone_mask'      => null,
-                'challenge_token' => $challengeToken,
-            ];
+        if ($role === 'admin') {
+            return $this->admin2fa->initiateChallenge($user, $ip);
         }
 
-        if ($role === 'admin' || $role === 'supporter' || $role === 'teacher') {
+        if ($role === 'supporter' || $role === 'teacher') {
             $rawMobile = !empty($user['phone']) ? (string) $user['phone'] : (string) $user['username'];
             $mobile = PhoneNumber::normalize($rawMobile) ?? $rawMobile;
             $this->enforceSmsRateLimits($mobile, $ip);
@@ -341,23 +334,19 @@ class AuthService
         ];
     }
 
-    public function verify2fa(int $userId, string $code, ?string $challengeToken = null): array
+    public function verify2fa(int $userId, string $code, ?string $challengeToken = null, ?string $method = null): array
     {
         $user = User::findById($userId);
         if (!$user) {
             throw new \App\Core\ApiException('کد تأیید نامعتبر یا منقضی شده است', 401, '2FA_ERROR');
         }
 
-        if (($user['role'] ?? '') === 'admin' && TotpService::admin2faMethod() === TotpService::METHOD_TOTP) {
+        if (($user['role'] ?? '') === 'admin') {
             if (isset($user['is_active']) && (int) $user['is_active'] === 0) {
                 throw new \App\Core\ApiException('کد تأیید نامعتبر یا منقضی شده است', 401, '2FA_ERROR');
             }
 
-            // Ensure password factor (step 1) actually completed within the challenge window
-            $this->assertPendingTotpChallenge($userId, $challengeToken);
-
-            $verified = $this->totp->verifyAdminCode($user, $code);
-            $this->consumePendingTotpChallenge($userId);
+            $verified = $this->admin2fa->verifyChallenge($user, $code, $challengeToken, $method);
 
             $session = $this->sessionForUser($userId, true, ['pwd', $verified['method']]);
             $session['auth_method'] = $verified['method'];
@@ -390,6 +379,26 @@ class AuthService
         $this->consume2faCode($userId, $code);
 
         return $this->sessionForUser($userId, true, ['pwd', 'sms']);
+    }
+
+    /**
+     * Resend an admin 2FA OTP or switch delivery channel (e.g. SMS -> Email, or -> TOTP).
+     *
+     * @return array<string, mixed>
+     */
+    public function resendAdmin2fa(int $userId, string $challengeToken, ?string $channel = null, ?string $ip = null): array
+    {
+        return $this->admin2fa->switchOrResend($userId, $challengeToken, $channel, $ip);
+    }
+
+    /**
+     * Switch active 2FA channel on an in-progress admin login challenge.
+     *
+     * @return array<string, mixed>
+     */
+    public function switchAdmin2faChannel(int $userId, string $challengeToken, string $channel, ?string $ip = null): array
+    {
+        return $this->admin2fa->switchOrResend($userId, $challengeToken, $channel, $ip);
     }
 
     /**

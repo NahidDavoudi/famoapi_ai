@@ -150,6 +150,8 @@ return function (App $app) {
     $app->post('/api/v1/auth/login', [$authController, 'login'])->add($authAttemptLimit);
     $app->post('/api/v1/auth/register', [$authController, 'register'])->add($publicIpLimit);
     $app->post('/api/v1/auth/verify-2fa', [$authController, 'verify2fa'])->add($authAttemptLimit);
+    $app->post('/api/v1/auth/2fa/resend', [$authController, 'resend2fa'])->add($authAttemptLimit);
+    $app->post('/api/v1/auth/2fa/switch-channel', [$authController, 'switch2faChannel'])->add($authAttemptLimit);
     $app->post('/api/v1/auth/password/forgot', [$authController, 'forgotPassword'])
         ->add($smsIpLimit)
         ->add($authAttemptLimit);

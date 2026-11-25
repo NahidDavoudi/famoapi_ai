@@ -504,17 +504,36 @@ export function createAppContext() {
   const instructors = [
     { id: 30, name: 'استاد نمونه', title: 'مدرس ریاضی', is_active: 1 },
   ];
+  const defaultAdminRecoveryPlain = [
+    'FAMO1-AA11B',
+    'FAMO2-CC22D',
+    'FAMO3-EE33F',
+    'FAMO4-GG44H',
+    'FAMO5-JJ55K',
+    'FAMO6-MM66N',
+    'FAMO7-PP77Q',
+    'FAMO8-RR88S',
+  ];
+  const hashAdminRecovery = (plain) => {
+    const normalized = String(plain || '').replace(/[\s-]+/g, '').toUpperCase();
+    return crypto.createHmac('sha256', 'famo-dev-recovery-hmac-key').update(normalized).digest('hex');
+  };
   const users = [
     {
       id: 1,
       username: 'admin_root',
       phone: '09120000001',
+      email: 'admin@famoacademy.ir',
       password: 'admin123',
       full_name: 'ادمین اصلی',
       role: 'admin',
       linked_id: 1,
       chat_id: '1001',
       is_active: 1,
+      totp_secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP',
+      totp_enabled: 1,
+      totp_last_used_step: null,
+      recovery_codes: defaultAdminRecoveryPlain.map((c) => hashAdminRecovery(c)),
     },
     {
       id: 2,
@@ -843,10 +862,709 @@ export function createAppContext() {
     appEnv: 'development',
     publicSiteUrl: 'http://localhost:3000',
     shareLinkLogs: [],
+    admin2faConfig: {
+      chain: ['sms', 'email', 'totp'],
+      smsEnabled: false, // Matches expired SMS panel default; email fallback active out of the box
+      smsShouldFail: false,
+      emailShouldFail: false,
+      smsErrorMessage: 'Melipayamak subscription expired',
+      emailErrorMessage: 'SMTP connect() failed',
+      otpTtlSeconds: 300,
+      maxVerifyAttempts: 5,
+      verifyWindowSeconds: 600,
+      verifyLockoutSeconds: 600,
+      resendCooldownSeconds: 60,
+      maxSendsPerSession: 3,
+      sendUserHourlyMax: 20,
+      sendIpHourlyMax: 30,
+      circuitFailureThreshold: 3,
+      circuitOpenSeconds: 600,
+      now: () => Math.floor(Date.now() / 1000),
+    },
+    smsCircuitBreaker: {
+      consecutiveFailures: 0,
+      openUntil: 0,
+    },
+    admin2faChallenges: [],
+    sentAdminSms: [],
+    sentAdminEmails: [],
+    admin2faLogs: [],
+    admin2faVerifyThrottle: new Map(),
+    admin2faSendThrottle: new Map(),
+    demoAdminRecoveryCodes: defaultAdminRecoveryPlain,
   };
 }
 
-export function handleAuthEndpoint(ctx, method, pathname, body = {}, authUser = null) {
+function base32DecodeToBuffer(base32) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  const clean = String(base32 || '').toUpperCase().replace(/=+$/, '').replace(/[^A-Z2-7]/g, '');
+  let bits = '';
+  for (const ch of clean) {
+    const idx = alphabet.indexOf(ch);
+    if (idx === -1) continue;
+    bits += idx.toString(2).padStart(5, '0');
+  }
+  const bytes = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) {
+    bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  }
+  return Buffer.from(bytes);
+}
+
+export function computeTotpCode(base32Secret, timestampSec = Math.floor(Date.now() / 1000), stepSeconds = 30) {
+  const counter = Math.floor(timestampSec / stepSeconds);
+  const counterBuf = Buffer.alloc(8);
+  counterBuf.writeUInt32BE(Math.floor(counter / 0x100000000), 0);
+  counterBuf.writeUInt32BE(counter >>> 0, 4);
+  const key = base32DecodeToBuffer(base32Secret);
+  const digest = crypto.createHmac('sha1', key).update(counterBuf).digest();
+  const offset = digest[digest.length - 1] & 0x0f;
+  const bin =
+    ((digest[offset] & 0x7f) << 24) |
+    ((digest[offset + 1] & 0xff) << 16) |
+    ((digest[offset + 2] & 0xff) << 8) |
+    (digest[offset + 3] & 0xff);
+  return String(bin % 1000000).padStart(6, '0');
+}
+
+function constantTimeHexEquals(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length || a.length === 0) {
+    return false;
+  }
+  return crypto.timingSafeEqual(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
+}
+
+function maskAdminPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length < 7) return null;
+  return `${digits.slice(0, 4)}***${digits.slice(-2)}`;
+}
+
+function maskAdminEmail(email) {
+  const trimmed = String(email || '').trim();
+  const at = trimmed.indexOf('@');
+  if (at <= 0) return null;
+  const local = trimmed.slice(0, at);
+  const domain = trimmed.slice(at + 1);
+  const maskedLocal = local.length <= 2 ? `${local[0]}*` : `${local.slice(0, 2)}${'*'.repeat(Math.min(5, local.length - 2))}`;
+  return `${maskedLocal}@${domain}`;
+}
+
+function adminChannelMessages(channel) {
+  if (channel === 'sms') {
+    return { en: 'Code sent via SMS', fa: 'کد تأیید از طریق پیامک ارسال شد' };
+  }
+  if (channel === 'email') {
+    return { en: 'Code sent via email', fa: 'کد تأیید از طریق ایمیل ارسال شد' };
+  }
+  return {
+    en: 'Enter the code from your authenticator app',
+    fa: 'کد اپلیکیشن احراز هویت (Authenticator) را وارد کنید',
+  };
+}
+
+function hashAdmin2faChallenge(userId, token) {
+  return crypto.createHmac('sha256', 'famo-dev-2fa-hmac').update(`admin_2fa_challenge|${userId}|${token}`).digest('hex');
+}
+
+function hashAdmin2faOtp(userId, challengeHash, salt, code) {
+  return crypto.createHmac('sha256', 'famo-dev-2fa-hmac').update(`admin_2fa_otp|${userId}|${challengeHash}|${salt}|${code}`).digest('hex');
+}
+
+function hashAdminRecoveryCode(code) {
+  const normalized = String(code || '').replace(/[\s-]+/g, '').toUpperCase();
+  return crypto.createHmac('sha256', 'famo-dev-recovery-hmac-key').update(normalized).digest('hex');
+}
+
+function redactAdmin2faLogMessage(msg, secrets = []) {
+  let clean = String(msg || '');
+  for (const s of secrets) {
+    if (typeof s === 'string' && s.trim() !== '' && clean.includes(s)) {
+      clean = clean.split(s).join('[REDACTED]');
+    }
+  }
+  return clean.slice(0, 240);
+}
+
+function checkFixedWindowThrottle(map, key, maxCount, windowSec, nowSec) {
+  const existing = map.get(key);
+  if (!existing || existing.resetAt <= nowSec) {
+    map.set(key, { count: 1, resetAt: nowSec + windowSec });
+    return { allowed: true, retryAfter: 0 };
+  }
+  if (existing.count >= maxCount) {
+    return { allowed: false, retryAfter: Math.max(1, existing.resetAt - nowSec) };
+  }
+  existing.count += 1;
+  return { allowed: true, retryAfter: 0 };
+}
+
+function checkLockoutStatus(map, key, nowSec) {
+  const rec = map.get(key);
+  if (rec && rec.lockedUntil > nowSec) {
+    return { locked: true, retryAfter: Math.max(1, rec.lockedUntil - nowSec) };
+  }
+  return { locked: false, retryAfter: 0 };
+}
+
+function recordLockoutFailure(map, key, maxAttempts, windowSec, lockoutSec, nowSec) {
+  const rec = map.get(key);
+  if (!rec || rec.windowEndsAt <= nowSec) {
+    map.set(key, { attempts: 1, windowEndsAt: nowSec + windowSec, lockedUntil: 0 });
+    return;
+  }
+  rec.attempts += 1;
+  if (rec.attempts >= maxAttempts) {
+    rec.lockedUntil = nowSec + lockoutSec;
+  }
+}
+
+function buildAdmin2faChallengePayload(ctx, user, challenge, challengeToken, nowSec) {
+  const cfg = ctx.admin2faConfig;
+  const msgs = adminChannelMessages(challenge.active_channel);
+  const sendsRemaining = Math.max(0, cfg.maxSendsPerSession - challenge.send_count);
+  const availableChannels = cfg.chain.filter((ch) => {
+    if (ch === 'sms') return Boolean(cfg.smsEnabled && user.phone);
+    if (ch === 'email') return Boolean(user.email);
+    if (ch === 'totp') return Boolean(user.totp_enabled && user.totp_secret);
+    return false;
+  });
+  const canSendEmail = challenge.active_channel === 'sms' && cfg.chain.includes('email') && Boolean(user.email) && sendsRemaining > 0;
+  const canUseTotp = cfg.chain.includes('totp') && Boolean(user.totp_enabled && user.totp_secret);
+  const cooldown =
+    challenge.last_sent_at && ['sms', 'email'].includes(challenge.active_channel)
+      ? Math.max(0, cfg.resendCooldownSeconds - (nowSec - challenge.last_sent_at))
+      : 0;
+
+  return {
+    requires_2fa: true,
+    two_fa_method: challenge.active_channel,
+    channel: challenge.active_channel,
+    channel_message: msgs.en,
+    channel_message_fa: msgs.fa,
+    destination_mask: challenge.destination_mask,
+    phone_mask: challenge.active_channel === 'sms' ? challenge.destination_mask : null,
+    email_mask: challenge.active_channel === 'email' ? challenge.destination_mask : null,
+    user_id: user.id,
+    username: user.username,
+    role: 'admin',
+    challenge_token: challengeToken,
+    expires_in: Math.max(1, challenge.expires_at - nowSec),
+    resend_cooldown_seconds: cooldown,
+    sends_used: challenge.send_count,
+    max_sends: cfg.maxSendsPerSession,
+    sends_remaining: sendsRemaining,
+    available_channels: availableChannels,
+    secondary_actions: {
+      resend_current: ['sms', 'email'].includes(challenge.active_channel) && sendsRemaining > 0,
+      send_via_email: canSendEmail,
+      use_authenticator: canUseTotp,
+    },
+  };
+}
+
+function deliverAdmin2faChannel(ctx, channelName, user, otpCode, nowSec) {
+  const cfg = ctx.admin2faConfig;
+  const cb = ctx.smsCircuitBreaker;
+
+  if (channelName === 'sms') {
+    if (!cfg.smsEnabled) {
+      ctx.admin2faLogs.push(`channel=sms skipped for admin #${user.id} (SmsDisabled: ADMIN_SMS_ENABLED=false)`);
+      return { ok: false, skipped: true };
+    }
+    if (cb.openUntil > nowSec) {
+      ctx.admin2faLogs.push(`channel=sms skipped for admin #${user.id} (CircuitBreakerOpen: ${cb.openUntil - nowSec}s remaining)`);
+      return { ok: false, skipped: true };
+    }
+    if (!user.phone) {
+      ctx.admin2faLogs.push(`channel=sms skipped for admin #${user.id} (MissingMobileNumber)`);
+      return { ok: false, skipped: true };
+    }
+    ctx.sentAdminSms.push({ to: user.phone, code: otpCode, attemptedAt: nowSec, succeeded: !cfg.smsShouldFail });
+    if (cfg.smsShouldFail) {
+      cb.consecutiveFailures += 1;
+      if (cb.consecutiveFailures >= cfg.circuitFailureThreshold) {
+        cb.openUntil = nowSec + cfg.circuitOpenSeconds;
+        cb.consecutiveFailures = 0;
+      }
+      ctx.admin2faLogs.push(
+        `channel=sms failed for admin #${user.id} (SmsDeliveryFailed: ${redactAdmin2faLogMessage(cfg.smsErrorMessage, [otpCode])})`
+      );
+      return { ok: false, skipped: false };
+    }
+    cb.consecutiveFailures = 0;
+    cb.openUntil = 0;
+    return { ok: true, destinationMask: maskAdminPhone(user.phone) };
+  }
+
+  if (channelName === 'email') {
+    if (!user.email) {
+      ctx.admin2faLogs.push(`channel=email skipped for admin #${user.id} (MissingEmailAddress)`);
+      return { ok: false, skipped: true };
+    }
+    if (cfg.emailShouldFail) {
+      ctx.admin2faLogs.push(
+        `channel=email failed for admin #${user.id} (SmtpDeliveryFailed: ${redactAdmin2faLogMessage(cfg.emailErrorMessage, [otpCode])})`
+      );
+      return { ok: false, skipped: false };
+    }
+    ctx.sentAdminEmails.push({
+      to: user.email,
+      subject: 'کد تأیید ورود مدیر فامو | FAMO Admin Login Verification Code',
+      body: `Your FAMO Admin verification code is: ${otpCode}. This code expires in 5 minutes. If this wasn't you, ignore this email and change your password immediately.`,
+      code: otpCode,
+      sentAt: nowSec,
+    });
+    return { ok: true, destinationMask: maskAdminEmail(user.email) };
+  }
+
+  if (channelName === 'totp') {
+    if (!user.totp_enabled || !user.totp_secret) {
+      ctx.admin2faLogs.push(`channel=totp skipped for admin #${user.id} (TotpNotEnrolled)`);
+      return { ok: false, skipped: true };
+    }
+    return { ok: true, destinationMask: null };
+  }
+
+  return { ok: false, skipped: true };
+}
+
+export function handleAuthEndpoint(ctx, method, pathname, body = {}, authUser = null, clientIp = '127.0.0.1') {
+  const cfg = ctx.admin2faConfig;
+  const nowSec = typeof cfg?.now === 'function' ? cfg.now() : Math.floor(Date.now() / 1000);
+
+  if (method === 'POST' && pathname === '/api/v1/auth/login') {
+    const username = typeof body?.username === 'string' ? body.username.trim() : '';
+    const password = typeof body?.password === 'string' ? body.password : '';
+    if (!username || !password) {
+      return {
+        status: 422,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'VALIDATION_ERROR', message: 'نام کاربری و رمز عبور الزامی است' },
+        },
+      };
+    }
+
+    const user = ctx.users.find((u) => (u.username === username || u.phone === username) && Number(u.is_active ?? 1) === 1);
+    if (!user || user.password !== password) {
+      return {
+        status: 401,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'AUTH_ERROR', message: 'نام کاربری یا رمز عبور اشتباه است' },
+        },
+      };
+    }
+
+    if (user.role !== 'admin') {
+      const freshToken = Buffer.from(
+        JSON.stringify({ sub: user.id, role: user.role, jti: crypto.randomBytes(16).toString('hex'), typ: 'access', iat: nowSec, exp: nowSec + 86400 })
+      ).toString('base64url');
+      return {
+        status: 200,
+        body: {
+          success: true,
+          data: { token: freshToken, user_id: user.id, user: { id: user.id, username: user.username, role: user.role } },
+          pagination: null,
+          error: null,
+        },
+      };
+    }
+
+    // Admin multi-channel 2FA delivery chain: SMS -> Email -> TOTP
+    const otpCode = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    const challengeToken = crypto.randomBytes(32).toString('hex');
+    const challengeHash = hashAdmin2faChallenge(user.id, challengeToken);
+    let activeChannel = null;
+    let destinationMask = null;
+    let sendCount = 0;
+    let sendRateChecked = false;
+    const deliveredChannels = [];
+
+    for (const ch of cfg.chain) {
+      if (ch === 'sms' || ch === 'email') {
+        const isSmsSkip = ch === 'sms' && (!cfg.smsEnabled || ctx.smsCircuitBreaker.openUntil > nowSec || !user.phone);
+        const isEmailSkip = ch === 'email' && !user.email;
+        if (isSmsSkip || isEmailSkip) {
+          deliverAdmin2faChannel(ctx, ch, user, otpCode, nowSec);
+          continue;
+        }
+        if (!sendRateChecked) {
+          const uRl = checkFixedWindowThrottle(ctx.admin2faSendThrottle, `u:${user.id}`, cfg.sendUserHourlyMax, 3600, nowSec);
+          if (!uRl.allowed) {
+            return {
+              status: 429,
+              headers: { 'Retry-After': String(uRl.retryAfter) },
+              body: { success: false, data: null, pagination: null, error: { code: 'RATE_LIMITED', message: 'تعداد درخواست‌های ارسال کد بیش از حد مجاز است.' } },
+            };
+          }
+          const ipRl = checkFixedWindowThrottle(ctx.admin2faSendThrottle, `ip:${clientIp}`, cfg.sendIpHourlyMax, 3600, nowSec);
+          if (!ipRl.allowed) {
+            return {
+              status: 429,
+              headers: { 'Retry-After': String(ipRl.retryAfter) },
+              body: { success: false, data: null, pagination: null, error: { code: 'RATE_LIMITED', message: 'تعداد درخواست‌های ارسال کد بیش از حد مجاز است.' } },
+            };
+          }
+          sendRateChecked = true;
+        }
+        const res = deliverAdmin2faChannel(ctx, ch, user, otpCode, nowSec);
+        if (res.ok) {
+          activeChannel = ch;
+          destinationMask = res.destinationMask;
+          deliveredChannels.push(ch);
+          sendCount = 1;
+          break;
+        }
+        continue;
+      }
+
+      if (ch === 'totp') {
+        const res = deliverAdmin2faChannel(ctx, 'totp', user, otpCode, nowSec);
+        if (res.ok) {
+          activeChannel = 'totp';
+          destinationMask = null;
+          break;
+        }
+      }
+    }
+
+    if (!activeChannel) {
+      return {
+        status: 401,
+        body: {
+          success: false,
+          data: null,
+          pagination: null,
+          error: { code: 'AUTH_ERROR', message: 'نام کاربری یا رمز عبور اشتباه است' },
+        },
+      };
+    }
+
+    for (const prev of ctx.admin2faChallenges) {
+      if (prev.user_id === user.id && prev.consumed_at === null) {
+        prev.consumed_at = nowSec;
+        prev.otp_hash = null;
+        prev.otp_salt = null;
+      }
+    }
+
+    const otpSalt = activeChannel === 'totp' ? null : crypto.randomBytes(16).toString('hex');
+    const otpHash = activeChannel === 'totp' ? null : hashAdmin2faOtp(user.id, challengeHash, otpSalt, otpCode);
+    const challenge = {
+      id: ctx.admin2faChallenges.length + 1,
+      user_id: user.id,
+      challenge_hash: challengeHash,
+      otp_salt: otpSalt,
+      otp_hash: otpHash,
+      active_channel: activeChannel,
+      destination_mask: destinationMask,
+      delivered_channels: deliveredChannels,
+      send_count: sendCount,
+      last_sent_at: sendCount > 0 ? nowSec : null,
+      verify_attempts: 0,
+      max_attempts: cfg.maxVerifyAttempts,
+      expires_at: nowSec + cfg.otpTtlSeconds,
+      consumed_at: null,
+    };
+    ctx.admin2faChallenges.push(challenge);
+
+    return {
+      status: 202,
+      body: {
+        success: true,
+        data: buildAdmin2faChallengePayload(ctx, user, challenge, challengeToken, nowSec),
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  if (method === 'POST' && (pathname === '/api/v1/auth/2fa/resend' || pathname === '/api/v1/auth/2fa/switch-channel')) {
+    const userId = Number(body?.user_id || 0);
+    const challengeToken = typeof body?.challenge_token === 'string' ? body.challenge_token.trim() : '';
+    const isSwitch = pathname === '/api/v1/auth/2fa/switch-channel';
+    const targetChannel = isSwitch ? String(body?.channel || '').trim().toLowerCase() : null;
+
+    if (userId <= 0 || !challengeToken) {
+      return {
+        status: 422,
+        body: { success: false, data: null, pagination: null, error: { code: 'VALIDATION_ERROR', message: 'شناسه کاربر و توکن چالش الزامی است' } },
+      };
+    }
+    if (isSwitch && !['sms', 'email', 'totp'].includes(targetChannel)) {
+      return {
+        status: 422,
+        body: { success: false, data: null, pagination: null, error: { code: 'VALIDATION_ERROR', message: 'کانال مقصد نامعتبر است' } },
+      };
+    }
+
+    const user = ctx.users.find((u) => u.id === userId && u.role === 'admin' && Number(u.is_active ?? 1) === 1);
+    const expectedHash = hashAdmin2faChallenge(userId, challengeToken);
+    const challenge = ctx.admin2faChallenges.find(
+      (c) => c.user_id === userId && c.consumed_at === null && c.expires_at > nowSec && constantTimeHexEquals(c.challenge_hash, expectedHash)
+    );
+    if (!user || !challenge) {
+      return {
+        status: 401,
+        body: { success: false, data: null, pagination: null, error: { code: '2FA_ERROR', message: 'کد تأیید نامعتبر یا منقضی شده است' } },
+      };
+    }
+
+    const desired = targetChannel || challenge.active_channel;
+
+    if (desired === 'totp') {
+      if (!user.totp_enabled || !user.totp_secret) {
+        return {
+          status: 422,
+          body: { success: false, data: null, pagination: null, error: { code: 'TOTP_NOT_ENROLLED', message: 'اپلیکیشن احراز هویت (TOTP) فعال نشده است' } },
+        };
+      }
+      challenge.active_channel = 'totp';
+      challenge.destination_mask = null;
+      return {
+        status: 200,
+        body: {
+          success: true,
+          data: buildAdmin2faChallengePayload(ctx, user, challenge, challengeToken, nowSec),
+          pagination: null,
+          error: null,
+        },
+      };
+    }
+
+    if (!cfg.chain.includes(desired)) {
+      return {
+        status: 422,
+        body: { success: false, data: null, pagination: null, error: { code: 'CHANNEL_UNAVAILABLE', message: 'این کانال ارسال در تنظیمات فعال نیست' } },
+      };
+    }
+
+    if (challenge.send_count >= cfg.maxSendsPerSession) {
+      return {
+        status: 429,
+        headers: { 'Retry-After': String(cfg.otpTtlSeconds) },
+        body: { success: false, data: null, pagination: null, error: { code: 'RATE_LIMITED', message: 'حداکثر تعداد ارسال کد در این نشست به پایان رسیده است.' } },
+      };
+    }
+
+    const alreadySentToChannel = desired === challenge.active_channel || challenge.delivered_channels.includes(desired);
+    if (alreadySentToChannel && challenge.last_sent_at !== null) {
+      const elapsed = nowSec - challenge.last_sent_at;
+      if (elapsed < cfg.resendCooldownSeconds) {
+        const retryAfter = cfg.resendCooldownSeconds - elapsed;
+        return {
+          status: 429,
+          headers: { 'Retry-After': String(retryAfter) },
+          body: { success: false, data: null, pagination: null, error: { code: 'RATE_LIMITED', message: `لطفاً ${retryAfter} ثانیه صبر کنید.` } },
+        };
+      }
+    }
+
+    const uRl = checkFixedWindowThrottle(ctx.admin2faSendThrottle, `u:${user.id}`, cfg.sendUserHourlyMax, 3600, nowSec);
+    if (!uRl.allowed) {
+      return {
+        status: 429,
+        headers: { 'Retry-After': String(uRl.retryAfter) },
+        body: { success: false, data: null, pagination: null, error: { code: 'RATE_LIMITED', message: 'تعداد درخواست‌های ارسال کد بیش از حد مجاز است.' } },
+      };
+    }
+    const ipRl = checkFixedWindowThrottle(ctx.admin2faSendThrottle, `ip:${clientIp}`, cfg.sendIpHourlyMax, 3600, nowSec);
+    if (!ipRl.allowed) {
+      return {
+        status: 429,
+        headers: { 'Retry-After': String(ipRl.retryAfter) },
+        body: { success: false, data: null, pagination: null, error: { code: 'RATE_LIMITED', message: 'تعداد درخواست‌های ارسال کد بیش از حد مجاز است.' } },
+      };
+    }
+
+    const otpCode = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    const deliv = deliverAdmin2faChannel(ctx, desired, user, otpCode, nowSec);
+    if (!deliv.ok) {
+      return {
+        status: 503,
+        body: { success: false, data: null, pagination: null, error: { code: '2FA_DELIVERY_FAILED', message: 'ارسال کد از طریق این کانال ناموفق بود.' } },
+      };
+    }
+
+    challenge.otp_salt = crypto.randomBytes(16).toString('hex');
+    challenge.otp_hash = hashAdmin2faOtp(user.id, challenge.challenge_hash, challenge.otp_salt, otpCode);
+    challenge.active_channel = desired;
+    challenge.destination_mask = deliv.destinationMask;
+    challenge.send_count += 1;
+    challenge.last_sent_at = nowSec;
+    challenge.expires_at = nowSec + cfg.otpTtlSeconds;
+    if (!challenge.delivered_channels.includes(desired)) {
+      challenge.delivered_channels.push(desired);
+    }
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        data: buildAdmin2faChallengePayload(ctx, user, challenge, challengeToken, nowSec),
+        pagination: null,
+        error: null,
+      },
+    };
+  }
+
+  if (method === 'POST' && pathname === '/api/v1/auth/verify-2fa') {
+    const userId = Number(body?.user_id || 0);
+    const rawCode = typeof body?.code === 'string' ? body.code.trim() : '';
+    const challengeToken = typeof body?.challenge_token === 'string' ? body.challenge_token.trim() : '';
+    const requestedMethod = typeof body?.method === 'string' ? body.method.trim().toLowerCase() : '';
+
+    if (userId <= 0 || !rawCode) {
+      return {
+        status: 422,
+        body: { success: false, data: null, pagination: null, error: { code: 'VALIDATION_ERROR', message: 'کد تأیید و شناسه کاربر الزامی است' } },
+      };
+    }
+
+    const accKey = `acc:${userId}`;
+    const ipKey = `ip:${clientIp}`;
+    const accLock = checkLockoutStatus(ctx.admin2faVerifyThrottle, accKey, nowSec);
+    if (accLock.locked) {
+      return {
+        status: 429,
+        headers: { 'Retry-After': String(accLock.retryAfter) },
+        body: { success: false, data: null, pagination: null, error: { code: 'RATE_LIMITED', message: 'تعداد تلاش‌های ناموفق بیش از حد مجاز است.' } },
+      };
+    }
+    const ipLock = checkLockoutStatus(ctx.admin2faVerifyThrottle, ipKey, nowSec);
+    if (ipLock.locked) {
+      return {
+        status: 429,
+        headers: { 'Retry-After': String(ipLock.retryAfter) },
+        body: { success: false, data: null, pagination: null, error: { code: 'RATE_LIMITED', message: 'تعداد تلاش‌های ناموفق بیش از حد مجاز است.' } },
+      };
+    }
+
+    const failVerify = (challengeRow = null) => {
+      recordLockoutFailure(ctx.admin2faVerifyThrottle, accKey, cfg.maxVerifyAttempts, cfg.verifyWindowSeconds, cfg.verifyLockoutSeconds, nowSec);
+      recordLockoutFailure(ctx.admin2faVerifyThrottle, ipKey, cfg.maxVerifyAttempts, cfg.verifyWindowSeconds, cfg.verifyLockoutSeconds, nowSec);
+      if (challengeRow) {
+        challengeRow.verify_attempts += 1;
+        if (challengeRow.verify_attempts >= challengeRow.max_attempts) {
+          challengeRow.consumed_at = nowSec;
+          challengeRow.otp_hash = null;
+          challengeRow.otp_salt = null;
+        }
+      }
+      return {
+        status: 401,
+        body: { success: false, data: null, pagination: null, error: { code: '2FA_ERROR', message: 'کد تأیید نامعتبر یا منقضی شده است' } },
+      };
+    };
+
+    const user = ctx.users.find((u) => u.id === userId && u.role === 'admin' && Number(u.is_active ?? 1) === 1);
+    if (!user) return failVerify();
+
+    const challenge = challengeToken
+      ? ctx.admin2faChallenges.find(
+          (c) => c.user_id === userId && c.consumed_at === null && c.expires_at > nowSec && constantTimeHexEquals(c.challenge_hash, hashAdmin2faChallenge(userId, challengeToken))
+        )
+      : [...ctx.admin2faChallenges].reverse().find((c) => c.user_id === userId && c.consumed_at === null && c.expires_at > nowSec);
+
+    if (!challenge || challenge.verify_attempts >= challenge.max_attempts) {
+      return failVerify(challenge);
+    }
+
+    const compact = rawCode.replace(/[\s-]+/g, '');
+    const isSixDigits = /^\d{6}$/.test(compact);
+    const useTotpOrRecovery = !isSixDigits || challenge.active_channel === 'totp' || ['totp', 'recovery', 'authenticator'].includes(requestedMethod);
+
+    let verifiedMethod = null;
+    let remainingRecovery = null;
+
+    if (useTotpOrRecovery) {
+      if (!user.totp_enabled || !user.totp_secret) {
+        return failVerify(challenge);
+      }
+      if (isSixDigits) {
+        const currentStep = Math.floor(nowSec / 30);
+        let matchedStep = null;
+        for (const delta of [-1, 0, 1]) {
+          const step = currentStep + delta;
+          const expected = computeTotpCode(user.totp_secret, step * 30);
+          if (constantTimeHexEquals(expected, compact)) {
+            matchedStep = step;
+            break;
+          }
+        }
+        if (matchedStep === null || (user.totp_last_used_step !== null && matchedStep <= user.totp_last_used_step)) {
+          return failVerify(challenge);
+        }
+        user.totp_last_used_step = matchedStep;
+        verifiedMethod = 'totp';
+      } else {
+        const candidateHash = hashAdminRecoveryCode(rawCode);
+        const idx = (user.recovery_codes || []).findIndex((h) => constantTimeHexEquals(h, candidateHash));
+        if (idx === -1) {
+          return failVerify(challenge);
+        }
+        user.recovery_codes.splice(idx, 1);
+        remainingRecovery = user.recovery_codes.length;
+        verifiedMethod = 'recovery';
+      }
+    } else {
+      if (!challenge.otp_salt || !challenge.otp_hash) {
+        return failVerify(challenge);
+      }
+      const candidateHash = hashAdmin2faOtp(user.id, challenge.challenge_hash, challenge.otp_salt, compact);
+      if (!constantTimeHexEquals(challenge.otp_hash, candidateHash)) {
+        return failVerify(challenge);
+      }
+      verifiedMethod = challenge.active_channel;
+    }
+
+    // Consume single-use challenge & clear verify throttle
+    challenge.consumed_at = nowSec;
+    challenge.otp_hash = null;
+    challenge.otp_salt = null;
+    ctx.admin2faVerifyThrottle.delete(accKey);
+    ctx.admin2faVerifyThrottle.delete(ipKey);
+
+    // Revoke prior session token if present and mint fresh verified JWT
+    const freshJti = crypto.randomBytes(16).toString('hex');
+    const freshPayload = {
+      sub: user.id,
+      role: user.role,
+      two_fa_verified: true,
+      jti: freshJti,
+      typ: 'access',
+      iat: nowSec,
+      exp: nowSec + 86400,
+    };
+    const freshToken = Buffer.from(JSON.stringify(freshPayload)).toString('base64url');
+    const data = {
+      token: freshToken,
+      auth_method: verifiedMethod,
+      user: {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        student_id: null,
+        instructor_id: null,
+      },
+    };
+    if (remainingRecovery !== null) {
+      data.remaining_recovery_codes = remainingRecovery;
+    }
+
+    return {
+      status: 200,
+      headers: { 'Set-Cookie': `famo_jwt=${freshToken}; Path=/; HttpOnly; SameSite=Lax` },
+      body: { success: true, data, pagination: null, error: null },
+    };
+  }
+
   if (method === 'POST' && pathname === '/api/v1/auth/logout') {
     if (authUser && authUser.jti) {
       const nowSec = Math.floor(Date.now() / 1000);
@@ -6538,10 +7256,50 @@ export function startServer(port = parseInt(process.env.PORT || '3000', 10)) {
       return;
     }
 
+    if (pathname.startsWith('/api/v1/auth/')) {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        let parsedBody = {};
+        if (raw) {
+          try {
+            parsedBody = JSON.parse(raw);
+          } catch {
+            parsedBody = {};
+          }
+        }
+        let actor = null;
+        const authHeader = req.headers.authorization;
+        if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+          try {
+            actor = JSON.parse(Buffer.from(authHeader.slice(7).trim(), 'base64url').toString('utf8'));
+          } catch {
+            actor = null;
+          }
+        }
+        const remoteIp = String(req.socket?.remoteAddress || '127.0.0.1');
+        const result = handleAuthEndpoint(ctx, method, pathname, parsedBody, actor, remoteIp);
+        res.writeHead(result.status, {
+          'Content-Type': 'application/json; charset=utf-8',
+          ...(result.headers || {}),
+        });
+        res.end(JSON.stringify(result.body));
+      });
+      return;
+    }
+
     if (pathname.startsWith('/api/v1/public/')) {
       const result = handlePublicEndpoint(ctx, method, urlObj, '127.0.0.1');
       res.writeHead(result.status, result.headers);
       res.end(JSON.stringify(result.body));
+      return;
+    }
+
+    if (pathname === '/admin/login' || pathname === '/admin/login/') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderAdminLoginHtml());
       return;
     }
 
@@ -6560,6 +7318,449 @@ export function startServer(port = parseInt(process.env.PORT || '3000', 10)) {
   });
 
   return server;
+}
+
+export function renderAdminLoginHtml() {
+  return `<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FAMO Academy — Admin Login</title>
+  <style>
+    :root {
+      --bg: #f4f6f9;
+      --surface: #ffffff;
+      --ink: #0f172a;
+      --muted: #475569;
+      --border: #e2e8f0;
+      --accent: #0f766e;
+      --accent-hover: #115e59;
+      --danger: #b91c1c;
+      --danger-bg: #fef2f2;
+      --success: #047857;
+      --success-bg: #ecfdf5;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 32px 28px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .brand-mark {
+      width: 36px;
+      height: 36px;
+      border-radius: 9px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    h1 {
+      font-size: 20px;
+      margin: 0;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    .subtitle {
+      margin: 4px 0 0;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .field { margin-bottom: 16px; }
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: var(--ink);
+    }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      padding: 11px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 15px;
+      color: var(--ink);
+      background: #fff;
+      outline: none;
+    }
+    input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+    }
+    .code-input {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.2em;
+      text-align: center;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .btn-primary {
+      width: 100%;
+      padding: 11px 16px;
+      border: none;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+    .channel-box {
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: #f0fdfa;
+      border: 1px solid #99f6e4;
+      margin-bottom: 18px;
+    }
+    .channel-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #115e59;
+      margin: 0;
+    }
+    .channel-meta {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 4px 0 0;
+    }
+    .actions-stack {
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .btn-link {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ink);
+      cursor: pointer;
+      text-align: center;
+    }
+    .btn-link:hover:not(:disabled) { background: #f8fafc; border-color: #cbd5e1; }
+    .btn-link:disabled { opacity: 0.55; cursor: not-allowed; }
+    .alert {
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-bottom: 14px;
+      display: none;
+    }
+    .alert.error {
+      display: block;
+      background: var(--danger-bg);
+      color: var(--danger);
+      border: 1px solid #fecaca;
+    }
+    .alert.success {
+      display: block;
+      background: var(--success-bg);
+      color: var(--success);
+      border: 1px solid #a7f3d0;
+    }
+    .hidden { display: none !important; }
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+    .back-link {
+      background: none;
+      border: none;
+      padding: 0;
+      color: var(--muted);
+      font-size: 12px;
+      cursor: pointer;
+      margin-top: 12px;
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <main class="card" aria-labelledby="login-heading">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">F</div>
+      <div>
+        <h1 id="login-heading">FAMO Admin Panel</h1>
+        <p class="subtitle">Multi-channel second-factor sign in</p>
+      </div>
+    </div>
+
+    <div id="alert-box" class="alert" role="alert"></div>
+
+    <!-- Step 1: Credentials -->
+    <form id="step-credentials" novalidate>
+      <div class="field">
+        <label for="username">Username</label>
+        <input id="username" name="username" type="text" autocomplete="username" required placeholder="admin_root" />
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+      </div>
+      <button id="btn-login" type="submit" class="btn-primary">Continue</button>
+    </form>
+
+    <!-- Step 2: 2FA Verification -->
+    <section id="step-2fa" class="hidden" aria-live="polite">
+      <div class="channel-box">
+        <p id="channel-message" class="channel-title"></p>
+        <p id="channel-destination" class="channel-meta"></p>
+      </div>
+
+      <form id="form-verify" novalidate>
+        <div class="field">
+          <label for="code-input">Verification or recovery code</label>
+          <input id="code-input" name="code" type="text" inputmode="text" autocomplete="one-time-code" class="code-input" required placeholder="000000" />
+          <p class="hint">Enter your 6-digit code or a single-use recovery code.</p>
+        </div>
+        <button id="btn-verify" type="submit" class="btn-primary">Verify &amp; Sign In</button>
+      </form>
+
+      <div class="actions-stack">
+        <button id="btn-resend" type="button" class="btn-link hidden">Resend code</button>
+        <button id="btn-send-email" type="button" class="btn-link hidden">Didn't receive it? Send via email</button>
+        <button id="btn-use-totp" type="button" class="btn-link hidden">Use authenticator app instead</button>
+      </div>
+
+      <button id="btn-back" type="button" class="back-link">Sign in with a different account</button>
+    </section>
+
+    <!-- Step 3: Authenticated -->
+    <section id="step-authenticated" class="hidden" aria-live="polite">
+      <div class="channel-box">
+        <p class="channel-title">Signed in to Admin Panel</p>
+        <p id="auth-summary" class="channel-meta"></p>
+      </div>
+      <button id="btn-logout" type="button" class="btn-link" style="width:100%">Sign out</button>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      const alertBox = document.getElementById('alert-box');
+      const stepCredentials = document.getElementById('step-credentials');
+      const step2fa = document.getElementById('step-2fa');
+      const stepAuth = document.getElementById('step-authenticated');
+      const channelMsgEl = document.getElementById('channel-message');
+      const channelDestEl = document.getElementById('channel-destination');
+      const codeInput = document.getElementById('code-input');
+      const btnResend = document.getElementById('btn-resend');
+      const btnSendEmail = document.getElementById('btn-send-email');
+      const btnUseTotp = document.getElementById('btn-use-totp');
+      const authSummary = document.getElementById('auth-summary');
+
+      let challengeState = null;
+      let cooldownTimer = null;
+      let cooldownLeft = 0;
+
+      function showAlert(kind, text) {
+        alertBox.className = 'alert ' + kind;
+        alertBox.textContent = text;
+      }
+      function clearAlert() {
+        alertBox.className = 'alert';
+        alertBox.textContent = '';
+      }
+
+      function startCooldown(seconds) {
+        if (cooldownTimer) clearInterval(cooldownTimer);
+        cooldownLeft = Math.max(0, Number(seconds) || 0);
+        updateResendLabel();
+        if (cooldownLeft <= 0) return;
+        cooldownTimer = setInterval(function () {
+          cooldownLeft = Math.max(0, cooldownLeft - 1);
+          updateResendLabel();
+          if (cooldownLeft <= 0) {
+            clearInterval(cooldownTimer);
+            cooldownTimer = null;
+          }
+        }, 1000);
+      }
+
+      function updateResendLabel() {
+        if (!challengeState) return;
+        const actions = challengeState.secondary_actions || {};
+        if (!actions.resend_current) {
+          btnResend.classList.add('hidden');
+          return;
+        }
+        btnResend.classList.remove('hidden');
+        const rem = Number(challengeState.sends_remaining || 0);
+        if (cooldownLeft > 0) {
+          btnResend.disabled = true;
+          btnResend.textContent = 'Resend code (' + cooldownLeft + 's)';
+        } else {
+          btnResend.disabled = rem <= 0;
+          btnResend.textContent = 'Resend code (' + rem + ' remaining)';
+        }
+      }
+
+      function renderChallenge(data) {
+        challengeState = data;
+        stepCredentials.classList.add('hidden');
+        stepAuth.classList.add('hidden');
+        step2fa.classList.remove('hidden');
+
+        channelMsgEl.textContent = data.channel_message || 'Enter your verification code';
+        if (data.destination_mask) {
+          channelDestEl.textContent = 'Destination: ' + data.destination_mask + ' · Expires in 5 minutes';
+        } else if (data.channel === 'totp') {
+          channelDestEl.textContent = 'Microsoft Authenticator / Google Authenticator / Aegis';
+        } else {
+          channelDestEl.textContent = '';
+        }
+
+        const actions = data.secondary_actions || {};
+        btnSendEmail.classList.toggle('hidden', !actions.send_via_email);
+        btnUseTotp.classList.toggle('hidden', !actions.use_authenticator || data.channel === 'totp');
+        startCooldown(data.resend_cooldown_seconds || 0);
+        codeInput.value = '';
+        codeInput.focus();
+      }
+
+      async function apiPost(url, payload) {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const json = await res.json().catch(function () { return {}; });
+        return { status: res.status, json: json };
+      }
+
+      stepCredentials.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        clearAlert();
+        const username = document.getElementById('username').value.trim();
+        const password = document.getElementById('password').value;
+        const result = await apiPost('/api/v1/auth/login', { username: username, password: password });
+        if (result.status === 202 && result.json.data && result.json.data.requires_2fa) {
+          renderChallenge(result.json.data);
+          return;
+        }
+        showAlert('error', (result.json.error && result.json.error.message) || 'Invalid credentials');
+      });
+
+      document.getElementById('form-verify').addEventListener('submit', async function (e) {
+        e.preventDefault();
+        clearAlert();
+        if (!challengeState) return;
+        const code = codeInput.value.trim();
+        const result = await apiPost('/api/v1/auth/verify-2fa', {
+          user_id: challengeState.user_id,
+          challenge_token: challengeState.challenge_token,
+          code: code,
+        });
+        if (result.status === 200 && result.json.success) {
+          if (cooldownTimer) clearInterval(cooldownTimer);
+          step2fa.classList.add('hidden');
+          stepAuth.classList.remove('hidden');
+          authSummary.textContent =
+            'Authenticated as ' + result.json.data.user.username + ' via ' + String(result.json.data.auth_method || '').toUpperCase();
+          showAlert('success', 'Two-factor verification succeeded.');
+          return;
+        }
+        showAlert('error', (result.json.error && result.json.error.message) || 'Invalid or expired code');
+      });
+
+      btnResend.addEventListener('click', async function () {
+        clearAlert();
+        if (!challengeState) return;
+        const result = await apiPost('/api/v1/auth/2fa/resend', {
+          user_id: challengeState.user_id,
+          challenge_token: challengeState.challenge_token,
+        });
+        if (result.status === 200 && result.json.data) {
+          renderChallenge(result.json.data);
+          showAlert('success', 'A new verification code was sent.');
+          return;
+        }
+        showAlert('error', (result.json.error && result.json.error.message) || 'Could not resend code');
+      });
+
+      btnSendEmail.addEventListener('click', async function () {
+        clearAlert();
+        if (!challengeState) return;
+        const result = await apiPost('/api/v1/auth/2fa/switch-channel', {
+          user_id: challengeState.user_id,
+          challenge_token: challengeState.challenge_token,
+          channel: 'email',
+        });
+        if (result.status === 200 && result.json.data) {
+          renderChallenge(result.json.data);
+          return;
+        }
+        showAlert('error', (result.json.error && result.json.error.message) || 'Could not send email code');
+      });
+
+      btnUseTotp.addEventListener('click', async function () {
+        clearAlert();
+        if (!challengeState) return;
+        const result = await apiPost('/api/v1/auth/2fa/switch-channel', {
+          user_id: challengeState.user_id,
+          challenge_token: challengeState.challenge_token,
+          channel: 'totp',
+        });
+        if (result.status === 200 && result.json.data) {
+          renderChallenge(result.json.data);
+          return;
+        }
+        showAlert('error', (result.json.error && result.json.error.message) || 'Authenticator app unavailable');
+      });
+
+      document.getElementById('btn-back').addEventListener('click', function () {
+        if (cooldownTimer) clearInterval(cooldownTimer);
+        challengeState = null;
+        clearAlert();
+        step2fa.classList.add('hidden');
+        stepCredentials.classList.remove('hidden');
+      });
+
+      document.getElementById('btn-logout').addEventListener('click', async function () {
+        await apiPost('/api/v1/auth/logout', {});
+        challengeState = null;
+        clearAlert();
+        stepAuth.classList.add('hidden');
+        stepCredentials.classList.remove('hidden');
+      });
+    })();
+  </script>
+</body>
+</html>`;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {

@@ -167,6 +167,9 @@ class AuthController
         $challengeToken = isset($body['challenge_token']) && is_string($body['challenge_token'])
             ? $body['challenge_token']
             : null;
+        $method = isset($body['method']) && is_string($body['method'])
+            ? $body['method']
+            : (isset($body['channel']) && is_string($body['channel']) ? $body['channel'] : null);
 
         try {
             $userStatus = RateLimiter::status($twoFaUserKey, $maxAttempts);
@@ -181,7 +184,7 @@ class AuthController
                 }
             }
 
-            $result = $this->service->verify2fa($userId, (string) $body['code'], $challengeToken);
+            $result = $this->service->verify2fa($userId, (string) $body['code'], $challengeToken, $method);
 
             RateLimiter::clear($twoFaUserKey);
         } catch (RateLimitedException $e) {
@@ -262,6 +265,127 @@ class AuthController
             $response = TrustedDevice::issueForUser($verifiedUserId, $response, $request);
         }
         return $response;
+    }
+
+    public function resend2fa(Request $request, Response $response): Response
+    {
+        $body = $request->getParsedBody() ?? [];
+
+        $validator = new Validator();
+        $validator
+            ->required('user_id', 'شناسه کاربر', $body['user_id'] ?? null)
+            ->positiveInt('user_id', 'شناسه کاربر', $body['user_id'] ?? null)
+            ->required('challenge_token', 'توکن چالش', $body['challenge_token'] ?? null)
+            ->string('challenge_token', 'توکن چالش', $body['challenge_token'] ?? null);
+
+        if (isset($body['channel']) && $body['channel'] !== null) {
+            $validator->inArray('channel', 'کانال ارسال', strtolower(trim((string) $body['channel'])), ['sms', 'email', 'totp']);
+        }
+
+        if (!$validator->passes()) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => 'VALIDATION_ERROR',
+                    'message' => $validator->firstError(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $ip = ClientIp::fromRequest($request);
+        $channel = isset($body['channel']) && is_string($body['channel']) ? $body['channel'] : null;
+
+        try {
+            $result = $this->service->resendAdmin2fa(
+                (int) $body['user_id'],
+                (string) $body['challenge_token'],
+                $channel,
+                $ip
+            );
+        } catch (RateLimitedException $e) {
+            return $this->rateLimitedResponse($response, $e);
+        } catch (\App\Core\ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => $e->getErrorCode(),
+                    'message' => $e->getMessage(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success'    => true,
+            'data'       => $result,
+            'pagination' => null,
+            'error'      => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withStatus(200)->withHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+
+    public function switch2faChannel(Request $request, Response $response): Response
+    {
+        $body = $request->getParsedBody() ?? [];
+
+        $validator = new Validator();
+        $validator
+            ->required('user_id', 'شناسه کاربر', $body['user_id'] ?? null)
+            ->positiveInt('user_id', 'شناسه کاربر', $body['user_id'] ?? null)
+            ->required('challenge_token', 'توکن چالش', $body['challenge_token'] ?? null)
+            ->string('challenge_token', 'توکن چالش', $body['challenge_token'] ?? null)
+            ->required('channel', 'کانال احراز هویت', $body['channel'] ?? null)
+            ->inArray('channel', 'کانال احراز هویت', is_string($body['channel'] ?? null) ? strtolower(trim($body['channel'])) : null, ['sms', 'email', 'totp']);
+
+        if (!$validator->passes()) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => 'VALIDATION_ERROR',
+                    'message' => $validator->firstError(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(422)->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $ip = ClientIp::fromRequest($request);
+
+        try {
+            $result = $this->service->switchAdmin2faChannel(
+                (int) $body['user_id'],
+                (string) $body['challenge_token'],
+                (string) $body['channel'],
+                $ip
+            );
+        } catch (RateLimitedException $e) {
+            return $this->rateLimitedResponse($response, $e);
+        } catch (\App\Core\ApiException $e) {
+            $response->getBody()->write(json_encode([
+                'success'    => false,
+                'data'       => null,
+                'pagination' => null,
+                'error'      => [
+                    'code'    => $e->getErrorCode(),
+                    'message' => $e->getMessage(),
+                ],
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus($e->getHttpStatus())->withHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        $response->getBody()->write(json_encode([
+            'success'    => true,
+            'data'       => $result,
+            'pagination' => null,
+            'error'      => null,
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withStatus(200)->withHeader('Content-Type', 'application/json; charset=utf-8');
     }
 
     public function forgotPassword(Request $request, Response $response): Response

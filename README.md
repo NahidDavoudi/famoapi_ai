@@ -34,13 +34,13 @@
 
 - **Modular Domain Architecture**: Clean separation into `Controller → Service → Model` modules under `app/Modules/*`.
 - **MySQL 8.0+ / 8.4+ Schema & Migrations**:
-  - 14 ordered `InnoDB` / `utf8mb4` SQL migrations in `database/migrations/` (`001` through `014`) plus a legacy-dump upgrade script (`database/mysql_upgrade_from_dump.sql`).
+  - 16 ordered `InnoDB` / `utf8mb4` SQL migrations in `database/migrations/` (`001` through `016`) plus a legacy-dump upgrade script (`database/mysql_upgrade_from_dump.sql`).
   - MySQL generated columns for computed metrics and active/open uniqueness constraints (`exam_results.percentage` `STORED`, `student_supporter_assignments.active_student_id` `STORED`, `tutoring_sessions.open_student_key` `VIRTUAL`).
   - Named-lock protected (`GET_LOCK('famo_schema_migrations', 30)`) SQL migration runner (`App\Core\Migrator`) intended for manual / CLI execution (not executed automatically on HTTP boot).
 - **Multi-Role Authentication & Security**:
   - JWT authentication (`HS256`) supporting both `Authorization: Bearer <token>` headers and cross-subdomain `HttpOnly` cookies, with Redis-backed token revocation (`JwtRevocation`) and mandatory `two_fa_verified` enforcement on admin routes.
-  - Admin Authenticator-App TOTP 2FA (`TotpService` + `SecretBox`, RFC 6238 SHA1 / 6 digits / 30s / ±1 drift, replay protection, AES-256-GCM encrypted secrets, single-use hashed recovery codes, bootstrap CLI `php nad admin:totp-setup`), switchable back to SMS via `ADMIN_2FA_METHOD=sms`.
-  - SMS OTP via Melipayamak (`OtpService`, `SmsService`, `SmsPatternSettings`) for `supporter`/`teacher` 2FA (and `admin` when `ADMIN_2FA_METHOD=sms`), optional student 2FA (`STUDENT_2FA_MODE=off|new_device|always` with `TrustedDevice`), and password reset flows.
+  - **Multi-Channel Admin 2FA with Automatic Fallback** (`App\Core\TwoFactor\*`): ordered delivery chain `SMS -> Email (SMTP) -> Authenticator app (TOTP)` configured via `ADMIN_2FA_CHAIN` and `ADMIN_SMS_ENABLED`, with a 3-failure / 10-minute SMS circuit breaker, salted HMAC-SHA256 OTP hashes, 60s resend cooldown, max 3 sends/session, manual channel switching (`Send via email` / `Use authenticator app instead`), RFC 6238 TOTP (`TotpService` + `SecretBox`), single-use hashed recovery codes, and bootstrap CLI `php nad admin:totp-setup`.
+  - SMS OTP via Melipayamak (`OtpService`, `SmsService`, `SmsPatternSettings`) for `supporter`/`teacher` 2FA, admin SMS primary channel, optional student 2FA (`STUDENT_2FA_MODE=off|new_device|always` with `TrustedDevice`), and password reset flows.
   - Telegram Login Widget cryptographic verification (`HMAC-SHA256`) and account linking handoff.
   - Fine-grained authorization (`Authorization`) and student-scope isolation (`StudentScope`) for supporters.
 - **Redis Caching & Atomic View Counters**:
@@ -90,7 +90,9 @@ famo-api/
 │   │   ├── SmsPatternSettings.php   # Per-purpose Melipayamak pattern bodyId management
 │   │   ├── SmsService.php           # Melipayamak SMS pattern client
 │   │   ├── Sorting.php              # Whitelist-based server-side ORDER BY builder (Persian collation)
+│   │   ├── TotpService.php          # RFC 6238 TOTP & single-use recovery code service
 │   │   ├── TrustedDevice.php        # 30-day HttpOnly trusted device cookie for student 2FA
+│   │   ├── TwoFactor/               # Multi-channel admin 2FA (AdminTwoFactorService, SmsChannel, EmailChannel, TotpChannel, SmsCircuitBreaker)
 │   │   └── Validator.php            # Server-side input validation rules
 │   ├── Helpers/
 │   │   └── JalaliHelper.php         # Gregorian ↔ Jalali calendar conversion utilities
@@ -98,13 +100,14 @@ famo-api/
 │       ├── ActivityLogs/            ├── Courses/           ├── Public/
 │       ├── Admins/                  ├── Dashboard/         ├── Reports/
 │       ├── Admissions/              ├── Exams/             ├── Settings/
-│       ├── Appointments/            ├── Files/             ├── Stats/
-│       ├── Assignments/             ├── Instructors/       ├── Students/
-│       ├── Attendance/              ├── Linking/           ├── Subscription/
-│       ├── Auth/                    ├── Outbox/            ├── Supporters/
-│       ├── Blog/                    ├── ParentContacts/    ├── Testimonials/
-│       ├── Bot/                     ├── Threads/           ├── Topics/
-│       ├── Broadcasts/              ├── Tutoring/          └── WeeklyPlans/
+│       ├── Appointments/            ├── Files/             ├── Sms/
+│       ├── Assignments/             ├── Instructors/       ├── Stats/
+│       ├── Attendance/              ├── Linking/           ├── Students/
+│       ├── Auth/                    ├── Outbox/            ├── Subscription/
+│       ├── Blog/                    ├── ParentContacts/    ├── Supporters/
+│       ├── Bot/                     ├── Threads/           ├── Testimonials/
+│       ├── Broadcasts/              ├── Tutoring/          ├── Topics/
+│       │                            │                      └── WeeklyPlans/
 ├── bootstrap/
 │   └── app.php                      # Slim 4 bootstrap, middleware pipeline, error handler
 ├── config/
@@ -112,7 +115,7 @@ famo-api/
 │   ├── rate_limits.php              # Auth, SMS, public, and API rate-limit policies
 │   └── redis.php                    # Redis connection, prefix, & timeout settings
 ├── database/
-│   ├── migrations/                  # Ordered MySQL 8.0+ / 8.4+ migrations (001..013)
+│   ├── migrations/                  # Ordered MySQL 8.0+ / 8.4+ migrations (001..016)
 │   └── mysql_upgrade_from_dump.sql  # Upgrade script for legacy MySQL production dumps
 ├── docker/                          # Production PHP/Apache & RemoteIP tuning configs
 │   ├── apache-tune.conf             # Apache MPM prefork, KeepAlive & security headers tuning
@@ -125,6 +128,8 @@ famo-api/
 │   └── openapi.yaml                 # Publicly served mirror of root openapi.yaml
 ├── routes/
 │   └── api.php                      # Complete route definitions (/health, /api/v1/*)
+├── scripts/
+│   └── sms_cron.php                 # CLI scheduled task for SMS status reconciliation & balance alerts
 ├── tests/                           # PHPUnit test suite (Core & Modules)
 ├── api.Dockerfile                   # Multi-stage Composer 2 + PHP 8.4 Apache production image
 ├── Dockerfile                       # Default Docker build entrypoint (uses install-php-extensions)
@@ -185,7 +190,7 @@ mkdir -p storage/cache storage/logs uploads
 
 **Option A — Run via `App\Core\Migrator` (recommended for clean databases or incremental updates):**
 
-`Migrator::run()` acquires MySQL lock `GET_LOCK('famo_schema_migrations', 30)`, ensures the `migrations` tracking table exists, and executes every unapplied `database/migrations/*.sql` file in lexicographical order (`001`..`014`):
+`Migrator::run()` acquires MySQL lock `GET_LOCK('famo_schema_migrations', 30)`, ensures the `migrations` tracking table exists, and executes every unapplied `database/migrations/*.sql` file in lexicographical order (`001`..`016`):
 
 ```bash
 php -r '
@@ -331,7 +336,11 @@ Copy `.env.example` to `.env` and configure the variables for your environment. 
 | | `JWT_COOKIE_SAMESITE` | No | `Lax` | Cookie SameSite policy (`Lax`, `Strict`, `None`) |
 | | `AUTH_REVOCATION_FAIL_MODE` | No | `open` | Behavior for non-admin JWT revocation check if Redis is down (`open` / `closed`) |
 | | `AUTH_REVOCATION_ADMIN_FAIL_MODE` | No | `closed` | Behavior for admin JWT revocation check if Redis is down (`closed` / `open`) |
-| | `ADMIN_2FA_METHOD` | No | `totp` | Admin panel 2FA method (`totp` for authenticator app, `sms` to switch back to SMS OTP) |
+| | `ADMIN_2FA_CHAIN` | No | `sms,email,totp` | Ordered admin 2FA fallback chain (`sms`, `email`, `totp`; re-orderable or removable) |
+| | `ADMIN_SMS_ENABLED` | No | `true` | Set `false` while SMS panel subscription is expired to skip SMS immediately without waiting for timeout |
+| | `ADMIN_2FA_METHOD` | No | `totp` | Legacy single-channel fallback when `ADMIN_2FA_CHAIN` is unset (`totp` or `sms`) |
+| | `MAIL_HOST` / `MAIL_PORT` / `MAIL_ENCRYPTION` | Email 2FA | `smtp.gmail.com` / `465` / `ssl` | SMTP server settings for admin email OTP fallback (`ssl` for 465, `tls` for 587) |
+| | `MAIL_USERNAME` / `MAIL_PASSWORD` / `MAIL_FROM` | Email 2FA | — | SMTP credentials (e.g., Gmail App Password) and sender address |
 | | `TOTP_ENCRYPTION_KEY` | No | *(derived from `JWT_SECRET`)* | Optional dedicated key for AES-256-GCM encryption of `users.totp_secret` at rest |
 | | `TOTP_ISSUER` | No | `FAMO Academy` | Issuer label displayed in Microsoft Authenticator / Google Authenticator / Aegis |
 | | `AUTH_2FA_MAX_ATTEMPTS` / `_WINDOW_SECONDS` / `_LOCKOUT_SECONDS` | No | `5` / `600` / `600` | Failed 2FA verification cap per account and per IP (5 attempts per 10 minutes) |
@@ -364,13 +373,25 @@ See [`.env.example`](./.env.example) for the complete list of optional tuning kn
 
 ---
 
-## 🔐 Admin TOTP 2FA (Microsoft Authenticator / Google Authenticator / Aegis)
+## 🔐 Multi-Channel Admin 2FA (`SMS → Email → Authenticator App`)
 
-Admin panel login defaults to **RFC 6238 TOTP** (`SHA1`, 6 digits, 30-second period, ±1 step clock-drift window, powered by `pragmarx/google2fa`) so admins do not depend on an SMS subscription. All admin routes require a `two_fa_verified: true` session token minted only after step 2 completes.
+Admin panel login uses an automatic multi-channel second-factor chain configured by `ADMIN_2FA_CHAIN` (default: `sms,email,totp`). After username + password verification, the server generates **one** CSPRNG 6-digit OTP, stores only its salted HMAC-SHA256 hash (`admin_2fa_challenges`, 5-minute TTL, max 5 verify attempts), and walks the delivery chain:
 
-### 1. Bootstrap Enrollment (CLI — no panel login required)
+1. **SMS (`SmsChannel`)**:
+   - Skipped immediately (zero delay) when `ADMIN_SMS_ENABLED=false`.
+   - Enforces a **4-second hard timeout** on the SMS provider request.
+   - Protected by **`SmsCircuitBreaker`**: after **3 consecutive SMS failures**, SMS is skipped automatically for **10 minutes** so admins never wait on a dead/expired SMS panel.
+2. **Email (`EmailChannel`)**:
+   - Sends the same 6-digit OTP via PHPMailer SMTP (`MAIL_HOST=smtp.gmail.com`, `MAIL_PORT=465`, `MAIL_ENCRYPTION=ssl`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_FROM`) with an **8-second hard timeout**.
+3. **Authenticator App (`TotpChannel` — RFC 6238)**:
+   - If both SMS and Email are unavailable or fail, the login step falls back directly to TOTP (`"Enter the code from your authenticator app"`) without failing the login request.
+   - On the code entry screen, admins can always switch channels manually via `POST /api/v1/auth/2fa/switch-channel` (`"Didn't receive it? Send via email"` when on SMS, or `"Use authenticator app instead"` whenever enrolled), or resend via `POST /api/v1/auth/2fa/resend` (60-second cooldown, max 3 sends per login session).
 
-After applying migration `014_admin_totp_2fa.sql` and installing dependencies (`composer install` / `composer update`), enroll an admin account directly over SSH:
+All admin routes require a `two_fa_verified: true` session token minted only after step 2 completes.
+
+### 1. Enrolling TOTP (CLI — no panel login required)
+
+After installing dependencies (`composer install`) and applying migrations `014_admin_totp_2fa.sql` and `016_admin_2fa_challenges.sql`, enroll an admin over SSH:
 
 ```bash
 php nad admin:totp-setup <admin-username-or-id>
@@ -379,11 +400,11 @@ php nad admin:totp-setup 1 --issuer="FAMO Academy"
 ```
 
 The command:
-- Generates a 160-bit Base32 secret and stores it **AES-256-GCM encrypted** in `users.totp_secret` with `totp_enabled = 1` (never plaintext).
-- Prints a scannable terminal QR code, the `otpauth://totp/...` URI, and the raw Base32 secret for manual entry in **Microsoft Authenticator** (*Add account → Other account → Enter code manually* or *Scan QR*).
-- Generates **8 one-time recovery codes**, prints them **once**, and stores only their salted hashes in `users.recovery_codes`. Save them in a password manager immediately.
+- Generates a 160-bit Base32 secret (`SHA1`, 6 digits, 30s period, ±1 step window) and stores it **AES-256-GCM encrypted** in `users.totp_secret` with `totp_enabled = 1`.
+- Prints a terminal QR code, the `otpauth://totp/...` URI, and the Base32 secret for **Microsoft Authenticator** / Google Authenticator / Aegis.
+- Generates **8 single-use recovery codes**, prints them **once**, and stores only their salted hashes in `users.recovery_codes`.
 
-To inspect enrollment status and remaining recovery codes without exposing secrets:
+Check status without exposing secrets:
 
 ```bash
 php nad admin:totp-status <admin-username-or-id>
@@ -394,23 +415,19 @@ php nad admin:totp-status <admin-username-or-id>
 - **Using a one-time recovery code**: Complete step 1 (`POST /api/v1/auth/login`), then submit one of your saved recovery codes (e.g., `XXXXX-XXXXX`) in the `code` field of `POST /api/v1/auth/verify-2fa`. Each code works **once** and is immediately invalidated.
 - **If you lost both your authenticator device and recovery codes (CLI reset)**:
   ```bash
-  # Immediately wipe old secret/codes and generate a new enrollment:
+  # Wipe old secret/codes and immediately generate a fresh enrollment:
   php nad admin:totp-reset <admin-username-or-id> --re-enroll
 
-  # Or disable/wipe TOTP without re-enrolling yet:
+  # Or wipe/disable TOTP without re-enrolling yet:
   php nad admin:totp-reset <admin-username-or-id>
   ```
   Resetting also revokes active JWT sessions for that admin (when Redis is connected).
 
-### 3. Switching Back to SMS OTP
+### 3. Disabling & Re-enabling SMS Without Code Changes
 
-The existing SMS OTP login path is preserved intact behind `ADMIN_2FA_METHOD`. Once your SMS panel subscription is renewed, set the following in `.env` (no code changes or migration rollback needed):
-
-```dotenv
-ADMIN_2FA_METHOD=sms
-```
-
-Set `ADMIN_2FA_METHOD=totp` (or omit it, since `totp` is the default) to use authenticator-app TOTP again.
+- **While SMS panel subscription is expired**: set `ADMIN_SMS_ENABLED=false` in `.env`. Logins skip SMS immediately and deliver the OTP via Email (or TOTP if Email fails).
+- **Once your SMS panel subscription is renewed**: simply set `ADMIN_SMS_ENABLED=true` (and keep `ADMIN_2FA_CHAIN=sms,email,totp`) in `.env` and restart/reload — SMS automatically becomes the primary channel again with Email and TOTP kept as automatic fallbacks.
+- You can also re-order or remove channels at any time with `ADMIN_2FA_CHAIN` (e.g., `email,totp` or `totp`).
 
 ---
 
@@ -502,9 +519,11 @@ The repository maintains a complete OpenAPI 3.1.0 specification in [`openapi.yam
 | `GET` | `/api/v1/public/admissions` | Published & consent-confirmed admissions (`year`, `exam_type`, `field`, `featured`, `group_by=year`) | Redis Cache (300s) + Rate Limit |
 | `GET` | `/api/v1/public/testimonials` | Approved testimonials with `summary` (`total_approved`, `average_rating`) | Redis Cache (300s) + Rate Limit |
 | `POST` | `/api/v1/public/testimonials` | Public testimonial submission (starts `pending`, honeypot + HMAC-SHA256 Redis dedup) | 5/hour IP Rate Limit |
-| `POST` | `/api/v1/auth/login` | User login (returns JWT or `202` 2FA challenge; supports `STUDENT_2FA_MODE=off|new_device|always`) | Auth Rate Limit |
+| `POST` | `/api/v1/auth/login` | User login (returns JWT or `202` 2FA challenge; admins use `ADMIN_2FA_CHAIN=sms,email,totp`) | Auth Rate Limit |
 | `POST` | `/api/v1/auth/register` | Student self-registration | Auth Rate Limit |
-| `POST` | `/api/v1/auth/verify-2fa` | Verify 6-digit OTP (`code`, `user_id`; sets 30-day `HttpOnly` `famo_td` cookie for students in `new_device` mode) | 2FA Rate Limit (fail-closed Redis for student OTP) |
+| `POST` | `/api/v1/auth/verify-2fa` | Verify 6-digit SMS/Email/TOTP code or single-use recovery code (`code`, `user_id`, `challenge_token`) | 2FA Rate Limit (5 attempts / 10 min) |
+| `POST` | `/api/v1/auth/2fa/resend` | Resend admin 2FA OTP on active outbound channel (60s cooldown, max 3 sends/session) | Auth Attempt + Send Rate Limit |
+| `POST` | `/api/v1/auth/2fa/switch-channel` | Switch active admin 2FA channel (`email` or `totp`) during login | Auth Attempt + Send Rate Limit |
 | `POST` | `/api/v1/auth/password/forgot` | Request purpose-bound `password_reset` SMS OTP (uniform response, equalized timing) | Auth Attempt + SMS Rate Limit |
 | `POST` | `/api/v1/auth/password/verify` | Verify `password_reset` OTP and return 10-minute single-use signed reset token | Auth Attempt Rate Limit (fail-closed Redis) |
 | `POST` | `/api/v1/auth/password/reset` | Consume single-use reset token, update password, clear `must_change_password` if present, revoke all JWTs | Auth Attempt Rate Limit (fail-closed Redis) |
@@ -624,7 +643,7 @@ npm test
 ## 🗺 Technical Notes
 
 - User accounts (`users`) authenticate by mobile phone number (`phone`), normalized to canonical Iranian mobile format (`09XXXXXXXXX`) via `App\Core\PhoneNumber`.
-- Course subscriptions (`App\Modules\Subscription`), staff activity logs (`App\Modules\ActivityLogs`), SMS pattern settings (`App\Modules\Settings`), admissions (`App\Modules\Admissions`), testimonials (`App\Modules\Testimonials`), admin TOTP 2FA (`App\Core\TotpService`, `App\Core\SecretBox`), and server-side list sorting (`App\Core\Sorting`) are all backed by MySQL migrations `001`–`014`.
+- Course subscriptions (`App\Modules\Subscription`), staff activity logs (`App\Modules\ActivityLogs`), SMS pattern settings (`App\Modules\Settings`), admissions (`App\Modules\Admissions`), testimonials (`App\Modules\Testimonials`), multi-channel admin 2FA (`App\Core\TwoFactor\*`, `App\Core\TotpService`, `App\Core\SecretBox`), and server-side list sorting (`App\Core\Sorting`) are all backed by MySQL migrations `001`–`016`.
 - Protected `GET /api/v1/blog/categories`, `excused` attendance status in `PUT /api/v1/attendance/entries`, and `PATCH` support in the catch-all 404 route are wired in `routes/api.php`.
 
 ---

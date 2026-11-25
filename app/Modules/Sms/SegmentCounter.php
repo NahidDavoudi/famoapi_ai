@@ -39,7 +39,7 @@ final class SegmentCounter
     private const GSM7_BASIC = "@\u{00A3}\u{00A5}\u{00E8}\u{00E9}\u{00F9}\u{00EC}\u{00F2}\u{00C7}\n\u{00D8}\u{00F8}\r\u{00C5}\u{00E5}\u{0394}_\u{03A6}\u{0393}\u{039B}\u{03A9}\u{03A0}\u{03A8}\u{03A3}\u{0398}\u{039E}\u{00C6}\u{00E6}\u{00DF}\u{00C9} !\"#\u{00A4}%&'()*+,-./0123456789:;<=>?\u{00A1}ABCDEFGHIJKLMNOPQRSTUVWXYZ\u{00C4}\u{00D6}\u{00D1}\u{00DC}\u{00A7}\u{00BF}abcdefghijklmnopqrstuvwxyz\u{00E4}\u{00F6}\u{00F1}\u{00FC}\u{00E0}";
 
     /** GSM 03.38 extension table (each char = 2 septets). */
-    private const GSM7_EXTENSION = '^{}\\[~]|\u{20AC}';
+    private const GSM7_EXTENSION = "^{}\\[~]|\u{20AC}";
 
     /** @var array<string, bool> */
     private static array $basicMap = [];
