@@ -310,6 +310,100 @@ final class RedisClient
         }
     }
 
+    /**
+     * Atomically acquire a distributed lock (SET key token NX EX ttl).
+     */
+    public static function acquireLock(string $key, int $ttlSeconds, string $token): bool
+    {
+        if (!self::isAvailable()) {
+            return false;
+        }
+
+        $ttl = max(1, $ttlSeconds);
+        $prefixed = self::prefixKey($key);
+
+        if (self::$useInMemory) {
+            self::evictExpiredMemoryKey($prefixed);
+            if (isset(self::$memoryStrings[$prefixed])) {
+                return false;
+            }
+            self::$memoryStrings[$prefixed] = [
+                'value' => $token,
+                'exp'   => self::now() + $ttl,
+            ];
+            return true;
+        }
+
+        try {
+            if (self::$extClient !== null) {
+                $res = self::$extClient->set($prefixed, $token, ['nx', 'ex' => $ttl]);
+                return $res === true || $res === 'OK';
+            }
+            $res = self::sendCommand(['SET', $prefixed, $token, 'NX', 'EX', (string) $ttl]);
+            return $res === 'OK' || $res === true;
+        } catch (\Throwable $e) {
+            self::recordFailure('SET_NX_EX', $e->getMessage());
+            self::disconnect();
+            return false;
+        }
+    }
+
+    /**
+     * Refresh the TTL of a distributed lock only if it is still owned by $token.
+     */
+    public static function refreshLock(string $key, int $ttlSeconds, string $token): bool
+    {
+        if (!self::isAvailable()) {
+            return false;
+        }
+
+        $ttl = max(1, $ttlSeconds);
+        $prefixed = self::prefixKey($key);
+
+        if (self::$useInMemory) {
+            self::evictExpiredMemoryKey($prefixed);
+            if (!isset(self::$memoryStrings[$prefixed]) || self::$memoryStrings[$prefixed]['value'] !== $token) {
+                return false;
+            }
+            self::$memoryStrings[$prefixed]['exp'] = self::now() + $ttl;
+            return true;
+        }
+
+        $script = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2])) else return 0 end";
+        $res = self::eval($script, [$key], [$token, (string) $ttl]);
+        return (int) $res === 1;
+    }
+
+    /**
+     * Atomically release a distributed lock only if it is still owned by $token.
+     */
+    public static function releaseLock(string $key, string $token): bool
+    {
+        if (!self::isAvailable()) {
+            return false;
+        }
+
+        $prefixed = self::prefixKey($key);
+
+        if (self::$useInMemory) {
+            self::evictExpiredMemoryKey($prefixed);
+            if (!isset(self::$memoryStrings[$prefixed]) || self::$memoryStrings[$prefixed]['value'] !== $token) {
+                return false;
+            }
+            unset(self::$memoryStrings[$prefixed]);
+            return true;
+        }
+
+        $script = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end";
+        $res = self::eval($script, [$key], [$token]);
+        return (int) $res === 1;
+    }
+
+    public static function isLocked(string $key): bool
+    {
+        return self::get($key) !== null;
+    }
+
     public static function del(string ...$keys): int
     {
         if ($keys === [] || !self::isAvailable()) {

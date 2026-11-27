@@ -1,0 +1,501 @@
+راهنمای یکپارچه‌سازی سرویس لرنیتو با بک‌اند PHP (famoapi_ai)
+مخاطب سند: ایجنت / توسعه‌دهنده بک‌اند famoapi_ai (Slim 4 + MySQL 8.0+/8.4+ + Redis)
+معماری مصوب: اجرای هر دو سرویس روی یک سرور با الگوی PHP-Orchestrated Pull (سرویس Node هیچ دسترسی مستقیم به MySQL ندارد و صرفاً درگاه امن WebSocket لرنیتو و موتور PDF است).
+وضعیت فازبندی:
+
+فاز ۱ (هم‌اکنون): همگام‌سازی شلف‌ها (lernito_shelves)، ارتباط شلف-سوال (lernito_shelf_questions) و بانک سوالات یکتا (lernito_questions).
+فاز ۲ (آینده): همگام‌سازی پاسخنامه‌ها (ستون‌های دیتابیس و اندپوینت داخلی Node از همین الان آماده شده‌اند تا بعداً نیازی به تغییر ساختار نباشد).
+۱. معماری و جریان داده (Same-Server Pull)
+[Cron / CLI: scripts/lernito_sync.php در famoapi_ai]
+   │  (قفل Redis برای جلوگیری از اجرای همزمان)
+   │
+   ├── 1) GET  http://127.0.0.1:3000/internal/shelves?force=1
+   │      Header: X-Internal-Key: <INTERNAL_API_KEY>
+   │      ◄── لیست کامل شلف‌ها + رکوردها (source_id و subParts)
+   │
+   ├── 2) Upsert در MySQL: lernito_shelves و lernito_shelf_questions
+   │      + کوئری: کدام lernito_question_id ها هنوز در lernito_questions نیستند؟
+   │
+   ├── 3) به صورت بچ‌های حداکثر 100تایی (با مکث 300-500ms بین بچ‌ها):
+   │      POST http://127.0.0.1:3000/internal/fetch-questions
+   │      Header: X-Internal-Key: <INTERNAL_API_KEY>
+   │      Body:   { "ids": ["...", "..."] }
+   │      ◄── اسناد خام سوالات (شامل choices، topics، subQuestions، references)
+   │
+   └── 4) Upsert در MySQL: lernito_questions
+          (در فاز ۲: GET /internal/shelves/:shelfId/answers برای پر کردن answer_key_json و answer_html)
+
+نکات مهم عملیاتی
+سرویس Node.js باید پشت فایروال یا روی 127.0.0.1:3000 (یا شبکه داخلی) در دسترس بک‌اند PHP باشد و مسیر /internal/* نباید در Nginx به اینترنت عمومی باز شود.
+تمام درخواست‌های WebSocket در src/lernito.ts به‌صورت صف‌بندی‌شده (sequential queue) اجرا می‌شوند و در صورت انقضای سشن لرنیتو، سرویس Node به‌صورت خودکار یک بار سشن را ریست، لاگین مجدد و درخواست را تکرار (retry) می‌کند.
+۲. تنظیمات محیطی و احراز هویت داخلی
+ساختار احراز هویت داخلی دقیقاً مشابه App\Modules\Bot\BotServiceMiddleware در famoapi_ai طراحی شده است.
+
+متغیرهای .env در سرویس Node.js
+LERNITO_USERNAME=...
+LERNITO_PASSWORD=...
+INTERNAL_API_KEY=یک_کلید_تصادفی_حداقل_32_بایتی_هگز
+INTERNAL_IP_ALLOWLIST=127.0.0.1,::1
+
+متغیرهای پیشنهادی .env در famoapi_ai
+LERNITO_SERVICE_URL=http://127.0.0.1:3000
+LERNITO_INTERNAL_KEY=همان_مقدار_INTERNAL_API_KEY
+LERNITO_SYNC_BATCH_SIZE=100
+LERNITO_SYNC_TIMEOUT_SECONDS=45
+
+قواعد احراز هویت (src/internal-routes.ts)
+هدر اجباری: X-Internal-Key: <INTERNAL_API_KEY> (مقایسه زمان‌ثابت با crypto.timingSafeEqual روی هش SHA-256).
+در صورت خالی بودن INTERNAL_API_KEY روی Node، سرویس به‌صورت fail-closed با وضعیت 500 پاسخ می‌دهد.
+اگر INTERNAL_IP_ALLOWLIST مقداردهی شده باشد (لیست IP جداشده با کاما؛ IPv6-mapped مثل ::ffff:127.0.0.1 خودکار به 127.0.0.1 نرمال می‌شود)، هر IP خارج از لیست با 403 رد می‌شود.
+۳. قرارداد کامل HTTP API داخلی
+تمام اندپوینت‌ها زیر پیشوند /internal هستند و ساختار پاسخ یکسان دارند:
+
+موفق: { "ok": true, "data": { ... }, "error": null }
+خطا: { "ok": false, "data": null, "error": { "code": "...", "message": "..." } }
+جدول کدهای خطا
+HTTP Status	error.code	توضیح
+400	INVALID_BODY, INVALID_IDS, EMPTY_IDS, TOO_MANY_IDS, INVALID_ID, INVALID_SHELF_ID	ورودی نامعتبر (مثلاً بیشتر از ۱۰۰ شناسه یا شناسه غیرمجاز)
+401	UNAUTHORIZED	هدر X-Internal-Key ارسال نشده یا اشتباه است
+403	IP_FORBIDDEN	IP درخواست‌کننده در INTERNAL_IP_ALLOWLIST نیست
+500	INTERNAL_AUTH_NOT_CONFIGURED	متغیر INTERNAL_API_KEY در .env سرویس Node تنظیم نشده است
+502	UPSTREAM_ERROR	خطا در ارتباط با سرور لرنیتو (timeout، خطای لاگین یا پاسخ نامعتبر)
+اندپوینت ۱: دریافت لیست کامل شلف‌ها
+GET /internal/shelves (یا GET /internal/shelves?force=1)
+
+کاربرد: دریافت لیست کامل شلف‌های اکانت لرنیتو به همراه آرایه records هر شلف.
+Query Params:
+force=1 (یا force=true): دریافت مستقیم از لرنیتو و به‌روزرسانی کش محلی Node. در Cron همگام‌سازی PHP همیشه force=1 ارسال کنید. بدون force=1 از کش دیسک Node (cache/shelves.json) خوانده می‌شود.
+حجم تقریبی پاسخ: برای ۲۶۰ شلف فعلی حدود 0.9–1.6 MB JSON (~15,650 ارجاع رکورد و 10,871 شناسه سوال یکتا).
+نمونه واقعی پاسخ GET /internal/shelves?force=1
+(برگرفته عیناً از داده واقعی اکانت لرنیتو — شلف واقعی 6abf6769d6bdc6ed2befe5ba با هر دو حالت رکورد معمولی و subParts)
+
+{
+  "ok": true,
+  "data": {
+    "shelves": [
+      {
+        "_id": "6abf6769d6bdc6ed2befe5ba",
+        "name": "غزل نجفپور",
+        "color": "#ff9800",
+        "creatorId": "657b271696a7646f9666fd20",
+        "dateCreated": "2026-10-02T08:12:25.854Z",
+        "dateModified": "2026-10-02T08:12:25.854Z",
+        "records": [
+          {
+            "_id": "64da30eb4ac60800065951af",
+            "docType": "Question"
+          },
+          {
+            "_id": "686d3573283d9900065a9bb8",
+            "docType": "Question",
+            "subParts": [0, 1, 2, 3]
+          }
+        ]
+      }
+    ],
+    "count": 260,
+    "cachedAt": "2026-11-27T14:30:06.632Z",
+    "fromCache": false
+  },
+  "error": null
+}
+
+اندپوینت ۲: دریافت بچ سوالات با لیست شناسه
+POST /internal/fetch-questions
+
+Headers: Content-Type: application/json, X-Internal-Key: <KEY>
+Body: { "ids": ["65117c3c8ac4a20006b3098c", "5fae5697280c0600065acb63", "66dc9ef804a17b0006a49231"] }
+محدودیت‌ها و اعتبارسنجی:
+حداقل 1 و حداکثر 100 شناسه در هر درخواست (MAX_FETCH_QUESTIONS_IDS = 100).
+هر شناسه باید با الگوی /^[a-zA-Z0-9_-]{8,64}$/ مطابقت داشته باشد.
+شناسه‌های تکراری به‌صورت خودکار با حفظ ترتیب اولیه حذف (deduplicate) می‌شوند.
+اگر لرنیتو برای بخشی از شناسه‌ها سندی برنگرداند (مثلاً سوال حذف‌شده)، شناسه‌های دریافت‌نشده در آرایه missingIds برگردانده می‌شوند و درخواست خطا نمی‌دهد.
+نمونه واقعی پاسخ POST /internal/fetch-questions
+(هر ۳ آبجکت زیر، داده واقعی و دست‌نخورده لرنیتو هستند که ۳ حالت مختلف ساختاری را پوشش می‌دهند: ۱) تک‌بخشی چهارگزینه‌ای ساده، ۲) تک‌بخشی چندمبحثی با LaTeX و تصویر، ۳) چندبخشی با subQuestions ترکیبی از تشریحی و تستی)
+
+{
+  "ok": true,
+  "data": {
+    "questions": [
+      {
+        "_id": "65117c3c8ac4a20006b3098c",
+        "topics": [
+          {
+            "segment": "متوسطه 2",
+            "group": "علوم تجربی",
+            "grade": "یازدهم",
+            "lesson": "زیست‌شناسی",
+            "chapter": "فصل 3: دستگاه حرکتی",
+            "subject0": "گفتار 1: استخوان‌ها و اسکلت",
+            "branchString": ",متوسطه 2,علوم تجربی,زیست‌شناسی,یازدهم,فصل 3: دستگاه حرکتی,گفتار 1: استخوان‌ها و اسکلت,",
+            "isMainTopic": true
+          }
+        ],
+        "question": "  <p dir=\"RTL\">استخوان&zwnj;ها محل ذخیرۀ موادمعدنی ............ و ............ هستند.</p>  <p dir=\"RTL\">             </p>  <p dir=\"RTL\"></p>",
+        "flags": {
+          "isBuggy": false,
+          "hasBugReport": false
+        },
+        "references": [
+          {
+            "segment": "متوسطه 2",
+            "type": "علوی",
+            "group": "علوم تجربی",
+            "grade": "یازدهم",
+            "kind": "Exam",
+            "period": "آزمون شماره 4",
+            "date": "2020-10-30T00:00:00.000Z",
+            "year": 1400
+          }
+        ],
+        "choices": [
+          " کلسیم و فسفات",
+          " فسفات و منیزیم",
+          " سدیم و کلسیم",
+          " سدیم و فسفات"
+        ],
+        "difficulty": 0,
+        "type": "multipleChoice",
+        "count": 1,
+        "dateCreated": "2023-09-26T10:02:20.837Z",
+        "createdBy": "58b57819bdc47888d8fed08d",
+        "version": 2,
+        "numOfExpand": 320
+      },
+      {
+        "_id": "5fae5697280c0600065acb63",
+        "topics": [
+          {
+            "subject0": "درس پنجم: آشنایی با هندسۀ تحلیلی",
+            "subject1": "فاصلۀ یک نقطه از یک خط",
+            "isMainTopic": true,
+            "chapter": "فصل اول: جبر و معادله",
+            "branchString": ",متوسطه 2,ریاضی و فیزیک,حسابان,یازدهم,فصل اول: جبر و معادله,درس پنجم: آشنایی با هندسۀ تحلیلی,فاصلۀ یک نقطه از یک خط,",
+            "segment": "متوسطه 2",
+            "grade": "یازدهم",
+            "lesson": "حسابان",
+            "group": "ریاضی و فیزیک"
+          },
+          {
+            "subject0": "درس اول: ترسیم‌های هندسی",
+            "subject1": "برخی خواص نیمساز و ترسیم آن",
+            "isMainTopic": true,
+            "chapter": "فصل دوم: هندسه",
+            "branchString": ",متوسطه 2,علوم تجربی,ریاضی,یازدهم,فصل دوم: هندسه,درس اول: ترسیم‌های هندسی,برخی خواص نیمساز و ترسیم آن,",
+            "segment": "متوسطه 2",
+            "grade": "یازدهم",
+            "lesson": "ریاضی",
+            "group": "علوم تجربی"
+          }
+        ],
+        "question": "<p>در شکل زیر نقطۀ M روی نیمساز زاویۀ AOB قرار دارد. طول AM کدام است؟</p>\n<p style='text-align:left'><img src='https://api.lernito.com/lernito-public/question-images/5fba02229a252000063cd0df' /></p>",
+        "flags": {
+          "isBuggy": false,
+          "hasBugReport": false
+        },
+        "references": [
+          {
+            "authorId": "5a87098b9cee980f7c116e94",
+            "authorName": "محمد مصطفی ",
+            "authorFamily": "ابراهیمی ",
+            "authorLernitoId": "mebrahimi",
+            "authorImage": "98ba5be6-1a9f-4e29-9d9f-a232351193a0",
+            "kind": "Authored",
+            "type": "تالیفی"
+          }
+        ],
+        "count": 1,
+        "choices": [
+          "$\\dfrac{9\\sqrt{10}}{10}$",
+          "$\\dfrac{3\\sqrt{10}}{10}$",
+          "$1$",
+          "$\\dfrac{3\\sqrt{10}}{5}$"
+        ],
+        "numOfExpand": 523,
+        "version": 12,
+        "type": "multipleChoice",
+        "dateCreated": "2020-12-05T05:59:28.172Z",
+        "difficulty": 2,
+        "createdBy": "5c03aafa493d28a88ee5d162"
+      },
+      {
+        "_id": "66dc9ef804a17b0006a49231",
+        "question": "با توجه به بیت \"دل نیست کبوتر که چو برخاست نشیند / از گوشۀ بامی که پریدیم، پریدیم\" به سؤالات پاسخ دهید.",
+        "flags": {
+          "isBuggy": false
+        },
+        "references": [
+          {
+            "term": "شهریور",
+            "segment": "متوسطه 2",
+            "kind": "Exam",
+            "grade": "دوازدهم",
+            "lesson": "علوم و فنون ادبی",
+            "type": "امتحان نهایی",
+            "source": "exam",
+            "year": 1403,
+            "group": "علوم انسانی"
+          }
+        ],
+        "subQuestions": [
+          {
+            "topics": [
+              {
+                "segment": "متوسطه 2",
+                "group": "علوم انسانی",
+                "grade": "دوازدهم",
+                "lesson": "علوم و فنون ادبی",
+                "chapter": "درس دوم: پایه‌های آوایی ناهمسان",
+                "branchString": ",متوسطه 2,علوم انسانی,علوم و فنون ادبی,دوازدهم,درس دوم: پایه‌های آوایی ناهمسان,",
+                "isMainTopic": true
+              }
+            ],
+            "question": "<p>پایه‌های آوایی اوّل و چهارم مصراع اول را بنویسید.نشانه‌های هجایی آن‌ها را در جدول قرار دهید. (بیت را به صورت همسان برش بزنید.)</p>\n<p style='text-align:left'><img src='https://api.lernito.com/lernito-public/question-images/66dca67e04a17b0006a4924c' /></p>\n<p><br></p>",
+            "flags": {
+              "isBuggy": false
+            },
+            "type": "description",
+            "difficulty": 2
+          },
+          {
+            "topics": [
+              {
+                "segment": "متوسطه 2",
+                "group": "علوم انسانی",
+                "grade": "دوازدهم",
+                "lesson": "علوم و فنون ادبی",
+                "chapter": "درس دوم: پایه‌های آوایی ناهمسان",
+                "branchString": ",متوسطه 2,علوم انسانی,علوم و فنون ادبی,دوازدهم,درس دوم: پایه‌های آوایی ناهمسان,",
+                "isMainTopic": true
+              }
+            ],
+            "question": "وزن بیت بالا به صورت ناهمسان چیست؟  <p dir=\"RTL\">            </p>  <p dir=\"RTL\"></p>",
+            "flags": {
+              "isBuggy": false
+            },
+            "choices": [
+              "مفعول مفاعیل مفاعیل فعولن",
+              "مفعول فاعلات مفاعیل فاعلن"
+            ],
+            "type": "multipleChoice",
+            "difficulty": 2
+          }
+        ],
+        "count": 2,
+        "version": 3,
+        "dateCreated": "2024-09-07T19:16:36.834Z",
+        "isSeparable": false,
+        "createdBy": "5ead4aaeb93630341beb9572",
+        "numOfExpand": 84
+      }
+    ],
+    "requestedCount": 3,
+    "fetchedCount": 3,
+    "missingIds": []
+  },
+  "error": null
+}
+
+اندپوینت ۳ (آماده برای فاز ۲): دریافت پاسخنامه یک شلف
+GET /internal/shelves/:shelfId/answers (یا ?force=1)
+
+تذکر مهم درباره محدودیت لرنیتو: متد shelf/getAnswers در لرنیتو فقط شلف‌محور است (params: { id: shelfId, source: "shelves" }) و برخلاف سوالات، امکان دریافت پاسخ‌ها فقط با لیست ID سوال وجود ندارد. بنابراین در فاز ۲، PHP برای شلف‌هایی که پاسخنامه‌شان همگام‌سازی نشده این اندپوینت را صدا می‌زند و ستون‌های answer_key_json، answer_html و answer_synced_at را در lernito_questions به‌روزرسانی می‌کند.
+
+نمونه واقعی پاسخ GET /internal/shelves/6b096c26c75ebdcacc2e0869/answers
+(هر دو حالت واقعی answerKey عددی 1 و آرایه‌ای [3] از پاسخ واقعی شلف 6b096c26c75ebdcacc2e0869)
+
+{
+  "ok": true,
+  "data": {
+    "shelfId": "6b096c26c75ebdcacc2e0869",
+    "answers": [
+      {
+        "_id": "65117c3c8ac4a20006b3098c",
+        "answerKey": 1,
+        "answer": "  <p dir=\"RTL\"></p>  <p dir=\"RTL\">استخوان&zwnj;ها محل ذخیرۀ یون&zwnj;های کلسیم و فسفات هستند. </p>  <p dir=\"RTL\"></p>",
+        "type": "multipleChoice",
+        "choices": [
+          " کلسیم و فسفات",
+          " فسفات و منیزیم",
+          " سدیم و کلسیم",
+          " سدیم و فسفات"
+        ],
+        "question": "  <p dir=\"RTL\">استخوان&zwnj;ها محل ذخیرۀ موادمعدنی ............ و ............ هستند.</p>",
+        "difficulty": 0,
+        "count": 1,
+        "version": 2
+      },
+      {
+        "_id": "5fae5697280c0600065acb63",
+        "answerKey": [3],
+        "answer": "<p>باتوجه‌به اینکه نقطۀ $M$ روی نیمساز قرار دارد،$AM=BM$. برای به دست آوردن طول $BM$، ابتدا مختصات نقطۀ $M$ را به دست آوریم.</p>\n<p>\\[3y=x \\xrightarrow{x=3}3y=3 \\Rightarrow y=1 \\Rightarrow M(3,1)\\]</p>\n<p>&nbsp;حال فاصلۀ نقطۀ $B(3,0)$ و $M(3,1)$ را به دست آوریم؛ پس داریم:</p>\n<p>\\[BM=\\sqrt{{{(3-3)}^{2}}+{{(1-0)}^{2}}}=1\\Rightarrow BM=AM=1\\]</p>",
+        "type": "multipleChoice",
+        "choices": [
+          "$\\dfrac{9\\sqrt{10}}{10}$",
+          "$\\dfrac{3\\sqrt{10}}{10}$",
+          "$1$",
+          "$\\dfrac{3\\sqrt{10}}{5}$"
+        ],
+        "question": "<p>در شکل زیر نقطۀ M روی نیمساز زاویۀ AOB قرار دارد. طول AM کدام است؟</p>\n<p style='text-align:left'><img src='https://api.lernito.com/lernito-public/question-images/5fba02229a252000063cd0df' /></p>",
+        "difficulty": 2,
+        "count": 1,
+        "version": 12
+      }
+    ],
+    "count": 20,
+    "cachedAt": "2026-11-27T14:30:22.100Z",
+    "fromCache": true
+  },
+  "error": null
+}
+
+۴. مایگریشن آماده MySQL (database/migrations/017_question_bank.sql)
+مایگریشن زیر دقیقاً مطابق قراردادهای famoapi_ai (بعد از 016_admin_2fa_challenges.sql، موتور InnoDB، کاراکترست utf8mb4_unicode_ci، کلید اصلی BIGINT UNSIGNED، تاریخ‌های UTC و ایندکس‌های نام‌گذاری‌شده uq_* / idx_*) طراحی شده است.
+
+-- Migration 017: Lernito Question Bank (Shelves, Questions, Shelf-Question Mapping)
+-- Compatible with MySQL 8.0+ / 8.4+
+-- Phase 1: Shelves + Questions + Shelf mapping
+-- Phase 2 ready: Nullable answer_key_json, answer_html, answer_synced_at on lernito_questions
+
+CREATE TABLE IF NOT EXISTS lernito_shelves (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  lernito_id VARCHAR(64) NOT NULL,
+  name VARCHAR(255) NOT NULL DEFAULT '',
+  color VARCHAR(32) DEFAULT NULL,
+  creator_id VARCHAR(64) DEFAULT NULL,
+  record_count INT UNSIGNED NOT NULL DEFAULT 0,
+  lernito_created_at DATETIME DEFAULT NULL,
+  lernito_modified_at DATETIME DEFAULT NULL,
+  last_synced_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_lernito_shelves_lernito_id (lernito_id),
+  KEY idx_lernito_shelves_modified (lernito_modified_at),
+  KEY idx_lernito_shelves_name (name(100))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS lernito_questions (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  lernito_id VARCHAR(64) NOT NULL,
+  question_type VARCHAR(32) NOT NULL DEFAULT 'unknown', -- 'multipleChoice' | 'description' | 'multipart' | ...
+  is_multipart TINYINT(1) NOT NULL DEFAULT 0,
+  part_count SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  difficulty TINYINT UNSIGNED DEFAULT NULL,
+  question_html MEDIUMTEXT NOT NULL,
+  choices_json JSON DEFAULT NULL,          -- آرایه گزینه‌ها برای سوالات تک‌بخشی (ممکن است 2، 4 یا بیشتر باشد)
+  sub_questions_json JSON DEFAULT NULL,    -- آرایه کامل subQuestions برای سوالات چندبخشی
+  topics_json JSON DEFAULT NULL,           -- آرایه کامل topics (برای فیلتر دقیق در آینده)
+  references_json JSON DEFAULT NULL,       -- منبع سوال (آزمون/تالیفی/امتحان نهایی)
+  flags_json JSON DEFAULT NULL,            -- { isBuggy, hasBugReport }
+  -- فیلدهای نرمال‌شده از اولین topic (برای جستجو و فیلتر سریع SQL بدون اسکن JSON)
+  primary_segment VARCHAR(64) DEFAULT NULL,
+  primary_group VARCHAR(64) DEFAULT NULL,
+  primary_grade VARCHAR(64) DEFAULT NULL,
+  primary_lesson VARCHAR(128) DEFAULT NULL,
+  primary_chapter VARCHAR(255) DEFAULT NULL,
+  primary_subject VARCHAR(255) DEFAULT NULL,
+  -- ستون‌های فاز ۲ (پاسخنامه — در فاز ۱ مقدار NULL دارند)
+  answer_key_json JSON DEFAULT NULL,       -- عدد 1-مبنایی (مثلاً 1) یا آرایه ([3]) یا نقشه پاسخ زیرسوال‌ها
+  answer_html MEDIUMTEXT DEFAULT NULL,     -- متن HTML پاسخ تشریحی
+  answer_synced_at DATETIME DEFAULT NULL,
+  -- متادیتای لرنیتو و بکاپ خام برای جلوگیری از از دست رفتن فیلدهای جدید
+  lernito_version INT UNSIGNED DEFAULT NULL,
+  lernito_created_by VARCHAR(64) DEFAULT NULL,
+  lernito_created_at DATETIME DEFAULT NULL,
+  raw_json JSON NOT NULL,
+  last_synced_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_lernito_questions_lernito_id (lernito_id),
+  KEY idx_lernito_questions_type (question_type, is_multipart),
+  KEY idx_lernito_questions_lesson_grade (primary_lesson(80), primary_grade(40), difficulty),
+  KEY idx_lernito_questions_group_grade (primary_group(50), primary_grade(40)),
+  KEY idx_lernito_questions_answer_synced (answer_synced_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS lernito_shelf_questions (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  shelf_id BIGINT UNSIGNED NOT NULL,
+  question_lernito_id VARCHAR(64) NOT NULL,
+  position INT UNSIGNED NOT NULL,          -- ترتیب 0-مبنایی رکورد داخل شلف
+  doc_type VARCHAR(32) NOT NULL DEFAULT 'Question',
+  sub_parts_json JSON DEFAULT NULL,        -- مثلاً [0, 1, 2, 3] (اندیس‌های 0-مبنایی روی subQuestions) یا NULL
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_lernito_shelf_pos (shelf_id, position),
+  KEY idx_lernito_sq_question_id (question_lernito_id),
+  KEY idx_lernito_sq_shelf_question (shelf_id, question_lernito_id),
+  CONSTRAINT fk_lernito_sq_shelf
+    FOREIGN KEY (shelf_id) REFERENCES lernito_shelves (id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+چرا question_lernito_id در lernito_shelf_questions کلید خارجی (FK) به lernito_questions ندارد؟
+چون در چرخه Pull، ابتدا شلف‌ها و ارجاعات‌شان ذخیره می‌شوند و سپس سوالات غایب در بچ‌های ۱۰۰تایی از لرنیتو دانلود و وارد lernito_questions می‌شوند (یا ممکن است برخی شناسه‌ها در missingIds باشند). نداشتن FK مستقیم روی question_lernito_id باعث می‌شود sync کاملاً idempotent و مقاوم در برابر قطعی میان‌کار باشد، و هنگام JOIN روی lernito_questions.lernito_id از ایندکس uq_lernito_questions_lernito_id استفاده می‌شود.
+
+۵. جدول نگاشت فیلدها و قواعد دامنه‌ای حیاتی
+نگاشت فیلدهای شلف (GET /internal/shelves → lernito_shelves)
+فیلد JSON لرنیتو	ستون MySQL	نکته
+_id	lernito_id	کلید یکتا (معمولاً ۲۴ کاراکتر هگز MongoDB)
+name (یا title)	name	اگر خالی بود ''
+color	color	مثلاً "#ff9800" یا null
+creatorId	creator_id	شناسه سازنده در لرنیتو
+records.length	record_count	تعداد رکوردهای سطح بالا (نه تعداد زیرسوال‌ها)
+dateCreated	lernito_created_at	تبدیل ISO-8601 (2026-10-02T08:12:25.854Z) به UTC Y-m-d H:i:s
+dateModified	lernito_modified_at	معیار تشخیص تغییر شلف برای بازنویسی lernito_shelf_questions
+نگاشت فیلدهای سوال (POST /internal/fetch-questions → lernito_questions)
+فیلد JSON لرنیتو	ستون MySQL	قاعده استخراج دقیق
+_id	lernito_id	کلید یکتا
+subQuestions	is_multipart, sub_questions_json	اگر آرایه غیرخالی باشد is_multipart = 1
+type	question_type	اگر is_multipart === 1 مقدار 'multipart'؛ در غیر این صورت doc.type ?? 'unknown'
+count	part_count	is_multipart ? count(subQuestions) : (doc.count ?? 1)
+difficulty	difficulty	در سوالات چندبخشی ریشه null است؛ می‌توانید doc.difficulty ?? doc.subQuestions[0].difficulty ?? null بگذارید
+question	question_html	HTML خام (در سوالات چندبخشی، این متن صورت/متن مشترک یا بیت است)
+choices	choices_json	فقط در سوالات تک‌بخشی وجود دارد؛ تعداد گزینه‌ها همیشه ۴ نیست (نمونه ۲-گزینه‌ای در داده واقعی وجود دارد)
+topics	topics_json, primary_*	نکته حیاتی: در سوالات چندبخشی، doc.topics وجود ندارد و topics داخل هر عضو subQuestions[i] است! پس منبع مبحث اولیه: $primaryTopic = $doc['topics'][0] ?? $doc['subQuestions'][0]['topics'][0] ?? null (در اولویت‌بندی، اگر عضوی isMainTopic === true دارد همان انتخاب شود)
+کل سند doc	raw_json	بدون تغییر ذخیره شود تا هیچ فیلدی از دست نرود
+۵ نکته دامنه (Edge Cases) که ایجنت بک‌اند حتماً باید بداند
+ترتیب فیلتر subParts و سوالات تشریحی (description):
+مقادیر subParts روی رکورد شلف (مثل [0, 1, 2, 3]) اندیس‌های ۰-مبنایی روی آرایه خام subQuestions هستند.
+برای آزمون‌های ۴-گزینه‌ای، همیشه باید ابتدا subParts اعمال شود و بعد از آن زیرسوال‌های با type === "description" حذف شوند (دقیقاً مطابق src/subparts.ts). در دیتابیس، داده خام و کامل ذخیره شود تا فیچرهای مختلف (آزمون تستی، آزمون تشریحی، بانک سوال) بتوانند فیلتر دلخواه خود را روی آن اعمال کنند.
+ساختار answerKey در فاز ۲:
+مقدار answerKey لرنیتو ۱-مبنایی (1 تا 4) است و در برخی سوالات به‌جای عدد، به شکل آرایه تک‌عضوی می‌آید (مثل [3] در نمونه واقعی 5fae5697280c0600065acb63).
+در سوالات چندبخشی، کلید و پاسخ تشریحی روی هر زیرسوال (subQuestions[i].answerKey و subQuestions[i].answer) قرار می‌گیرد (مشاهده‌شده در src/pdf.ts؛ پیشنهاد می‌شود در فاز ۲ هنگام آپدیت پاسخنامه یک سوال چندبخشی، پاسخ‌های هر زیرسوال نیز در sub_questions_json یا answer_key_json ادغام شوند).
+چند مبحث بودن (topics[]) و وجود subject1:
+یک سوال ممکن است چند عضو در topics داشته باشد (مثل 5fae5697280c0600065acb63 که هم «حسابان یازدهم ریاضی» است و هم «ریاضی یازدهم تجربی») و علاوه بر subject0، فیلد subject1 هم داشته باشد. بنابراین ستون‌های primary_* برای کوئری سریع هستند و topics_json مرجع کامل است.
+محتوای HTML، فرمول‌های KaTeX و تصاویر خارجی:
+متن question، choices و answer شامل تگ‌های HTML (مثل <p dir="RTL">, &zwnj;, <img ...>), فرمول‌های LaTeX ($...$ و \[...\]) و لینک تصاویر روی سرور لرنیتو (https://api.lernito.com/lernito-public/question-images/<id>) است.
+در MySQL متن خام نگهداری شود و هنگام نمایش در وب‌اپ، از HTML sanitizer ایمن (یا KaTeX auto-render) استفاده شود.
+نکات فنی تأییدشده / محدودیت‌های شناخته‌شده:
+دریافت سوالات با لیست ID از طریق POST /internal/fetch-questions بر پایه متد shelf/getShelfRecords بدون ارسال shelfId است. اگر شناسه‌ای در اکانت لرنیتو موجود یا قابل دسترسی نباشد، سرویس Node آن را در missingIds گزارش می‌کند؛ PHP نباید روی missingIds در حلقه بی‌نهایت بیفتد (می‌تواند پس از لاگ کردن، از آن‌ها عبور کند یا با cooldown مجدد امتحان کند).
+۶. الگوی پیاده‌سازی Sync در famoapi_ai (scripts/lernito_sync.php)
+مطابق ساختار موجود scripts/sms_cron.php در famoapi_ai:
+
+گارد اجرا و قفل همزمانی:
+بررسی PHP_SAPI === 'cli'، بارگذاری .env با Dotenv\Dotenv::createImmutable، و تنظیم date_default_timezone_set('UTC').
+گرفتن قفل Redis با App\Core\RedisClient (مثلاً کلید lock:lernito_sync با TTL مثلاً 900 ثانیه) تا دو اجرای Cron همزمان روی هم نیفتند.
+مرحله ۱ — همگام‌سازی شلف‌ها:
+فراخوانی GET {LERNITO_SERVICE_URL}/internal/shelves?force=1 با هدر X-Internal-Key: {LERNITO_INTERNAL_KEY} (تایم‌اوت ۴۵ ثانیه).
+برای هر شلف در data.shelves:
+بررسی lernito_modified_at فعلی در lernito_shelves.
+Upsert شلف در lernito_shelves.
+اگر شلف جدید است یا lernito_modified_at تغییر کرده (یا --force-links داده شده)، داخل یک تراکنش MySQL رکوردهای lernito_shelf_questions آن شلف را با آرایه جدید records جایگزین کنید (DELETE + batch INSERT با حفظ position و sub_parts_json).
+مرحله ۲ — کشف و دانلود سوالات جدید (Incremental):
+کوئری SQL برای یافتن شناسه‌های غایب:
+SELECT DISTINCT sq.question_lernito_id
+FROM lernito_shelf_questions sq
+LEFT JOIN lernito_questions q ON q.lernito_id = sq.question_lernito_id
+WHERE q.id IS NULL
+LIMIT 500;
+
+تقسیم لیست به بچ‌های 100 تایی و فراخوانی POST {LERNITO_SERVICE_URL}/internal/fetch-questions با مکث 300–500ms بین هر بچ.
+Upsert تمام اسناد برگشتی data.questions در lernito_questions (همه کوئری‌ها با Prepared Statements در PDO).
+ثبت لاگ خلاصه در خروجی CLI: تعداد شلف‌ها، تعداد سوالات جدید دانلودشده، تعداد missingIds.
+زمان‌بندی پیشنهادی Crontab:
+بار اول (Backfill ~10,871 سوال یکتا): اجرای دستی با پرچم --max-questions=15000 (~۱۱۰ بچ ۱۰۰تایی، مجموعاً حدود ۲ تا ۴ دقیقه).
+اجرای عادی دوره‌ای: هر ۱۵ یا ۳۰ دقیقه یک‌بار (*/15 * * * * php /path/to/famoapi_ai/scripts/lernito_sync.php).
+مسیر توسعه فاز ۲ (پاسخنامه‌ها):
+بدون هیچ مایگریشن جدیدی، اسکریپت می‌تواند شلف‌هایی را که سوال‌هایشان answer_synced_at IS NULL دارند پیدا کرده و GET /internal/shelves/{lernito_id}/answers را صدا بزند و ستون‌های answer_key_json، answer_html و answer_synced_at را پر کند.

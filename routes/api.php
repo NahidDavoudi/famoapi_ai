@@ -62,6 +62,7 @@ use App\Modules\Admissions\AdmissionController;
 use App\Modules\Admissions\AdmissionService;
 use App\Modules\Testimonials\TestimonialController;
 use App\Modules\Testimonials\TestimonialService;
+use App\Modules\Lernito\LernitoController;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Slim\App;
@@ -112,6 +113,7 @@ return function (App $app) {
     $smsSettingsController = new SmsSettingsController();
     $admissionController = new AdmissionController(new AdmissionService());
     $testimonialController = new TestimonialController(new TestimonialService());
+    $lernitoController = new LernitoController();
     $requireContentAccess = new ContentAccessMiddleware();
 
     // Health
@@ -443,6 +445,11 @@ return function (App $app) {
     // Admin SMS pattern settings (separate Melipayamak bodyId per purpose: auth_2fa, appointment_reminder, exam_result)
     $app->get('/api/v1/admin/sms/patterns', [$smsSettingsController, 'getPatterns'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
     $app->map(['PUT', 'PATCH'], '/api/v1/admin/sms/patterns', [$smsSettingsController, 'updatePatterns'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+
+    // Admin Lernito Question Bank Sync (asynchronous trigger + status + missing retry)
+    $app->post('/api/v1/admin/lernito/sync', [$lernitoController, 'triggerSync'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/admin/lernito/sync/status', [$lernitoController, 'syncStatus'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/admin/lernito/missing/retry', [$lernitoController, 'retryMissing'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
     // Admin statistics (admin JWT). Content reading has a separate permission.
     $app->group('/api/v1/admin/stats', function ($group) use ($statsController, $activityLogController, $requireContentAccess) {

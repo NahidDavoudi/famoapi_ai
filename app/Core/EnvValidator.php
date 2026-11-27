@@ -67,10 +67,18 @@ final class EnvValidator
         'SMS_RECONCILE_MAX_AGE_DAYS',
         'SMS_RECONCILE_MIN_AGE_SECONDS',
         'SMS_REQUEST_TIMEOUT_MS',
+        'LERNITO_SYNC_BATCH_SIZE',
+        'LERNITO_SYNC_TIMEOUT_SECONDS',
+        'LERNITO_ENSURE_TIMEOUT_SECONDS',
+        'LERNITO_MISSING_COOLDOWN_HOURS',
+        'LERNITO_MISSING_MAX_ATTEMPTS',
+        'LERNITO_SYNC_LOCK_TTL',
+        'LERNITO_REFRESH_DAYS',
     ];
 
     private const NON_NEGATIVE_INT_KEYS = [
         'BOT_OUTBOX_RETRY_BACKOFF',
+        'LERNITO_SYNC_BATCH_SLEEP_MS',
         'REDIS_DB',
     ];
 
@@ -79,12 +87,14 @@ final class EnvValidator
         'APP_DEBUG',
         'CACHE_ENABLED',
         'JWT_COOKIE_SECURE',
+        'LERNITO_SEND_ACCOUNT_PARAM',
         'REDIS_ENABLED',
     ];
 
     private const URL_KEYS = [
         'API_URL',
         'ASSET_URL',
+        'LERNITO_SERVICE_URL',
         'PUBLIC_SITE_URL',
         'TELEGRAM_BOT_URL',
     ];

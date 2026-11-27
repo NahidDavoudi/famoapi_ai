@@ -7595,6 +7595,127 @@ paths:
         "422":
           $ref: "#/components/responses/ValidationError"
 
+  /api/v1/admin/lernito/sync:
+    post:
+      tags: [AdminStats]
+      summary: شروع غیرهمزمان همگام‌سازی بانک سوال لرنیتو (ادمین)
+      description: |
+        پروسس پس‌زمینه `scripts/lernito_sync.php` را با قفل مشترک Redis (`lock:lernito_sync`) اجرا می‌کند
+        و بلافاصله وضعیت `202 Accepted` برمی‌گرداند. اگر قفل همگام‌سازی فعال باشد `409 Conflict` برمی‌گردد.
+        زمانی که `LERNITO_SEND_ACCOUNT_PARAM=false` است، ارسال دقیقاً یک اکانت در فیلد `account` الزامی است.
+      operationId: triggerAdminLernitoSync
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                account:
+                  type: string
+                  example: motevasete1
+                  description: شناسه اکانت لرنیتو (در حالت LERNITO_SEND_ACCOUNT_PARAM=false اجباری و تک‌اکانت)
+                mode:
+                  type: string
+                  enum: [sync, refresh_versions]
+                  default: sync
+                force_links:
+                  type: boolean
+                  default: false
+                retry_missing:
+                  type: boolean
+                  default: false
+                max_questions:
+                  type: integer
+                  minimum: 1
+                  maximum: 20000
+      responses:
+        "202":
+          description: فرآیند پس‌زمینه همگام‌سازی در صف اجرا قرار گرفت
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: همگام‌سازی دیگری در حال اجراست (قفل Redis فعال است)
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          description: سرویس Redis در دسترس نیست
+
+  /api/v1/admin/lernito/sync/status:
+    get:
+      tags: [AdminStats]
+      summary: دریافت وضعیت قفل، پیشرفت و آخرین خطای همگام‌سازی لرنیتو (ادمین)
+      operationId: getAdminLernitoSyncStatus
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: وضعیت فعلی یا آخرین اجرای همگام‌سازی به همراه آمار دیتابیس
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/admin/lernito/missing/retry:
+    post:
+      tags: [AdminStats]
+      summary: بازنشانی دستی سوالات غایب لرنیتو (پس از سقف تلاش) و اجرای اختیاری همگام‌سازی (ادمین)
+      operationId: retryAdminLernitoMissing
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account]
+              properties:
+                account:
+                  type: string
+                  example: motevasete1
+                lernito_ids:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: string
+                trigger_sync:
+                  type: boolean
+                  default: false
+      responses:
+        "200":
+          description: رکوردهای سوالات غایب برای تلاش مجدد بازنشانی شدند
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "202":
+          description: رکوردها بازنشانی شدند و فرآیند همگام‌سازی پس‌زمینه آغاز شد
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: همگام‌سازی دیگری در حال اجراست
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
   /api/v1/public/admissions:
     get:
       tags: [Public, Admissions]

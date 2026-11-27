@@ -1,0 +1,314 @@
+{
+  "meta": {
+    "schema_version": 1,
+    "is_temporary_synthetic": true,
+    "note": "Temporary synthetic anonymous fixtures matching the agreed structural contract. Safe to replace once the automation agent exports anonymized real fixtures."
+  },
+  "cases": [
+    {
+      "name": "shelf_mixed_subparts_and_single",
+      "description": "Mixed shelf containing single-part test questions and multipart questions with subParts summing to B and B minus descriptive.",
+      "records": [
+        { "_id": "syn_q_single_0001", "docType": "Question" },
+        { "_id": "syn_q_single_0002", "docType": "Question" },
+        { "_id": "syn_q_multi_all_mc", "docType": "Question", "subParts": [0, 2] }
+      ],
+      "questions": {
+        "syn_q_single_0001": {
+          "_id": "syn_q_single_0001",
+          "type": "multipleChoice",
+          "count": 1,
+          "question": "<p>Synthetic single question 1</p>",
+          "choices": ["A", "B", "C", "D"],
+          "topics": [
+            {
+              "segment": "متوسطه 2",
+              "group": "علوم تجربی",
+              "grade": "یازدهم",
+              "lesson": "زیست‌شناسی",
+              "chapter": "فصل 1: تنظیم عصبی",
+              "subject0": "گفتار 1: یاخته‌های بافت عصبی",
+              "isMainTopic": true
+            }
+          ]
+        },
+        "syn_q_single_0002": {
+          "_id": "syn_q_single_0002",
+          "type": "multipleChoice",
+          "count": 1,
+          "question": "<p>Synthetic single question 2</p>",
+          "choices": ["A", "B", "C", "D"],
+          "topics": [
+            {
+              "segment": "متوسطه 2",
+              "group": "علوم تجربی",
+              "grade": "یازدهم",
+              "lesson": "زیست‌شناسی",
+              "chapter": "فصل 1: تنظیم عصبی",
+              "subject0": "گفتار 2: ساختار دستگاه عصبی",
+              "isMainTopic": true
+            }
+          ]
+        },
+        "syn_q_multi_all_mc": {
+          "_id": "syn_q_multi_all_mc",
+          "count": 3,
+          "isSeparable": false,
+          "question": "<p>Synthetic multipart stem</p>",
+          "subQuestions": [
+            {
+              "type": "multipleChoice",
+              "question": "<p>Part 0</p>",
+              "choices": ["A", "B"],
+              "topics": [
+                {
+                  "lesson": "فیزیک",
+                  "chapter": "فصل 1: حرکت بر خط راست",
+                  "subject0": "درس اول",
+                  "isMainTopic": true
+                }
+              ]
+            },
+            {
+              "type": "multipleChoice",
+              "question": "<p>Part 1 (not selected)</p>",
+              "choices": ["A", "B"],
+              "topics": [
+                {
+                  "lesson": "فیزیک",
+                  "chapter": "فصل 2: دینامیک",
+                  "isMainTopic": true
+                }
+              ]
+            },
+            {
+              "type": "multipleChoice",
+              "question": "<p>Part 2</p>",
+              "choices": ["A", "B"],
+              "topics": [
+                {
+                  "lesson": "فیزیک",
+                  "chapter": "فصل 1: حرکت بر خط راست",
+                  "subject0": "درس دوم",
+                  "isMainTopic": true
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "total_records": 3,
+        "total_raw_units": 4,
+        "total_questions": 4,
+        "skipped_descriptive": 0,
+        "has_unclassified_topics": false,
+        "warnings_count": 0,
+        "topics": [
+          { "lesson": "زیست‌شناسی", "topic": "فصل 1: تنظیم عصبی", "count": 2, "has_topic": true, "is_unclassified": false },
+          { "lesson": "فیزیک", "topic": "فصل 1: حرکت بر خط راست", "count": 2, "has_topic": true, "is_unclassified": false }
+        ]
+      }
+    },
+    {
+      "name": "subparts_applied_before_descriptive_filter",
+      "description": "subQuestions[0] is descriptive and subQuestions[1] is multipleChoice; subParts:[1] must index raw subQuestions first and count part 1 without index shifting.",
+      "records": [
+        { "_id": "syn_q_order_check_01", "docType": "Question", "subParts": [1] }
+      ],
+      "questions": {
+        "syn_q_order_check_01": {
+          "_id": "syn_q_order_check_01",
+          "count": 2,
+          "isSeparable": false,
+          "question": "<p>Synthetic stem</p>",
+          "subQuestions": [
+            {
+              "type": "description",
+              "question": "<p>Descriptive sub-question 0</p>",
+              "topics": [
+                { "lesson": "شیمی", "chapter": "فصل 1", "isMainTopic": true }
+              ]
+            },
+            {
+              "type": "multipleChoice",
+              "question": "<p>Multiple choice sub-question 1</p>",
+              "choices": ["1", "2", "3", "4"],
+              "topics": [
+                { "lesson": "شیمی", "chapter": "فصل 2: ساختار اتم", "subject0": "بخش 1", "isMainTopic": true }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "total_records": 1,
+        "total_raw_units": 1,
+        "total_questions": 1,
+        "skipped_descriptive": 0,
+        "has_unclassified_topics": false,
+        "warnings_count": 0,
+        "topics": [
+          { "lesson": "شیمی", "topic": "فصل 2: ساختار اتم", "count": 1, "has_topic": true, "is_unclassified": false }
+        ]
+      }
+    },
+    {
+      "name": "multipart_mixed_desc_and_test_subparts_0_1",
+      "description": "Structural case mirroring 2-part [description, multipleChoice] with subParts:[0,1] => 2 raw units, 1 counted test unit, 1 skipped descriptive.",
+      "records": [
+        { "_id": "syn_q_mixed_0_1_case", "docType": "Question", "subParts": [0, 1] }
+      ],
+      "questions": {
+        "syn_q_mixed_0_1_case": {
+          "_id": "syn_q_mixed_0_1_case",
+          "count": 2,
+          "isSeparable": false,
+          "question": "<p>Synthetic literary stem</p>",
+          "subQuestions": [
+            {
+              "type": "description",
+              "question": "<p>Write syllable pattern</p>",
+              "topics": [
+                { "lesson": "علوم و فنون ادبی", "chapter": "درس دوم: پایه‌های آوایی", "isMainTopic": true }
+              ]
+            },
+            {
+              "type": "multipleChoice",
+              "question": "<p>Choose meter</p>",
+              "choices": ["گزینه ۱", "گزینه ۲"],
+              "topics": [
+                { "lesson": "علوم و فنون ادبی", "chapter": "درس دوم: پایه‌های آوایی", "isMainTopic": true }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "total_records": 1,
+        "total_raw_units": 2,
+        "total_questions": 1,
+        "skipped_descriptive": 1,
+        "has_unclassified_topics": false,
+        "warnings_count": 0,
+        "topics": [
+          { "lesson": "علوم و فنون ادبی", "topic": "درس دوم: پایه‌های آوایی", "count": 1, "has_topic": true, "is_unclassified": false }
+        ]
+      }
+    },
+    {
+      "name": "multipart_without_subparts_emits_warning",
+      "description": "Multipart question referenced without subParts includes all subQuestions, filters descriptive parts, and emits MULTIPART_WITHOUT_SUBPARTS warning.",
+      "records": [
+        { "_id": "syn_q_no_subparts_01", "docType": "Question" }
+      ],
+      "questions": {
+        "syn_q_no_subparts_01": {
+          "_id": "syn_q_no_subparts_01",
+          "count": 3,
+          "question": "<p>Stem</p>",
+          "subQuestions": [
+            {
+              "type": "multipleChoice",
+              "question": "<p>Sub 0</p>",
+              "choices": ["A", "B"],
+              "topics": [{ "lesson": "ریاضی", "chapter": "فصل 1: تابع", "isMainTopic": true }]
+            },
+            {
+              "type": "description",
+              "question": "<p>Sub 1 desc</p>",
+              "topics": [{ "lesson": "ریاضی", "chapter": "فصل 1: تابع", "isMainTopic": true }]
+            },
+            {
+              "type": "multipleChoice",
+              "question": "<p>Sub 2</p>",
+              "choices": ["A", "B"],
+              "topics": [{ "lesson": "ریاضی", "chapter": "فصل 1: تابع", "isMainTopic": true }]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "total_records": 1,
+        "total_raw_units": 3,
+        "total_questions": 2,
+        "skipped_descriptive": 1,
+        "has_unclassified_topics": false,
+        "warnings_count": 1,
+        "warning_codes": ["MULTIPART_WITHOUT_SUBPARTS"],
+        "topics": [
+          { "lesson": "ریاضی", "topic": "فصل 1: تابع", "count": 2, "has_topic": true, "is_unclassified": false }
+        ]
+      }
+    },
+    {
+      "name": "unclassified_and_main_topic_priority",
+      "description": "has_topic=0 maps to lesson='نامشخص' and topic=null with explicit flags; isMainTopic=true wins over earlier non-main topic.",
+      "records": [
+        { "_id": "syn_q_no_topic_0001", "docType": "Question" },
+        { "_id": "syn_q_main_topic_01", "docType": "Question" },
+        { "_id": "syn_q_fallback_top1", "docType": "Question" }
+      ],
+      "questions": {
+        "syn_q_no_topic_0001": {
+          "_id": "syn_q_no_topic_0001",
+          "type": "multipleChoice",
+          "count": 1,
+          "question": "<p>No topics question</p>",
+          "choices": ["A", "B", "C", "D"],
+          "topics": []
+        },
+        "syn_q_main_topic_01": {
+          "_id": "syn_q_main_topic_01",
+          "type": "multipleChoice",
+          "count": 1,
+          "question": "<p>Second topic is main</p>",
+          "choices": ["A", "B", "C", "D"],
+          "topics": [
+            { "lesson": "ریاضی", "chapter": "فصل فرعی", "isMainTopic": false },
+            { "lesson": "حسابان", "chapter": "فصل اصلی اول", "subject0": "درس پنجم", "isMainTopic": true },
+            { "lesson": "هندسه", "chapter": "فصل اصلی دوم", "isMainTopic": true }
+          ]
+        },
+        "syn_q_fallback_top1": {
+          "_id": "syn_q_fallback_top1",
+          "type": "multipleChoice",
+          "count": 1,
+          "question": "<p>Fallback first topic</p>",
+          "choices": ["A", "B", "C", "D"],
+          "topics": [
+            { "lesson": "فیزیک", "chapter": "فصل اول", "isMainTopic": false },
+            { "lesson": "فیزیک", "chapter": "فصل دوم", "isMainTopic": false }
+          ]
+        }
+      },
+      "expected": {
+        "total_records": 3,
+        "total_raw_units": 3,
+        "total_questions": 3,
+        "skipped_descriptive": 0,
+        "has_unclassified_topics": true,
+        "unclassified_count": 1,
+        "warnings_count": 0,
+        "topics": [
+          { "lesson": "حسابان", "topic": "فصل اصلی اول", "count": 1, "has_topic": true, "is_unclassified": false },
+          { "lesson": "فیزیک", "topic": "فصل اول", "count": 1, "has_topic": true, "is_unclassified": false },
+          { "lesson": "نامشخص", "topic": null, "count": 1, "has_topic": false, "is_unclassified": true }
+        ]
+      }
+    }
+  ],
+  "synthetic_scale_shelf": {
+    "name": "temporary_synthetic_73_record_shelf",
+    "description": "Temporary synthetic shelf matching 73 records, B=79 raw units, 1 skipped descriptive, B minus descriptive=78.",
+    "single_mc_count": 67,
+    "two_part_all_mc_count": 5,
+    "two_part_mixed_desc_mc_count": 1,
+    "expected": {
+      "total_records": 73,
+      "total_raw_units": 79,
+      "total_questions": 78,
+      "skipped_descriptive": 1
+    }
+  }
+}
