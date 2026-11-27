@@ -94,7 +94,7 @@ class ExamResult
         return (int) $stmt->fetchColumn();
     }
 
-    public static function findDetails(string $examDate, int $studentId): array
+    public static function findDetails(string $examDate, int $studentId, ?int $examSessionId = null): array
     {
         $db = Database::getConnection();
         $stmt = $db->prepare('SELECT id, name, grade, field FROM students WHERE id = ?');
@@ -102,29 +102,76 @@ class ExamResult
         $student = $stmt->fetch();
 
         if (!$student) {
-            return ['student' => null, 'subjects' => [], 'avg_percentage' => 0, 'comments' => []];
+            return ['student' => null, 'subjects' => [], 'avg_percentage' => 0, 'comments' => [], 'exam_sessions' => []];
+        }
+
+        $where = 'student_id = ? AND exam_date = ?';
+        $params = [$studentId, $examDate];
+        if ($examSessionId !== null && $examSessionId > 0) {
+            $where .= ' AND exam_session_id = ?';
+            $params[] = $examSessionId;
         }
 
         $stmt = $db->prepare(
-            'SELECT id, subject, chapter, total_q, correct, wrong, skipped, percentage
-             FROM exam_results WHERE student_id = ? AND exam_date = ? ORDER BY subject'
+            "SELECT id, exam_session_id, exam_session_topic_id, subject_id, topic_ids_json,
+                    subject, chapter, total_q, correct, wrong, skipped, percentage
+             FROM exam_results WHERE {$where} ORDER BY id ASC"
         );
-        $stmt->execute([$studentId, $examDate]);
-        $subjects = $stmt->fetchAll();
+        $stmt->execute($params);
+        $subjects = array_map(static function (array $row): array {
+            $row['id'] = (int) $row['id'];
+            $row['exam_session_id'] = isset($row['exam_session_id']) && $row['exam_session_id'] !== null ? (int) $row['exam_session_id'] : null;
+            $row['exam_session_topic_id'] = isset($row['exam_session_topic_id']) && $row['exam_session_topic_id'] !== null ? (int) $row['exam_session_topic_id'] : null;
+            $row['subject_id'] = isset($row['subject_id']) && $row['subject_id'] !== null ? (int) $row['subject_id'] : null;
+            $row['topic_ids'] = self::decodeTopicIds($row['topic_ids_json'] ?? null);
+            unset($row['topic_ids_json']);
+            return $row;
+        }, $stmt->fetchAll());
 
         $stmt = $db->prepare(
-            'SELECT ROUND(AVG(percentage), 1) as avg FROM exam_results WHERE student_id = ? AND exam_date = ?'
+            "SELECT ROUND(AVG(percentage), 1) as avg FROM exam_results WHERE {$where}"
         );
-        $stmt->execute([$studentId, $examDate]);
+        $stmt->execute($params);
         $avg = $stmt->fetchColumn();
 
         $comments = self::findComments($examDate, $studentId);
+
+        $sessions = [];
+        try {
+            $sStmt = $db->prepare(
+                'SELECT id, shelf_id, shelf_name_snapshot, shelf_account_snapshot,
+                        total_questions, skipped_descriptive, missing_question_count,
+                        is_incomplete, has_unclassified_topics, created_at
+                 FROM exam_sessions
+                 WHERE student_id = ? AND exam_date = ?
+                 ORDER BY id ASC'
+            );
+            $sStmt->execute([$studentId, $examDate]);
+            foreach ($sStmt->fetchAll() as $sr) {
+                $sessions[] = [
+                    'id'                      => (int) $sr['id'],
+                    'shelf_id'                => (int) $sr['shelf_id'],
+                    'shelf_name_snapshot'     => (string) $sr['shelf_name_snapshot'],
+                    'shelf_account_snapshot'  => (string) $sr['shelf_account_snapshot'],
+                    'total_questions'         => (int) $sr['total_questions'],
+                    'skipped_descriptive'     => (int) $sr['skipped_descriptive'],
+                    'missing_question_count'  => (int) $sr['missing_question_count'],
+                    'is_incomplete'           => (int) $sr['is_incomplete'] === 1,
+                    'has_unclassified_topics' => (int) ($sr['has_unclassified_topics'] ?? 0) === 1,
+                    'created_at'              => $sr['created_at'] ?? null,
+                ];
+            }
+        } catch (\Throwable $e) {
+            // Backward compatibility if migration 018 has not been applied yet
+            $sessions = [];
+        }
 
         return [
             'student'        => $student,
             'subjects'       => $subjects,
             'avg_percentage' => $avg ?: 0,
             'comments'       => $comments,
+            'exam_sessions'  => $sessions,
         ];
     }
 
@@ -135,12 +182,28 @@ class ExamResult
         );
         $stmt->execute([$id]);
         $row = $stmt->fetch();
-        return $row ?: null;
+        if (!$row) {
+            return null;
+        }
+        $row['topic_ids'] = self::decodeTopicIds($row['topic_ids_json'] ?? null);
+        return $row;
     }
 
     public static function updateById(int $id, array $data): ?array
     {
-        $allowed = ['student_id', 'exam_date', 'subject', 'chapter', 'total_q', 'correct', 'wrong', 'skipped'];
+        $db = Database::getConnection();
+        $allowed = [
+            'student_id', 'exam_date', 'exam_session_id', 'exam_session_topic_id',
+            'subject_id', 'topic_ids_json', 'subject', 'chapter',
+            'total_q', 'correct', 'wrong', 'skipped',
+        ];
+        $hasTopicIds = array_key_exists('topic_ids', $data);
+        $topicIds = [];
+        if ($hasTopicIds) {
+            $topicIds = self::normalizeTopicIdArray((array) ($data['topic_ids'] ?? []));
+            $data['topic_ids_json'] = json_encode($topicIds, JSON_UNESCAPED_UNICODE);
+        }
+
         $sets = [];
         $params = ['id' => $id];
 
@@ -151,10 +214,29 @@ class ExamResult
             }
         }
 
-        if ($sets !== []) {
-            $sql = 'UPDATE exam_results SET ' . implode(', ', $sets) . ' WHERE id = :id';
-            $stmt = Database::getConnection()->prepare($sql);
-            $stmt->execute($params);
+        if ($sets !== [] || $hasTopicIds) {
+            $startedTx = !$db->inTransaction();
+            if ($startedTx) {
+                $db->beginTransaction();
+            }
+            try {
+                if ($sets !== []) {
+                    $sql = 'UPDATE exam_results SET ' . implode(', ', $sets) . ' WHERE id = :id';
+                    $stmt = $db->prepare($sql);
+                    $stmt->execute($params);
+                }
+                if ($hasTopicIds) {
+                    self::syncResultTopics($db, $id, $topicIds);
+                }
+                if ($startedTx) {
+                    $db->commit();
+                }
+            } catch (\Throwable $e) {
+                if ($startedTx && $db->inTransaction()) {
+                    $db->rollBack();
+                }
+                throw $e;
+            }
         }
 
         return self::findById($id);
@@ -463,7 +545,10 @@ class ExamResult
         $stmt = Database::getConnection()->prepare($sql);
         array_push($params, $perPage, $offset);
         $stmt->execute($params);
-        return $stmt->fetchAll();
+        return array_map(static function (array $row): array {
+            $row['topic_ids'] = self::decodeTopicIds($row['topic_ids_json'] ?? null);
+            return $row;
+        }, $stmt->fetchAll());
     }
 
     public static function countAll(array $filters): int
@@ -490,16 +575,27 @@ class ExamResult
         return (int) $stmt->fetchColumn();
     }
 
-    public static function saveBulk(int $studentId, string $examDate, array $subjects): int
+    public static function saveBulk(int $studentId, string $examDate, array $subjects, ?int $examSessionId = null): int
     {
         $db = Database::getConnection();
-        $db->beginTransaction();
+        $startedTx = !$db->inTransaction();
+        if ($startedTx) {
+            $db->beginTransaction();
+        }
         try {
-            $db->prepare('DELETE FROM exam_results WHERE student_id = ? AND exam_date = ?')
-                ->execute([$studentId, $examDate]);
+            if ($examSessionId !== null && $examSessionId > 0) {
+                $db->prepare('DELETE FROM exam_results WHERE student_id = ? AND exam_session_id = ?')
+                    ->execute([$studentId, $examSessionId]);
+            } else {
+                $db->prepare('DELETE FROM exam_results WHERE student_id = ? AND exam_date = ? AND exam_session_id IS NULL')
+                    ->execute([$studentId, $examDate]);
+            }
+
             $stmt = $db->prepare(
-                'INSERT INTO exam_results (student_id, exam_date, subject, chapter, total_q, correct, wrong, skipped)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+                'INSERT INTO exam_results
+                    (student_id, exam_date, exam_session_id, exam_session_topic_id, subject_id, topic_ids_json,
+                     subject, chapter, total_q, correct, wrong, skipped)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
             );
             $inserted = 0;
             foreach ($subjects as $subj) {
@@ -507,21 +603,92 @@ class ExamResult
                 $correct = (int) ($subj['correct'] ?? 0);
                 $wrong = (int) ($subj['wrong'] ?? 0);
                 $skipped = (int) ($subj['skipped'] ?? 0);
+                $topicIds = self::normalizeTopicIdArray((array) ($subj['topic_ids'] ?? []));
+                $topicIdsJson = json_encode($topicIds, JSON_UNESCAPED_UNICODE);
+                $subjectId = isset($subj['subject_id']) && $subj['subject_id'] !== null ? (int) $subj['subject_id'] : null;
+                $sessionTopicId = isset($subj['exam_session_topic_id']) && $subj['exam_session_topic_id'] !== null
+                    ? (int) $subj['exam_session_topic_id']
+                    : null;
+
                 $stmt->execute([
-                    $studentId, $examDate,
-                    $subj['subject'],
-                    $subj['chapter'] ?? null,
-                    $total, $correct, $wrong, $skipped
+                    $studentId,
+                    $examDate,
+                    ($examSessionId !== null && $examSessionId > 0) ? $examSessionId : null,
+                    $sessionTopicId,
+                    $subjectId,
+                    $topicIdsJson,
+                    trim((string) $subj['subject']),
+                    isset($subj['chapter']) && $subj['chapter'] !== null && trim((string) $subj['chapter']) !== ''
+                        ? trim((string) $subj['chapter'])
+                        : null,
+                    $total,
+                    $correct,
+                    $wrong,
+                    $skipped,
                 ]);
+                $resultId = (int) $db->lastInsertId();
+                if ($topicIds !== []) {
+                    self::syncResultTopics($db, $resultId, $topicIds);
+                }
                 $inserted++;
             }
-            $db->commit();
+            if ($startedTx) {
+                $db->commit();
+            }
             return $inserted;
         } catch (\Throwable $e) {
-            if ($db->inTransaction()) {
+            if ($startedTx && $db->inTransaction()) {
                 $db->rollBack();
             }
             throw $e;
+        }
+    }
+
+    /**
+     * @param array<int, mixed> $topicIds
+     * @return array<int, int>
+     */
+    public static function normalizeTopicIdArray(array $topicIds): array
+    {
+        return array_values(array_unique(array_filter(
+            array_map('intval', $topicIds),
+            static fn (int $v): bool => $v > 0
+        )));
+    }
+
+    /**
+     * @return array<int, int>
+     */
+    public static function decodeTopicIds(mixed $raw): array
+    {
+        if (is_array($raw)) {
+            return self::normalizeTopicIdArray($raw);
+        }
+        if (!is_string($raw) || trim($raw) === '') {
+            return [];
+        }
+        $decoded = json_decode($raw, true);
+        return is_array($decoded) ? self::normalizeTopicIdArray($decoded) : [];
+    }
+
+    /**
+     * Keep normalized `exam_result_topics` table synchronized with `exam_results.topic_ids_json`.
+     *
+     * @param array<int, int> $topicIds
+     */
+    public static function syncResultTopics(\PDO $db, int $examResultId, array $topicIds): void
+    {
+        $db->prepare('DELETE FROM exam_result_topics WHERE exam_result_id = ?')
+            ->execute([$examResultId]);
+
+        $clean = self::normalizeTopicIdArray($topicIds);
+        if ($clean === []) {
+            return;
+        }
+
+        $ins = $db->prepare('INSERT IGNORE INTO exam_result_topics (exam_result_id, topic_id, position) VALUES (?, ?, ?)');
+        foreach ($clean as $pos => $tid) {
+            $ins->execute([$examResultId, $tid, $pos]);
         }
     }
 }

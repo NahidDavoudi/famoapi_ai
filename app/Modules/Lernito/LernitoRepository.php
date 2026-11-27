@@ -543,12 +543,10 @@ final class LernitoRepository
     }
 
     /**
-     * Phase 1 monthly version refresh source:
-     * Fetch question IDs and their cached `lernito_version` referenced by active shelves of `$account`
-     * synced within the last `$days` days (default 60).
-     *
-     * TODO (Migration 018): Switch source join to `exam_session_questions` + `exam_sessions`
-     * for exams created within the last 60 days once Migration 018 is deployed.
+     * Monthly version refresh source (Phase 2):
+     * Prefers question IDs referenced by `exam_session_questions` for exams created within the last
+     * `$days` days (default 60). Falls back cleanly to active `lernito_shelf_questions` when
+     * `exam_sessions` has no rows yet for `$account` (or before Migration 018 is applied).
      *
      * @return array<string, ?int> Map of lernito_id => current lernito_version
      */
@@ -556,6 +554,39 @@ final class LernitoRepository
     {
         $acc = strtolower(trim($account));
         $cutoff = gmdate('Y-m-d H:i:s', time() - (max(1, $days) * 86400));
+        $lim = max(1, $limit);
+
+        try {
+            $sessionStmt = $this->db->prepare(
+                'SELECT q.lernito_id, q.lernito_version
+                 FROM lernito_questions q
+                 INNER JOIN (
+                     SELECT DISTINCT esq.question_lernito_id
+                     FROM exam_session_questions esq
+                     INNER JOIN exam_sessions es ON es.id = esq.exam_session_id
+                     WHERE es.shelf_account_snapshot = :account
+                       AND es.created_at >= :cutoff
+                 ) recent ON recent.question_lernito_id = q.lernito_id
+                 ORDER BY q.last_synced_at ASC
+                 LIMIT :lim'
+            );
+            $sessionStmt->bindValue(':account', $acc, PDO::PARAM_STR);
+            $sessionStmt->bindValue(':cutoff', $cutoff, PDO::PARAM_STR);
+            $sessionStmt->bindValue(':lim', $lim, PDO::PARAM_INT);
+            $sessionStmt->execute();
+            $sessionRows = $sessionStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            if ($sessionRows !== []) {
+                $map = [];
+                foreach ($sessionRows as $row) {
+                    $lid = (string) $row['lernito_id'];
+                    $map[$lid] = $row['lernito_version'] !== null ? (int) $row['lernito_version'] : null;
+                }
+                return $map;
+            }
+        } catch (Throwable) {
+            // exam_sessions may not exist yet before Migration 018; fall back to active shelves
+        }
 
         $stmt = $this->db->prepare(
             'SELECT q.lernito_id, q.lernito_version
@@ -573,7 +604,7 @@ final class LernitoRepository
         );
         $stmt->bindValue(':account', $acc, PDO::PARAM_STR);
         $stmt->bindValue(':cutoff', $cutoff, PDO::PARAM_STR);
-        $stmt->bindValue(':lim', max(1, $limit), PDO::PARAM_INT);
+        $stmt->bindValue(':lim', $lim, PDO::PARAM_INT);
         $stmt->execute();
 
         $map = [];

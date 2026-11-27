@@ -66,8 +66,12 @@ class ExamController
             return $response->withStatus(400);
         }
 
+        $examSessionId = isset($params['exam_session_id']) && ctype_digit((string) $params['exam_session_id'])
+            ? (int) $params['exam_session_id']
+            : null;
+
         try {
-            $result = $this->service->getDetails($examDate, (int) $studentId);
+            $result = $this->service->getDetails($examDate, (int) $studentId, $examSessionId);
         } catch (\App\Core\ApiException $e) {
             $response->getBody()->write(json_encode([
                 'success' => false, 'data' => null, 'pagination' => null,
@@ -116,6 +120,12 @@ class ExamController
             ->string('exam_date', 'تاریخ آزمون', $body['exam_date'] ?? null)
             ->arrayList('subjects', 'لیست دروس', $body['subjects'] ?? null, true);
 
+        $examSessionId = null;
+        if (array_key_exists('exam_session_id', $body) && $body['exam_session_id'] !== null && $body['exam_session_id'] !== '') {
+            $validator->positiveInt('exam_session_id', 'شناسه جلسه آزمون', $body['exam_session_id']);
+            $examSessionId = (int) $body['exam_session_id'];
+        }
+
         if (!$validator->passes()) {
             $response->getBody()->write(json_encode([
                 'success' => false, 'data' => null, 'pagination' => null,
@@ -129,7 +139,7 @@ class ExamController
         $subjects = $body['subjects'];
 
         try {
-            $result = $this->service->save($studentId, $examDate, $subjects);
+            $result = $this->service->save($studentId, $examDate, $subjects, $examSessionId);
         } catch (\App\Core\ApiException $e) {
             $response->getBody()->write(json_encode([
                 'success' => false, 'data' => null, 'pagination' => null,
@@ -152,7 +162,7 @@ class ExamController
         $validator = new \App\Core\Validator();
         $validator->requireBody($body);
 
-        $updatableKeys = ['student_id', 'exam_date', 'subject', 'chapter', 'total_q', 'correct', 'wrong', 'skipped'];
+        $updatableKeys = ['student_id', 'exam_date', 'subject_id', 'topic_ids', 'subject', 'chapter', 'total_q', 'correct', 'wrong', 'skipped'];
         $payload = [];
 
         if (is_array($body)) {
@@ -168,18 +178,30 @@ class ExamController
                     ->date('exam_date', 'تاریخ آزمون', $body['exam_date']);
                 $payload['exam_date'] = $body['exam_date'];
             }
+            if (array_key_exists('subject_id', $body)) {
+                if ($body['subject_id'] !== null && $body['subject_id'] !== '') {
+                    $validator->positiveInt('subject_id', 'شناسه درس', $body['subject_id']);
+                }
+                $payload['subject_id'] = $body['subject_id'];
+            }
+            if (array_key_exists('topic_ids', $body)) {
+                if ($body['topic_ids'] !== null && !is_array($body['topic_ids'])) {
+                    $validator->addError('فیلد topic_ids باید آرایه باشد');
+                }
+                $payload['topic_ids'] = $body['topic_ids'];
+            }
             if (array_key_exists('subject', $body)) {
                 $validator
                     ->required('subject', 'نام درس', $body['subject'])
                     ->string('subject', 'نام درس', $body['subject'])
-                    ->maxLength('subject', 'نام درس', $body['subject'], 50);
+                    ->maxLength('subject', 'نام درس', $body['subject'], 128);
                 $payload['subject'] = $body['subject'];
             }
             if (array_key_exists('chapter', $body)) {
                 if ($body['chapter'] !== null) {
                     $validator
                         ->string('chapter', 'نام مبحث', $body['chapter'])
-                        ->maxLength('chapter', 'نام مبحث', $body['chapter'], 100);
+                        ->maxLength('chapter', 'نام مبحث', $body['chapter'], 255);
                 }
                 $payload['chapter'] = $body['chapter'];
             }

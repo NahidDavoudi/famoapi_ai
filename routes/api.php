@@ -62,6 +62,8 @@ use App\Modules\Admissions\AdmissionController;
 use App\Modules\Admissions\AdmissionService;
 use App\Modules\Testimonials\TestimonialController;
 use App\Modules\Testimonials\TestimonialService;
+use App\Modules\Curriculum\CurriculumController;
+use App\Modules\Exams\ExamSessionController;
 use App\Modules\Lernito\LernitoController;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -114,6 +116,8 @@ return function (App $app) {
     $admissionController = new AdmissionController(new AdmissionService());
     $testimonialController = new TestimonialController(new TestimonialService());
     $lernitoController = new LernitoController();
+    $curriculumController = new CurriculumController();
+    $examSessionController = new ExamSessionController();
     $requireContentAccess = new ContentAccessMiddleware();
 
     // Health
@@ -226,6 +230,9 @@ return function (App $app) {
     $app->post('/api/v1/students/{studentId:[0-9]+}/parent-contacts', [$parentContactController, 'create'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
     $app->put('/api/v1/students/{studentId:[0-9]+}/parent-contacts/{id:[0-9]+}', [$parentContactController, 'update'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
     $app->delete('/api/v1/students/{studentId:[0-9]+}/parent-contacts/{id:[0-9]+}', [$parentContactController, 'delete'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/students/{id:[0-9]+}/shelves', [$examSessionController, 'listStudentShelves'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/students/{id:[0-9]+}/shelves', [$examSessionController, 'assignStudentShelf'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->delete('/api/v1/students/{id:[0-9]+}/shelves/{shelfId:[0-9]+}', [$examSessionController, 'unassignStudentShelf'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
     // Courses (protected)
     $app->get('/api/v1/courses', [$courseController, 'list'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
@@ -375,6 +382,18 @@ return function (App $app) {
     $app->post('/api/v1/exams', [$examController, 'save'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
     $app->map(['PUT', 'PATCH'], '/api/v1/exams/{id:[0-9]+}', [$examController, 'update'])->add($requireTeacher)->add($authRateLimit)->add($authMiddleware);
 
+    // Exam Sessions (Phase 2: Lernito shelf -> smart pre-filled exam entry form)
+    $app->get('/api/v1/exam-sessions', [$examSessionController, 'listSessions'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/exam-sessions', [$examSessionController, 'createSession'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/exam-sessions/{id:[0-9]+}', [$examSessionController, 'getSession'])->add($requireSupporter)->add($authRateLimit)->add($authMiddleware);
+    $app->put('/api/v1/exam-sessions/{id:[0-9]+}/topics', [$examSessionController, 'updateTopics'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+    $app->post('/api/v1/exam-sessions/{id:[0-9]+}/recalculate', [$examSessionController, 'recalculateTopics'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
+
+    // Curriculum Tree & Smart Autocomplete (backed by canonical `curriculum_nodes`)
+    $app->get('/api/v1/curriculum/autocomplete', [$curriculumController, 'autocomplete'])->add($requireStaff)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/curriculum/nodes', [$curriculumController, 'listNodes'])->add($requireStaff)->add($authRateLimit)->add($authMiddleware);
+    $app->get('/api/v1/curriculum/nodes/{id:[0-9]+}/path', [$curriculumController, 'getNodePath'])->add($requireStaff)->add($authRateLimit)->add($authMiddleware);
+
     // Weekly Plans (temporary: admin-only while the planner is being migrated)
     $app->get('/api/v1/plans', [$planController, 'get'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
     $app->post('/api/v1/plans', [$planController, 'save'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
@@ -446,7 +465,8 @@ return function (App $app) {
     $app->get('/api/v1/admin/sms/patterns', [$smsSettingsController, 'getPatterns'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
     $app->map(['PUT', 'PATCH'], '/api/v1/admin/sms/patterns', [$smsSettingsController, 'updatePatterns'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
 
-    // Admin Lernito Question Bank Sync (asynchronous trigger + status + missing retry)
+    // Admin Lernito Question Bank Sync & Shelf Search
+    $app->get('/api/v1/admin/lernito/shelves', [$examSessionController, 'listShelves'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
     $app->post('/api/v1/admin/lernito/sync', [$lernitoController, 'triggerSync'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
     $app->get('/api/v1/admin/lernito/sync/status', [$lernitoController, 'syncStatus'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);
     $app->post('/api/v1/admin/lernito/missing/retry', [$lernitoController, 'retryMissing'])->add($requireAdmin)->add($authRateLimit)->add($authMiddleware);

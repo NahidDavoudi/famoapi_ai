@@ -3587,15 +3587,36 @@ paths:
                 exam_date:
                   type: string
                   format: date
+                exam_session_id:
+                  type: integer
+                  nullable: true
+                  description: شناسه اختیاری جلسه آزمون (فاز ۲) — در صورت ارسال، نتایج فقط برای همین جلسه ذخیره و بازنویسی می‌شوند و سایر جلسات همان روز حفظ می‌شوند
                 subjects:
                   type: array
                   items:
                     type: object
                     properties:
+                      subject_id:
+                        type: integer
+                        nullable: true
+                        description: شناسه نود درس در جدول curriculum_nodes
+                      topic_ids:
+                        type: array
+                        items:
+                          type: integer
+                        description: آرایه شناسه‌های مباحث (فصل/گفتار) در جدول curriculum_nodes
+                      exam_session_topic_id:
+                        type: integer
+                        nullable: true
                       subject:
                         type: string
+                        maxLength: 128
+                        description: نام درس (در صورت ارسال subject_id به‌صورت خودکار پر می‌شود)
                       chapter:
                         type: string
+                        maxLength: 255
+                        nullable: true
+                        description: نام مبحث (در صورت ارسال topic_ids به‌صورت خودکار پر می‌شود)
                       total_q:
                         type: integer
                         description: تعداد کل سوالات
@@ -3605,7 +3626,7 @@ paths:
                         type: integer
                       skipped:
                         type: integer
-                    required: [subject, total_q]
+                    required: [total_q]
               required: [student_id, exam_date, subjects]
       responses:
         "200":
@@ -3622,6 +3643,9 @@ paths:
                           inserted:
                             type: integer
                             description: تعداد نتایج ذخیره‌شده
+                          exam_session_id:
+                            type: integer
+                            nullable: true
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -3866,6 +3890,12 @@ paths:
           required: true
           schema:
             type: integer
+        - name: exam_session_id
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: فیلتر اختیاری روی یک جلسه آزمون خاص در همان تاریخ
       responses:
         "200":
           description: Exam subject breakdown
@@ -3896,6 +3926,19 @@ paths:
                               properties:
                                 id:
                                   type: integer
+                                exam_session_id:
+                                  type: integer
+                                  nullable: true
+                                exam_session_topic_id:
+                                  type: integer
+                                  nullable: true
+                                subject_id:
+                                  type: integer
+                                  nullable: true
+                                topic_ids:
+                                  type: array
+                                  items:
+                                    type: integer
                                 subject:
                                   type: string
                                 chapter:
@@ -3918,6 +3961,11 @@ paths:
                             description: نظرات ثبت‌شده توسط اساتید/کادر آموزشی برای این دانش‌آموز در این آزمون
                             items:
                               $ref: "#/components/schemas/ExamComment"
+                          exam_sessions:
+                            type: array
+                            description: لیست جلسات آزمون لرنیتو متصل‌شده به این دانش‌آموز در این تاریخ
+                            items:
+                              type: object
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -7716,6 +7764,416 @@ paths:
         "422":
           $ref: "#/components/responses/ValidationError"
 
+  /api/v1/admin/lernito/shelves:
+    get:
+      tags: [AdminStats, Exams]
+      summary: جستجو و لیست شلف‌های لرنیتو برای انتخاب در فرم آزمون (ادمین)
+      operationId: listAdminLernitoShelves
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: account
+          in: query
+          schema:
+            type: string
+        - name: q
+          in: query
+          schema:
+            type: string
+        - name: student_id
+          in: query
+          schema:
+            type: integer
+          description: در صورت ارسال، شلف‌های منتسب به این دانش‌آموز در ابتدای لیست مرتب می‌شوند
+        - name: active_only
+          in: query
+          schema:
+            type: boolean
+            default: true
+        - $ref: "#/components/parameters/Page"
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            default: 30
+      responses:
+        "200":
+          description: لیست صفحه‌بندی‌شده شلف‌های لرنیتو
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/students/{id}/shelves:
+    get:
+      tags: [Students, Exams]
+      summary: لیست شلف‌های لرنیتو منتسب به دانش‌آموز
+      operationId: listStudentShelves
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: شلف‌های منتسب به دانش‌آموز
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Students, Exams]
+      summary: انتساب شلف لرنیتو به دانش‌آموز (ادمین)
+      operationId: assignStudentShelf
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [shelf_id]
+              properties:
+                shelf_id:
+                  type: integer
+                notes:
+                  type: string
+                  nullable: true
+      responses:
+        "201":
+          description: شلف به دانش‌آموز منتسب شد
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/students/{id}/shelves/{shelfId}:
+    delete:
+      tags: [Students, Exams]
+      summary: حذف انتساب شلف لرنیتو از دانش‌آموز (ادمین)
+      operationId: unassignStudentShelf
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: shelfId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: انتساب حذف شد
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/exam-sessions:
+    get:
+      tags: [Exams]
+      summary: لیست جلسات آزمون متصل به شلف لرنیتو
+      operationId: listExamSessions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: student_id
+          in: query
+          schema:
+            type: integer
+        - name: exam_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: shelf_id
+          in: query
+          schema:
+            type: integer
+        - $ref: "#/components/parameters/Page"
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: لیست جلسات آزمون
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+    post:
+      tags: [Exams]
+      summary: ایجاد یا دریافت جلسه آزمون از شلف لرنیتو و پرکردن خودکار پیشنهاد دروس و مباحث (ادمین)
+      description: |
+        شلف انتخابی لرنیتو را به `(student_id, exam_date)` متصل می‌کند، سوالات کش‌نشده را با تایم‌اوت کوتاه و بدون قفل کردن فرم واکشی می‌کند،
+        اسنپ‌شات غیرقابل‌تغییر سوالات را در `exam_session_questions` ذخیره کرده و پیشنهاد دروس و مباحث را تا سطح گفتار (`subtopic`)
+        به‌صورت یک ردیف برای هر درس + آرایه `topic_ids` در `exam_session_topics` آماده می‌کند.
+      operationId: createExamSession
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [student_id, shelf_id, exam_date]
+              properties:
+                student_id:
+                  type: integer
+                shelf_id:
+                  type: integer
+                exam_date:
+                  type: string
+                  format: date
+      responses:
+        "200":
+          description: جلسه موجود برای این ترکیب دانش‌آموز/شلف/تاریخ بازگردانده شد
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "201":
+          description: جلسه جدید ایجاد و پیشنهاد دروس و مباحث تولید شد
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/exam-sessions/{id}:
+    get:
+      tags: [Exams]
+      summary: دریافت جزئیات جلسه آزمون، پیشنهاد دروس/مباحث و نتایج ثبت‌شده آن
+      operationId: getExamSession
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: جزئیات کامل جلسه آزمون
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/exam-sessions/{id}/topics:
+    put:
+      tags: [Exams]
+      summary: ویرایش دستی ردیف‌های پیشنهادی درس/مبحث جلسه آزمون توسط ادمین
+      operationId: updateExamSessionTopics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [topics]
+              properties:
+                topics:
+                  type: array
+                  items:
+                    type: object
+                    required: [final_count]
+                    properties:
+                      subject_id:
+                        type: integer
+                        nullable: true
+                      lesson:
+                        type: string
+                      topic_ids:
+                        type: array
+                        items:
+                          type: integer
+                      topic:
+                        type: string
+                        nullable: true
+                      auto_count:
+                        type: integer
+                      final_count:
+                        type: integer
+                      is_manual:
+                        type: boolean
+      responses:
+        "200":
+          description: ردیف‌های پیشنهادی ذخیره شدند
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/exam-sessions/{id}/recalculate:
+    post:
+      tags: [Exams]
+      summary: بازمحاسبه ردیف‌های خودکار جلسه آزمون (بدون دست‌زدن به ردیف‌های ویرایش‌شده دستی)
+      operationId: recalculateExamSessionTopics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: ردیف‌های خودکار بازمحاسبه شدند و ردیف‌های دستی حفظ شدند
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/curriculum/autocomplete:
+    get:
+      tags: [Topics, Exams]
+      summary: جستجوی هوشمند و اتوکامپلیت روی درخت استاندارد مباحث (curriculum_nodes)
+      operationId: curriculumAutocomplete
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+        - name: student_id
+          in: query
+          schema:
+            type: integer
+          description: اولویت‌دهی نتایج بر اساس پایه و رشته دانش‌آموز
+        - name: subject_id
+          in: query
+          schema:
+            type: integer
+          description: محدود کردن جستجو به زیرشاخه‌های یک درس خاص
+        - name: parent_id
+          in: query
+          schema:
+            type: integer
+        - name: node_types
+          in: query
+          schema:
+            type: string
+          description: فیلتر سطوح جداشده با کاما (مثلاً lesson یا chapter,subtopic,detail)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 25
+      responses:
+        "200":
+          description: نتایج اتوکامپلیت درخت مباحث
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /api/v1/curriculum/nodes:
+    get:
+      tags: [Topics, Exams]
+      summary: مرور سلسله‌مراتبی فرزندان یک نود در جدول curriculum_nodes
+      operationId: listCurriculumNodes
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: parent_id
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: student_id
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: لیست نودهای فرزند
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /api/v1/curriculum/nodes/{id}/path:
+    get:
+      tags: [Topics, Exams]
+      summary: دریافت مسیر کامل (breadcrumb) یک نود از ریشه تا خود نود
+      operationId: getCurriculumNodePath
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: مسیر کامل نود در درخت مباحث
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/public/admissions:
     get:
       tags: [Public, Admissions]
@@ -9455,6 +9913,19 @@ components:
         exam_date:
           type: string
           format: date
+        exam_session_id:
+          type: integer
+          nullable: true
+        exam_session_topic_id:
+          type: integer
+          nullable: true
+        subject_id:
+          type: integer
+          nullable: true
+        topic_ids:
+          type: array
+          items:
+            type: integer
         subject:
           type: string
         chapter:
@@ -9506,13 +9977,23 @@ components:
         exam_date:
           type: string
           format: date
+        subject_id:
+          type: integer
+          minimum: 1
+          nullable: true
+        topic_ids:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+          nullable: true
         subject:
           type: string
           minLength: 1
-          maxLength: 50
+          maxLength: 128
         chapter:
           type: string
-          maxLength: 100
+          maxLength: 255
           nullable: true
         total_q:
           type: integer

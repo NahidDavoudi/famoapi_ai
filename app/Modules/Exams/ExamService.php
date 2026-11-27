@@ -9,6 +9,7 @@ use App\Core\RateLimitedException;
 use App\Core\RateLimiter;
 use App\Core\SmsService;
 use App\Core\Sorting;
+use App\Modules\Curriculum\CurriculumRepository;
 use App\Modules\ParentContacts\ParentContact;
 
 class ExamService
@@ -16,11 +17,19 @@ class ExamService
     private SmsService $sms;
     /** @var callable|null */
     private $shareLinkLogger;
+    private ?CurriculumRepository $curriculumRepo;
+    private ?ExamSessionRepository $sessionRepo;
 
-    public function __construct(?SmsService $sms = null, ?callable $shareLinkLogger = null)
-    {
+    public function __construct(
+        ?SmsService $sms = null,
+        ?callable $shareLinkLogger = null,
+        ?CurriculumRepository $curriculumRepo = null,
+        ?ExamSessionRepository $sessionRepo = null
+    ) {
         $this->sms = $sms ?? new SmsService();
         $this->shareLinkLogger = $shareLinkLogger;
+        $this->curriculumRepo = $curriculumRepo;
+        $this->sessionRepo = $sessionRepo;
     }
 
     public function getDates(int $page, int $perPage, ?int $studentId = null): array
@@ -43,9 +52,9 @@ class ExamService
         ];
     }
 
-    public function getDetails(string $examDate, int $studentId): array
+    public function getDetails(string $examDate, int $studentId, ?int $examSessionId = null): array
     {
-        $result = ExamResult::findDetails($examDate, $studentId);
+        $result = ExamResult::findDetails($examDate, $studentId, $examSessionId);
         if (!$result['student']) throw new \App\Core\ApiException('دانش‌آموز یافت نشد', 404, 'NOT_FOUND');
         return $result;
     }
@@ -62,20 +71,102 @@ class ExamService
         ];
     }
 
-    public function save(int $studentId, string $examDate, array $subjects): array
+    public function save(int $studentId, string $examDate, array $subjects, ?int $examSessionId = null): array
     {
         if ($studentId <= 0 || !$this->isValidDate($examDate) || $subjects === []) {
             throw new \App\Core\ApiException('داده‌های ناقص یا نامعتبر است', 422, 'VALIDATION_ERROR');
         }
 
+        if ($examSessionId !== null) {
+            if ($examSessionId <= 0) {
+                throw new \App\Core\ApiException('شناسه جلسه آزمون نامعتبر است', 422, 'VALIDATION_ERROR');
+            }
+            $sessionRepo = $this->sessionRepo ?? new ExamSessionRepository();
+            $session = $sessionRepo->findSessionById($examSessionId);
+            if ($session === null) {
+                throw new \App\Core\ApiException('جلسه آزمون یافت نشد', 404, 'NOT_FOUND');
+            }
+            if ((int) $session['student_id'] !== $studentId || (string) $session['exam_date'] !== $examDate) {
+                throw new \App\Core\ApiException('جلسه آزمون با دانش‌آموز یا تاریخ انتخابی مطابقت ندارد', 422, 'VALIDATION_ERROR');
+            }
+        }
+
+        // Collect referenced curriculum node IDs across all rows for a single batch lookup
+        $referencedNodeIds = [];
         foreach ($subjects as $subject) {
-            if (!is_array($subject)
-                || !isset($subject['subject'])
-                || !is_string($subject['subject'])
-                || trim($subject['subject']) === ''
+            if (!is_array($subject)) {
+                throw new \App\Core\ApiException('ردیف درس نامعتبر است', 422, 'VALIDATION_ERROR');
+            }
+            if (array_key_exists('subject_id', $subject) && $subject['subject_id'] !== null && $subject['subject_id'] !== '') {
+                $sid = $this->parseStrictInt($subject['subject_id'], 'شناسه درس', 1);
+                $referencedNodeIds[] = $sid;
+            }
+            if (array_key_exists('topic_ids', $subject) && $subject['topic_ids'] !== null) {
+                if (!is_array($subject['topic_ids'])) {
+                    throw new \App\Core\ApiException('فیلد topic_ids باید آرایه‌ای از شناسه‌های مبحث باشد', 422, 'VALIDATION_ERROR');
+                }
+                foreach ($subject['topic_ids'] as $tid) {
+                    $referencedNodeIds[] = $this->parseStrictInt($tid, 'شناسه مبحث', 1);
+                }
+            }
+        }
+
+        $nodeMap = [];
+        if ($referencedNodeIds !== []) {
+            $currRepo = $this->curriculumRepo ?? new CurriculumRepository();
+            $nodeMap = $currRepo->findByIds($referencedNodeIds);
+            foreach (array_unique($referencedNodeIds) as $nid) {
+                if (!isset($nodeMap[$nid])) {
+                    throw new \App\Core\ApiException("شناسه مبحث یا درس ({$nid}) در درخت مباحث یافت نشد", 422, 'VALIDATION_ERROR');
+                }
+            }
+        }
+
+        $normalizedSubjects = [];
+        foreach ($subjects as $subject) {
+            $subjectId = null;
+            if (array_key_exists('subject_id', $subject) && $subject['subject_id'] !== null && $subject['subject_id'] !== '') {
+                $subjectId = (int) $subject['subject_id'];
+            }
+
+            $topicIds = [];
+            if (array_key_exists('topic_ids', $subject) && is_array($subject['topic_ids'])) {
+                $topicIds = ExamResult::normalizeTopicIdArray($subject['topic_ids']);
+            }
+
+            $sessionTopicId = null;
+            if (array_key_exists('exam_session_topic_id', $subject) && $subject['exam_session_topic_id'] !== null && $subject['exam_session_topic_id'] !== '') {
+                $sessionTopicId = $this->parseStrictInt($subject['exam_session_topic_id'], 'شناسه ردیف پیشنهادی جلسه', 1);
+            }
+
+            $subjectLabel = isset($subject['subject']) && is_string($subject['subject']) ? trim($subject['subject']) : '';
+            if ($subjectLabel === '' && $subjectId !== null && isset($nodeMap[$subjectId])) {
+                $subjectLabel = CurriculumRepository::formatShortLessonLabel(
+                    (string) $nodeMap[$subjectId]['label'],
+                    $nodeMap[$subjectId]['grade_label'] ?? null
+                );
+            }
+
+            if ($subjectLabel === ''
                 || !isset($subject['total_q'])
                 || filter_var($subject['total_q'], FILTER_VALIDATE_INT) === false) {
                 throw new \App\Core\ApiException('ردیف درس نامعتبر است', 422, 'VALIDATION_ERROR');
+            }
+            $subjectLabel = mb_substr($subjectLabel, 0, 128, 'UTF-8');
+
+            $chapterLabel = null;
+            if (isset($subject['chapter']) && is_string($subject['chapter']) && trim($subject['chapter']) !== '') {
+                $chapterLabel = mb_substr(trim($subject['chapter']), 0, 255, 'UTF-8');
+            } elseif ($topicIds !== []) {
+                $labels = [];
+                foreach ($topicIds as $tid) {
+                    if (isset($nodeMap[$tid])) {
+                        $labels[] = (string) $nodeMap[$tid]['label'];
+                    }
+                }
+                if ($labels !== []) {
+                    $chapterLabel = mb_substr(implode('، ', $labels), 0, 255, 'UTF-8');
+                }
             }
 
             $total = (int) $subject['total_q'];
@@ -91,9 +182,25 @@ class ExamService
             if ($total < 0 || (int) $correct + (int) $wrong + (int) $skipped > $total) {
                 throw new \App\Core\ApiException('مجموع پاسخ‌ها از تعداد سوالات بیشتر است', 422, 'VALIDATION_ERROR');
             }
+
+            $normalizedSubjects[] = [
+                'subject_id'            => $subjectId,
+                'topic_ids'             => $topicIds,
+                'exam_session_topic_id' => $sessionTopicId,
+                'subject'               => $subjectLabel,
+                'chapter'               => $chapterLabel,
+                'total_q'               => $total,
+                'correct'               => (int) $correct,
+                'wrong'                 => (int) $wrong,
+                'skipped'               => (int) $skipped,
+            ];
         }
-        $inserted = ExamResult::saveBulk($studentId, $examDate, $subjects);
-        return ['inserted' => $inserted];
+
+        $inserted = ExamResult::saveBulk($studentId, $examDate, $normalizedSubjects, $examSessionId);
+        return [
+            'inserted'        => $inserted,
+            'exam_session_id' => $examSessionId,
+        ];
     }
 
     public function update(int $id, array $data): array
@@ -124,15 +231,66 @@ class ExamService
             $updates['exam_date'] = trim($data['exam_date']);
         }
 
+        $lookupIds = [];
+        $parsedSubjectId = null;
+        if (array_key_exists('subject_id', $data)) {
+            if ($data['subject_id'] === null || $data['subject_id'] === '') {
+                $updates['subject_id'] = null;
+            } else {
+                $parsedSubjectId = $this->parseStrictInt($data['subject_id'], 'شناسه درس', 1);
+                $lookupIds[] = $parsedSubjectId;
+                $updates['subject_id'] = $parsedSubjectId;
+            }
+        }
+
+        $parsedTopicIds = null;
+        if (array_key_exists('topic_ids', $data)) {
+            if ($data['topic_ids'] === null) {
+                $parsedTopicIds = [];
+            } elseif (!is_array($data['topic_ids'])) {
+                throw new \App\Core\ApiException('فیلد topic_ids باید آرایه باشد', 422, 'VALIDATION_ERROR');
+            } else {
+                $parsedTopicIds = [];
+                foreach ($data['topic_ids'] as $tid) {
+                    $parsedTid = $this->parseStrictInt($tid, 'شناسه مبحث', 1);
+                    $parsedTopicIds[] = $parsedTid;
+                    $lookupIds[] = $parsedTid;
+                }
+                $parsedTopicIds = ExamResult::normalizeTopicIdArray($parsedTopicIds);
+            }
+            $updates['topic_ids'] = $parsedTopicIds;
+        }
+
+        $nodeMap = [];
+        if ($lookupIds !== []) {
+            $currRepo = $this->curriculumRepo ?? new CurriculumRepository();
+            $nodeMap = $currRepo->findByIds($lookupIds);
+            foreach (array_unique($lookupIds) as $nid) {
+                if (!isset($nodeMap[$nid])) {
+                    throw new \App\Core\ApiException("شناسه مبحث یا درس ({$nid}) در درخت مباحث یافت نشد", 422, 'VALIDATION_ERROR');
+                }
+            }
+        }
+
         if (array_key_exists('subject', $data)) {
             if (!is_string($data['subject']) || trim($data['subject']) === '') {
                 throw new \App\Core\ApiException('نام درس الزامی است', 422, 'VALIDATION_ERROR');
             }
             $subject = trim($data['subject']);
-            if (mb_strlen($subject) > 50) {
-                throw new \App\Core\ApiException('نام درس نمی‌تواند بیشتر از ۵۰ کاراکتر باشد', 422, 'VALIDATION_ERROR');
+            if (mb_strlen($subject) > 128) {
+                throw new \App\Core\ApiException('نام درس نمی‌تواند بیشتر از ۱۲۸ کاراکتر باشد', 422, 'VALIDATION_ERROR');
             }
             $updates['subject'] = $subject;
+        } elseif ($parsedSubjectId !== null && isset($nodeMap[$parsedSubjectId])) {
+            $updates['subject'] = mb_substr(
+                CurriculumRepository::formatShortLessonLabel(
+                    (string) $nodeMap[$parsedSubjectId]['label'],
+                    $nodeMap[$parsedSubjectId]['grade_label'] ?? null
+                ),
+                0,
+                128,
+                'UTF-8'
+            );
         }
 
         if (array_key_exists('chapter', $data)) {
@@ -142,10 +300,22 @@ class ExamService
                 throw new \App\Core\ApiException('نام مبحث باید رشته متنی باشد', 422, 'VALIDATION_ERROR');
             } else {
                 $chapter = trim($data['chapter']);
-                if ($chapter !== '' && mb_strlen($chapter) > 100) {
-                    throw new \App\Core\ApiException('نام مبحث نمی‌تواند بیشتر از ۱۰۰ کاراکتر باشد', 422, 'VALIDATION_ERROR');
+                if ($chapter !== '' && mb_strlen($chapter) > 255) {
+                    throw new \App\Core\ApiException('نام مبحث نمی‌تواند بیشتر از ۲۵۵ کاراکتر باشد', 422, 'VALIDATION_ERROR');
                 }
                 $updates['chapter'] = $chapter === '' ? null : $chapter;
+            }
+        } elseif ($parsedTopicIds !== null) {
+            if ($parsedTopicIds === []) {
+                $updates['chapter'] = null;
+            } else {
+                $labels = [];
+                foreach ($parsedTopicIds as $tid) {
+                    if (isset($nodeMap[$tid])) {
+                        $labels[] = (string) $nodeMap[$tid]['label'];
+                    }
+                }
+                $updates['chapter'] = $labels !== [] ? mb_substr(implode('، ', $labels), 0, 255, 'UTF-8') : null;
             }
         }
 
@@ -204,18 +374,22 @@ class ExamService
         $computedPercentage = round(($effectiveCorrect / $effectiveTotal) * 100, 2);
 
         return [
-            'id'         => (int) $updated['id'],
-            'student_id' => (int) $updated['student_id'],
-            'file_id'    => isset($updated['file_id']) && $updated['file_id'] !== null ? (int) $updated['file_id'] : null,
-            'exam_date'  => (string) $updated['exam_date'],
-            'subject'    => (string) $updated['subject'],
-            'chapter'    => $updated['chapter'] !== null ? (string) $updated['chapter'] : null,
-            'total_q'    => (int) $updated['total_q'],
-            'correct'    => (int) $updated['correct'],
-            'wrong'      => (int) $updated['wrong'],
-            'skipped'    => (int) $updated['skipped'],
-            'percentage' => isset($updated['percentage']) ? round((float) $updated['percentage'], 2) : $computedPercentage,
-            'created_at' => $updated['created_at'] ?? null,
+            'id'                    => (int) $updated['id'],
+            'student_id'            => (int) $updated['student_id'],
+            'file_id'               => isset($updated['file_id']) && $updated['file_id'] !== null ? (int) $updated['file_id'] : null,
+            'exam_session_id'       => isset($updated['exam_session_id']) && $updated['exam_session_id'] !== null ? (int) $updated['exam_session_id'] : null,
+            'exam_session_topic_id' => isset($updated['exam_session_topic_id']) && $updated['exam_session_topic_id'] !== null ? (int) $updated['exam_session_topic_id'] : null,
+            'subject_id'            => isset($updated['subject_id']) && $updated['subject_id'] !== null ? (int) $updated['subject_id'] : null,
+            'topic_ids'             => $updated['topic_ids'] ?? ExamResult::decodeTopicIds($updated['topic_ids_json'] ?? null),
+            'exam_date'             => (string) $updated['exam_date'],
+            'subject'               => (string) $updated['subject'],
+            'chapter'               => $updated['chapter'] !== null ? (string) $updated['chapter'] : null,
+            'total_q'               => (int) $updated['total_q'],
+            'correct'               => (int) $updated['correct'],
+            'wrong'                 => (int) $updated['wrong'],
+            'skipped'               => (int) $updated['skipped'],
+            'percentage'            => isset($updated['percentage']) ? round((float) $updated['percentage'], 2) : $computedPercentage,
+            'created_at'            => $updated['created_at'] ?? null,
         ];
     }
 
